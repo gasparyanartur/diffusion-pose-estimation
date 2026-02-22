@@ -62,5 +62,4 @@ CROWDPOSE_ANNOTATIONS_URL = (
 # Work / output directories
 # ---------------------------------------------------------------------------
 
-RESULTS_DIR = PROJECT_DIR / "rtmpose_crowdpose_benchmark"
-RTMPOSE_BENCHMARK_RESULTS = RESULTS_DIR / "results.json"
+RESULTS_DIR = PROJECT_DIR / "results"
