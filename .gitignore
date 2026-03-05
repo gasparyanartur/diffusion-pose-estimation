@@ -14,4 +14,8 @@ wheels/
 /results
 /checkpoints
 
+# Exclude cached predictions (can be regenerated)
+results/cache/*.pkl
+results/cache/work_dir/
+
 .env
