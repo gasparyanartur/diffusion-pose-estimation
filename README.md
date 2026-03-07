@@ -31,7 +31,7 @@ src/
 
 ## 1. Prerequisites
 
-**Python environment** — Python 3.10+, with a virtual environment recommended.
+**Python environment** — Python 3.10, with a virtual environment recommended.
 
 ```bash
 python3 -m venv venv
