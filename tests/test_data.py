@@ -241,3 +241,57 @@ def test_create_graph_from_keypoints():
     # batch vector and edge bounds
     assert torch.equal(g["batch"], torch.arange(B).repeat_interleave(N * K))
     assert g["edge_index"].min() >= 0 and g["edge_index"].max() < B * N * K
+
+
+def test_create_graph_batch_samples_are_disjoint():
+    """Node sets for different batch samples are disjoint, and edges never cross batch boundaries."""
+    B, N, K = 3, 4, NUM_KEYPOINTS
+    keypoints = torch.rand(B, N, K, 2)
+    ei = make_edge_index(CROWDPOSE_EDGE_LIST)
+    g = create_graph_from_keypoints(ei, keypoints)
+
+    node_idx = g["node_idx"]   # (B, N, K)
+    edge_index = g["edge_index"]  # (2, B*N*E)
+
+    # Node sets per batch sample must be pairwise disjoint
+    node_sets = [set(node_idx[b].reshape(-1).tolist()) for b in range(B)]
+    for b1 in range(B):
+        for b2 in range(b1 + 1, B):
+            assert node_sets[b1].isdisjoint(node_sets[b2]), (
+                f"Batch samples {b1} and {b2} share node indices"
+            )
+
+    # Every edge must connect two nodes that belong to the same batch sample
+    all_nodes = node_idx.reshape(-1)          # (B*N*K,)
+    node_to_batch = g["batch"]                # (B*N*K,) maps flat node index -> b
+    src_batch = node_to_batch[edge_index[0]]
+    dst_batch = node_to_batch[edge_index[1]]
+    assert torch.all(src_batch == dst_batch), "Some edge crosses batch-sample boundaries"
+
+
+def test_create_graph_poses_are_disjoint():
+    """Node sets for different poses within a batch sample are disjoint, and edges never cross pose boundaries."""
+    B, N, K = 3, 4, NUM_KEYPOINTS
+    keypoints = torch.rand(B, N, K, 2)
+    ei = make_edge_index(CROWDPOSE_EDGE_LIST)
+    g = create_graph_from_keypoints(ei, keypoints)
+
+    node_idx = g["node_idx"]   # (B, N, K)
+    pose_idx  = g["pose_idx"]  # (B, N, K)
+    edge_index = g["edge_index"]  # (2, B*N*E)
+
+    # Within each batch sample, pose node sets must be pairwise disjoint
+    for b in range(B):
+        pose_sets = [set(node_idx[b, n, :].tolist()) for n in range(N)]
+        for n1 in range(N):
+            for n2 in range(n1 + 1, N):
+                assert pose_sets[n1].isdisjoint(pose_sets[n2]), (
+                    f"Poses {n1} and {n2} in batch sample {b} share node indices"
+                )
+
+    # Every edge must connect two nodes that belong to the same pose
+    flat_node_idx = node_idx.reshape(-1)      # (B*N*K,)
+    flat_pose_idx = pose_idx.reshape(-1)      # (B*N*K,)
+    src_pose = flat_pose_idx[edge_index[0]]
+    dst_pose = flat_pose_idx[edge_index[1]]
+    assert torch.all(src_pose == dst_pose), "Some edge crosses pose boundaries"
