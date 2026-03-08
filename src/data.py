@@ -459,20 +459,24 @@ def prepare_pose_graph_batch(
     keypoints: Tensor,
     visibility: Tensor,
     edge_index: Tensor | None = None,
+    img_size: Tensor | None = None, 
 ) -> dict[str, Tensor]:
     """Build a canonical pose graph batch from raw CrowdPose keypoints.
 
     Computes the root per (batch, person) using visible anchor joints
     (left_hip, right_hip, neck); falls back to centroid of all visible joints.
-    Then calls create_graph_from_keypoints with the canonical edge index.
+    Keypoints are then made root-relative and normalised by max(W, H)
+    (or 100 if img_size is not provided).
 
     Args:
         keypoints   FloatTensor[B, N, 14, 2]
         visibility  FloatTensor[B, N, 14]    – 0=absent 1=occluded 2=visible
         edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
+        img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
 
     Returns: output of create_graph_from_keypoints, plus:
         visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
+        node_pos coordinates are root-relative and divided by max(W, H)
     """
     if edge_index is None:
         edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
@@ -506,6 +510,18 @@ def prepare_pose_graph_batch(
 
     canonical_kpts = torch.cat([root_pos.unsqueeze(2), keypoints], dim=2)  # (B, N, 15, 2)
     canonical_vis  = torch.cat([root_vis.unsqueeze(2), visibility], dim=2) # (B, N, 15)
+
+    # Make all keypoints relative to the root node (root becomes [0, 0])
+    root = canonical_kpts[:, :, 0:1, :]   # (B, N, 1, 2)
+    canonical_kpts = canonical_kpts - root # (B, N, 15, 2)
+
+    # Normalise by max(W, H) per image so coordinates are in [-1, 1] roughly
+    B = keypoints.shape[0]
+    if img_size is not None:
+        scale = img_size.max(dim=1).values.to(keypoints.device)  # (B,)
+    else:
+        scale = torch.full((B,), 800.0, device=keypoints.device)
+    canonical_kpts = canonical_kpts / scale.view(B, 1, 1, 1)
 
     graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
     graph["visibility"] = canonical_vis                      # (B, N, 15)

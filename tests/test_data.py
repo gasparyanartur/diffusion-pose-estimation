@@ -20,6 +20,7 @@ from src.data import (
     create_graph_from_keypoints,
     load_gt_annotations,
     make_edge_index,
+    prepare_pose_graph_batch,
 )
 
 # ---------------------------------------------------------------------------
@@ -345,3 +346,40 @@ def test_create_graph_poses_are_disjoint():
     src_pose = flat_pose_idx[edge_index[0]]
     dst_pose = flat_pose_idx[edge_index[1]]
     assert torch.all(src_pose == dst_pose), "Some edge crosses pose boundaries"
+
+
+def test_prepare_pose_graph_batch():
+    """Root node is at origin; coordinates are normalised; visibility shape is correct."""
+    B, N, K = 2, 3, 14
+    torch.manual_seed(0)
+    kpts = torch.rand(B, N, K, 2) * 640
+    vis  = torch.randint(0, 3, (B, N, K)).float()
+
+    # --- without img_size: scale factor is 100 ---
+    g = prepare_pose_graph_batch(kpts, vis)
+
+    # Output shapes
+    assert g["node_pos"].shape   == (B * N * 15, 2)
+    assert g["visibility"].shape == (B, N, 15)
+
+    # Root node (index 0 per pose) must be exactly (0, 0) after root-relative shift
+    node_pos = g["node_pos"].view(B, N, 15, 2)
+    assert torch.all(node_pos[:, :, 0, :] == 0.0), "Root nodes should be at origin"
+
+    # All coordinates should be in a sensible range when divided by 100
+    # (raw offsets up to ~640 px → up to ~6.4)
+    assert g["node_pos"].abs().max().item() < 10.0
+
+    # --- with img_size: scale factor is max(W, H) per image ---
+    img_size = torch.tensor([[640.0, 480.0], [320.0, 240.0]])
+    g2 = prepare_pose_graph_batch(kpts, vis, img_size=img_size)
+
+    # Root still at origin
+    node_pos2 = g2["node_pos"].view(B, N, 15, 2)
+    assert torch.all(node_pos2[:, :, 0, :] == 0.0)
+
+    # Coordinates for image b=0 are divided by 640; offsets within frame are ≤ 1
+    coords_b0 = node_pos2[0]  # (N, 15, 2)
+    assert coords_b0.abs().max().item() <= 1.0 + 1e-5, (
+        "Root-relative offsets within a 640-px image should be at most 1.0 when scaled by max dim"
+    )

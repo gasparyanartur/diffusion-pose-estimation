@@ -22,6 +22,8 @@ def show_img_with_keypoints(
     keypoints: Optional[Tensor] = None,
     bboxes: Optional[Tensor] = None,
     figsize: tuple[float, float] = (5, 8),
+    visibility: Optional[Tensor] = None,
+    include_occluded: bool = True,
     kpt_color: str = "lime",
     kpt_txt_color: str = "black",
     bbox_color: str = "red",
@@ -91,6 +93,10 @@ def show_img_with_keypoints(
     if keypoints is not None:
         kpts_np = keypoints.numpy() if isinstance(keypoints, Tensor) else np.asarray(keypoints)
         for i, person_kpts in enumerate(kpts_np):
+            if visibility is not None:
+                keep_mask = (visibility[i] > 0) if include_occluded else (visibility[i] > 1)
+                person_kpts = person_kpts[keep_mask]
+            
             xs, ys = person_kpts[:, 0], person_kpts[:, 1]
             ax.plot(xs, ys, "o", color=kpt_color, markersize=kpt_size, alpha=0.9)
             if numbered:
