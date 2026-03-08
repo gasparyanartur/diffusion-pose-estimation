@@ -1,60 +1,4 @@
-"""
-Pose-prediction dataset and dataloader utilities.
-
-This module provides:
-
-* :class:`PredictionDataset` – a ``torch.utils.data.Dataset`` that wraps
-  pre-computed pose-estimation predictions stored as a cached ``.pkl`` file.
-  Each sample corresponds to one image and contains the predicted keypoints,
-  keypoint confidence scores, and (optionally) bounding-boxes together with
-  their scores.
-
-* :class:`GroupedBatchSampler` – a custom ``BatchSampler`` that groups dataset
-  indices by the number of detected people per image and yields batches that
-  are *homogeneous* in that count.  This removes the need for padding and
-  makes downstream graph-based processing straightforward.
-
-* :func:`simple_collate` – a collation function compatible with
-  :class:`GroupedBatchSampler` that stacks samples into tensors of shape
-  ``(B, N, …)`` where *B* is the batch size and *N* is the (uniform) number
-  of people.
-
-* :func:`load_gt_annotations` – loads a COCO-style JSON annotation file and
-  returns a mapping from ``image_id`` to a list of per-person GT records,
-  each containing ``gt_keypoints`` ``(N_gt, K, 2)`` and ``gt_visibility``
-  ``(N_gt, K)`` tensors.  Because the number of GT people per image (*N_gt*)
-  is independent of the number of predictions (*N_pred*), GT tensors are kept
-  as lists in collated batches rather than being stacked.
-
-* :func:`make_edge_index` – converts a list of ``(src, dst)`` keypoint-index
-  pairs into a ``LongTensor[2, E]`` edge index, optionally making the graph
-  undirected.
-
-* :func:`create_graph_from_keypoints` – converts a batched keypoints tensor
-  ``(B, N, K, 2)`` into a PyG-compatible flat graph with a block-diagonal
-  edge index ``(2, B·N·E)``, a ``node_pos`` tensor ``(B·N·K, 2)``, and a
-  ``batch`` vector ``(B·N·K,)`` for pooling.
-
-Typical usage
--------------
->>> from pathlib import Path
->>> from torch.utils.data import DataLoader
->>> from src.data import PredictionDataset, GroupedBatchSampler, simple_collate
->>>
->>> # Predictions only
->>> dataset = PredictionDataset.from_path(Path("results/cache/predictions.pkl"))
->>>
->>> # Predictions + ground truth
->>> dataset = PredictionDataset.from_path_with_gt(
-...     Path("results/cache/predictions.pkl"),
-...     Path("data/crowdpose/annotations/crowdpose_test.json"),
-... )
->>> sampler = GroupedBatchSampler(dataset, batch_size=16)
->>> loader  = DataLoader(dataset, batch_sampler=sampler, collate_fn=simple_collate)
->>> for batch in loader:
-...     kpts    = batch["keypoints"]     # (B, N_pred, K, 2)
-...     gt_kpts = batch["gt_keypoints"]  # list[Tensor[N_gt_i, K, 2]], length B
-"""
+"""Dataset, sampler, collation, and graph utilities for pose-estimation predictions."""
 
 from __future__ import annotations
 
@@ -76,63 +20,117 @@ from torch.utils.data import Dataset
 # ---------------------------------------------------------------------------
 
 
-class PredictionDataset(Dataset):
-    """Dataset wrapping pre-computed pose-estimation predictions.
+def load_gt_annotations(
+    ann_path: Path | str,
+) -> dict[int, list[dict[str, Any]]]:
+    """Load a COCO-style annotation JSON. Returns {image_id: [ann_dict, ...]}."""
+    with open(ann_path) as fh:
+        data = json.load(fh)
 
-    The dataset is format-agnostic and works with both *top-down* (one crop
-    per person) and *bottom-up* (full-image) models.  Each sample represents
-    **one image** and contains a variable number of detected people; samples
-    are *not* padded to a fixed length.
+    gt: dict[int, list[dict[str, Any]]] = {}
+    for ann in data["annotations"]:
+        gt.setdefault(ann["image_id"], []).append(ann)
+    return gt
 
-    N denotes the number of detected people in the image
-    K denotes the number of keypoints per person (e.g. 14 for CrowdPose)
-    Bounding boxes are given as (x_min, y_min, x_max, y_max) 
-    Keypoints are given as (x, y) coordinates in the original image space.
 
-    Parameters
-    ----------
-    model_name:
-        Human-readable identifier for the model that produced the predictions
-        (e.g. ``"rtmpose-m_8xb64-210e_crowdpose-256x192"``).
-    architecture_type:
-        Either ``"top-down"`` or ``"bottom-up"``.
-    num_keypoints:
-        Number of keypoints per person (e.g. 14 for CrowdPose).
-    predictions:
-        Raw prediction records.  Each record is a :class:`dict` with at
-        minimum the following keys:
+class PoseDataset(Dataset):
+    """One sample per image; N people, K=14 keypoints each.
+    Pairs with SceneGraphSampler so every batch has uniform N.
 
-        * ``"image_id"``         – ``int``
-        * ``"keypoints"``        – array-like of shape ``(N, K, 2)``
-        * ``"keypoint_scores"``  – array-like of shape ``(N, K)``
+    __getitem__ returns:
+        image_id    int
+        img_path    str
+        keypoints   Tensor[N, 14, 2]  – raw (x, y) CrowdPose joints
+        visibility  Tensor[N, 14]     – 0=absent 1=occluded 2=visible
+    """
 
-        Top-down models additionally provide:
+    def __init__(
+        self,
+        samples: list[dict[str, Any]],
+        num_keypoints: int = 14,
+    ) -> None:
+        self.samples = samples
+        self.num_keypoints = num_keypoints
 
-        * ``"bboxes"``       – array-like of shape ``(N, 4)`` or ``(N, 5)``
-        * ``"bbox_scores"``  – array-like of shape ``(N,)``
+    @classmethod
+    def from_path(
+        cls,
+        ann_path: Path | str,
+        img_root: Path | str | None = None,
+        num_keypoints: int = 14,
+    ) -> "PoseDataset":
+        """Load from a COCO-style annotation JSON.
 
-    Attributes
-    ----------
-    has_bboxes : bool
-        ``True`` when bounding-box predictions are available.
+        img_root: root directory prepended to each image filename from the JSON.
+        Images where every annotation has no labeled keypoints are excluded.
+        """
+        with open(ann_path) as fh:
+            data = json.load(fh)
 
-    Sample structure
-    ----------------
-    Each item returned by :meth:`__getitem__` is a :class:`dict`:
+        img_root_path = Path(img_root) if img_root is not None else None
+        image_paths: dict[int, str] = {
+            img["id"]: (
+                str(img_root_path / img["file_name"])
+                if img_root_path is not None
+                else img.get("file_name", "")
+            )
+            for img in data.get("images", [])
+        }
 
-    ================== =====================================================================
-    Key                Description
-    ================== =====================================================================
-    ``image_id``       ``int`` – dataset image identifier
-    ``img_path``       ``str`` – path to the raw image (may be empty)
-    ``keypoints``      ``Tensor[N_pred, K, 2]`` – ``(x, y)`` predicted keypoint coords
-    ``keypoint_scores``  ``Tensor[N_pred, K]`` – per-keypoint confidence scores
-    ``bboxes``         ``Tensor[N_pred, 4]`` – ``xyxy`` boxes *(top-down only)*
-    ``bbox_scores``    ``Tensor[N_pred]`` – per-person detector scores *(top-down only)*
-    ``gt_keypoints``   ``Tensor[N_gt, K, 2]`` – ground-truth ``(x, y)`` coords *(optional)*
-    ``gt_visibility``  ``Tensor[N_gt, K]`` – visibility flags: 0=absent, 1=occluded,
-                       2=visible *(optional)*
-    ================== =====================================================================
+        # Group annotations by image_id, skipping unlabeled people
+        by_image: dict[int, list[dict]] = defaultdict(list)
+        for ann in data["annotations"]:
+            if ann.get("num_keypoints", 0) > 0:
+                by_image[ann["image_id"]].append(ann)
+
+        samples = []
+        for image_id, anns in by_image.items():
+            kpts = np.array(
+                [a["keypoints"] for a in anns], dtype=np.float32
+            ).reshape(len(anns), num_keypoints, 3)  # (N, K, 3)
+            samples.append({
+                "image_id":   image_id,
+                "img_path":   image_paths.get(image_id, ""),
+                "keypoints":  torch.from_numpy(kpts[:, :, :2]),  # (N, K, 2)
+                "visibility": torch.from_numpy(kpts[:, :, 2]),   # (N, K)
+            })
+
+        return cls(samples=samples, num_keypoints=num_keypoints)
+
+    def create_dataloader(
+        self,
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        num_workers: int = 0,
+        **kwargs: Any,
+    ) -> "torch.utils.data.DataLoader":
+        """DataLoader backed by SceneGraphSampler (homogeneous N per batch)."""
+        import torch.utils.data
+        sampler = SceneGraphSampler(self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+        return torch.utils.data.DataLoader(
+            self, batch_sampler=sampler, collate_fn=torch.utils.data.default_collate,
+            num_workers=num_workers, **kwargs,
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        return self.samples[idx]
+
+
+class PredictionDataset(PoseDataset):
+    """PoseDataset + model predictions. Predictions are returned by __getitem__.
+    GT annotations (ragged N_gt) are available via get_gt(image_id).
+
+    __getitem__ returns:
+        image_id             int
+        img_path             str
+        pred_keypoints       Tensor[N, K, 2]
+        pred_keypoint_scores Tensor[N, K]
+        bboxes               Tensor[N, 4]   (top-down only)
+        bbox_scores          Tensor[N]      (top-down only)
     """
 
     def __init__(
@@ -148,8 +146,7 @@ class PredictionDataset(Dataset):
         self.num_keypoints = num_keypoints
         self.predictions = predictions
         self.has_bboxes: bool = bool(predictions) and "bboxes" in predictions[0]
-        # Optional ground-truth annotations keyed by image_id
-        self._gt_by_image_id: dict[int, list[dict[str, Any]]] | None = gt_by_image_id
+        self._gt_by_image_id = gt_by_image_id
         self.has_gt: bool = gt_by_image_id is not None
 
     # ------------------------------------------------------------------
@@ -157,31 +154,8 @@ class PredictionDataset(Dataset):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_path(cls, path: Path | str,         ann_path: Path | str | None = None, **kwargs: Any) -> "PredictionDataset":
-        """Load a :class:`PredictionDataset` from a cached predictions file.
-
-        The file is expected to be a ``pickle``-serialised :class:`dict` with
-        the following top-level keys:
-
-        * ``"model_name"``         – ``str``
-        * ``"architecture_type"``  – ``str``
-        * ``"num_keypoints"``      – ``int``
-        * ``"predictions"``        – ``list[dict]``
-
-        Parameters
-        ----------
-        path:
-            Filesystem path to the ``.pkl`` cache file.
-        ann_path:
-            Path to a COCO-style annotation JSON file (e.g.
-            ``crowdpose_test.json``).  This is required to set the
-            :attr:`has_gt` flag correctly, but the actual GT annotations are
-            not loaded until :meth:`from_path_with_gt` is used.
-            
-        Returns
-        -------
-        PredictionDataset
-        """
+    def from_path(cls, path: Path | str, ann_path: Path | str | None = None, **kwargs: Any) -> "PredictionDataset":
+        """Load from a pickle file with keys: model_name, architecture_type, num_keypoints, predictions."""
         with open(path, "rb") as fh:
             data = pickle.load(fh)
 
@@ -196,7 +170,6 @@ class PredictionDataset(Dataset):
 
         return cls(**kwargs)
 
-
     def create_dataloader(
         self,
         batch_size: int,
@@ -205,38 +178,17 @@ class PredictionDataset(Dataset):
         num_workers: int = 0,
         **kwargs: Any,
     ) -> "torch.utils.data.DataLoader":
-        """Create a :class:`~torch.utils.data.DataLoader` backed by :class:`GroupedBatchSampler`.
-
-        Batches are homogeneous in the number of people *N*, so the collated
-        ``keypoints`` tensor always has shape ``(B, N, K, 2)`` with no
-        padding required.
-
-        Parameters
-        ----------
-        batch_size:
-            Number of images per batch.
-        shuffle:
-            When ``True`` (default), indices within each group are shuffled and
-            the resulting batches are globally interleaved across groups.
-        drop_last:
-            When ``True``, discard the final partial batch in each group.
-        num_workers:
-            Number of worker processes for data loading (passed directly to
-            :class:`~torch.utils.data.DataLoader`).
-
-        Returns
-        -------
-        torch.utils.data.DataLoader
-        """
+        """DataLoader backed by SceneGraphSampler (homogeneous N per batch)."""
         import torch.utils.data
 
-        sampler = GroupedBatchSampler(
-            self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last
+        sampler = SceneGraphSampler(
+            self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
+            group_key="pred_keypoints",
         )
         return torch.utils.data.DataLoader(
             self,
             batch_sampler=sampler,
-            collate_fn=simple_collate,
+            collate_fn=torch.utils.data.default_collate,
             num_workers=num_workers,
             **kwargs,
         )
@@ -246,107 +198,42 @@ class PredictionDataset(Dataset):
     # ------------------------------------------------------------------
 
     def __len__(self) -> int:
-        """Return the total number of images in the dataset."""
         return len(self.predictions)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        """Return the sample for image at position *idx*.
-
-        Parameters
-        ----------
-        idx:
-            Zero-based index into :attr:`predictions`.
-
-        Returns
-        -------
-        dict
-            See the *Sample structure* table in the class docstring.
-        """
         pred = self.predictions[idx]
         sample: dict[str, Any] = {
-            "image_id": pred["image_id"],
-            "img_path": pred.get("img_path", ""),
-            # (N_pred, K, 2)  –  (x, y) coordinates
-            "keypoints": torch.tensor(pred["keypoints"], dtype=torch.float32),
-            # (N_pred, K)
-            "keypoint_scores": torch.tensor(pred["keypoint_scores"], dtype=torch.float32),
+            "image_id":             pred["image_id"],
+            "img_path":             pred.get("img_path", ""),
+            "pred_keypoints":       torch.tensor(pred["keypoints"],       dtype=torch.float32),  # (N, K, 2)
+            "pred_keypoint_scores": torch.tensor(pred["keypoint_scores"], dtype=torch.float32),  # (N, K)
         }
         if self.has_bboxes:
-            # (N_pred, 4) or (N_pred, 5)
-            sample["bboxes"] = torch.tensor(pred["bboxes"], dtype=torch.float32)
-            # (N_pred,)
-            sample["bbox_scores"] = torch.tensor(pred["bbox_scores"], dtype=torch.float32)
-        if self.has_gt and self._gt_by_image_id is not None:
-            gt_anns = self._gt_by_image_id.get(pred["image_id"], [])
-            if gt_anns:
-                # Each annotation has a flat keypoints list: [x, y, v, x, y, v, …]
-                kpts_flat = np.array(
-                    [a["keypoints"] for a in gt_anns], dtype=np.float32
-                )  # (N_gt, K*3)
-                kpts = kpts_flat.reshape(len(gt_anns), self.num_keypoints, 3)
-                # (N_gt, K, 2)
-                sample["gt_keypoints"] = torch.from_numpy(kpts[:, :, :2])
-                # (N_gt, K)  – 0: absent, 1: occluded, 2: visible
-                sample["gt_visibility"] = torch.from_numpy(kpts[:, :, 2])
-            else:
-                # Image exists in predictions but has no GT annotations
-                sample["gt_keypoints"] = torch.zeros(
-                    0, self.num_keypoints, 2, dtype=torch.float32
-                )
-                sample["gt_visibility"] = torch.zeros(
-                    0, self.num_keypoints, dtype=torch.float32
-                )
+            sample["bboxes"]      = torch.tensor(pred["bboxes"],       dtype=torch.float32)  # (N, 4)
+            sample["bbox_scores"] = torch.tensor(pred["bbox_scores"],  dtype=torch.float32)  # (N,)
         return sample
 
+    def get_gt(self, image_id: int) -> dict[str, Any] | None:
+        """Return GT keypoints and visibility for an image, or None if no annotations loaded.
 
-# ---------------------------------------------------------------------------
-# Ground-truth loader
-# ---------------------------------------------------------------------------
-
-
-def load_gt_annotations(
-    ann_path: Path | str,
-) -> dict[int, list[dict[str, Any]]]:
-    """Load a COCO-style annotation JSON and index annotations by ``image_id``.
-
-    Supports any dataset whose annotation file follows the COCO convention:
-
-    .. code-block:: json
-
-        {
-            "images": [{"id": 1, ...}, ...],
-            "annotations": [
-                {
-                    "image_id": 1,
-                    "keypoints": [x0, y0, v0, x1, y1, v1, ...],
-                    ...
-                },
-                ...
-            ]
+        Returns:
+            keypoints   Tensor[N_gt, K, 2]
+            visibility  Tensor[N_gt, K]
+        """
+        if not self.has_gt or self._gt_by_image_id is None:
+            return None
+        gt_anns = self._gt_by_image_id.get(image_id, [])
+        if not gt_anns:
+            return {
+                "keypoints":  torch.zeros(0, self.num_keypoints, 2, dtype=torch.float32),
+                "visibility": torch.zeros(0, self.num_keypoints,    dtype=torch.float32),
+            }
+        kpts_flat = np.array([a["keypoints"] for a in gt_anns], dtype=np.float32)
+        kpts = kpts_flat.reshape(len(gt_anns), self.num_keypoints, 3)
+        return {
+            "keypoints":  torch.from_numpy(kpts[:, :, :2]),  # (N_gt, K, 2)
+            "visibility": torch.from_numpy(kpts[:, :, 2]),   # (N_gt, K)
         }
-
-    Keypoint visibility flags follow the COCO convention:
-    ``0`` = not labeled, ``1`` = labeled but occluded, ``2`` = labeled and
-    visible.
-
-    Parameters
-    ----------
-    ann_path:
-        Path to the annotation JSON file.
-
-    Returns
-    -------
-    dict[int, list[dict]]
-        Mapping from ``image_id`` to the list of annotation dicts for that
-        image.  Images with no annotations are absent from the mapping.
-    """
-    with open(ann_path) as fh:
-        data = json.load(fh)
-
-    gt: dict[int, list[dict[str, Any]]] = {}
-    for ann in data["annotations"]:
-        gt.setdefault(ann["image_id"], []).append(ann)
-    return gt
 
 
 # ---------------------------------------------------------------------------
@@ -354,34 +241,8 @@ def load_gt_annotations(
 # ---------------------------------------------------------------------------
 
 
-class GroupedBatchSampler:
-    """Batch sampler that groups images by their number of detected people.
-
-    Yielding batches that are *homogeneous* in the number of people (*N*)
-    avoids any need for padding: all ``keypoints`` tensors within a batch have
-    identical shape ``(K, 2)`` per person, so the collated batch has a clean
-    shape of ``(B, N, K, 2)``.
-
-    Parameters
-    ----------
-    dataset:
-        A :class:`PredictionDataset` (or any dataset whose samples contain a
-        ``"keypoints"`` tensor whose first dimension is the number of people).
-    batch_size:
-        Number of images per batch.
-    drop_last:
-        When ``True``, discard the final (potentially smaller) batch for each
-        group.  When ``False`` (default), include it.
-    shuffle:
-        When ``True`` (default), shuffle the indices within every group at
-        construction time.
-
-    Notes
-    -----
-    Groups are built eagerly at construction time by iterating over the entire
-    dataset once.  For very large datasets consider caching the per-image
-    people counts separately.
-    """
+class SceneGraphSampler:
+    """Groups dataset indices by number of people per image so every batch has uniform N."""
 
     def __init__(
         self,
@@ -389,6 +250,7 @@ class GroupedBatchSampler:
         batch_size: int,
         drop_last: bool = False,
         shuffle: bool = True,
+        group_key: str = "keypoints",
     ) -> None:
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")
@@ -397,12 +259,13 @@ class GroupedBatchSampler:
         self.batch_size = batch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
+        self.group_key = group_key
 
-        # Group indices by number of people (first dim of keypoints tensor)
+        # Group indices by number of people (first dim of group_key tensor)
         self.groups: dict[int, list[int]] = defaultdict(list)
         for idx in range(len(dataset)):  # type: ignore[arg-type]
             sample = dataset[idx]
-            n_people: int = sample["keypoints"].shape[0]
+            n_people: int = sample[group_key].shape[0]
             self.groups[n_people].append(idx)
 
         # Pre-compute the full batch list once so __iter__ is a trivial walk.
@@ -432,93 +295,10 @@ class GroupedBatchSampler:
     # ------------------------------------------------------------------
 
     def __iter__(self) -> Iterator[list[int]]:
-        """Yield pre-computed batches.
-
-        When *shuffle* is ``True`` the batch order is globally randomised
-        across groups, so images with different numbers of people are
-        interleaved throughout training rather than being presented group by
-        group.
-        """
         yield from self._batches
 
     def __len__(self) -> int:
-        """Return the total number of batches across all groups."""
         return len(self._batches)
-
-
-# ---------------------------------------------------------------------------
-# Collation
-# ---------------------------------------------------------------------------
-
-
-def simple_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    """Collate a list of same-*N* samples into batched tensors.
-
-    Designed to pair with :class:`GroupedBatchSampler`, which guarantees that
-    all samples in ``batch`` have the same number of people *N*.  Tensors are
-    stacked along a new leading batch dimension.
-
-    Parameters
-    ----------
-    batch:
-        A list of sample dicts as returned by
-        :meth:`PredictionDataset.__getitem__`.  All samples must have the same
-        value of ``keypoints.shape[0]`` (number of people).
-
-    Returns
-    -------
-    dict
-        A collated batch with the following keys:
-
-        ================== =================================================================
-        Key                Shape / type
-        ================== =================================================================
-        ``image_ids``      ``list[int]``
-        ``img_paths``      ``list[str]``
-        ``keypoints``      ``Tensor[B, N_pred, K, 2]``
-        ``keypoint_scores``  ``Tensor[B, N_pred, K]``
-        ``bboxes``         ``Tensor[B, N_pred, 4]`` or ``None``
-        ``bbox_scores``    ``Tensor[B, N_pred]`` or ``None``
-        ``gt_keypoints``   ``list[Tensor[N_gt_i, K, 2]]`` length *B* or ``None``.
-                           Kept as a list because *N_gt* may differ across images
-                           even within a homogeneous-*N_pred* batch.
-        ``gt_visibility``  ``list[Tensor[N_gt_i, K]]`` length *B* or ``None``
-        ================== =================================================================
-
-    Raises
-    ------
-    RuntimeError
-        If the samples have inconsistent keypoint shapes (different *N*).
-    """
-    # Validate homogeneous N across samples
-    n_people_set = {s["keypoints"].shape[0] for s in batch}
-    if len(n_people_set) > 1:
-        raise RuntimeError(
-            "simple_collate expects all samples to have the same number of "
-            f"people, but found counts: {sorted(n_people_set)}.  "
-            "Use GroupedBatchSampler to ensure homogeneous batches."
-        )
-
-    has_bboxes = "bboxes" in batch[0]
-    has_gt = "gt_keypoints" in batch[0]
-    return {
-        "image_ids": [s["image_id"] for s in batch],
-        "img_paths": [s.get("img_path", "") for s in batch],
-        # (B, N_pred, K, 2)
-        "keypoints": torch.stack([s["keypoints"] for s in batch]),
-        # (B, N_pred, K)
-        "keypoint_scores": torch.stack([s["keypoint_scores"] for s in batch]),
-        # (B, N_pred, 4/5) or None
-        "bboxes": torch.stack([s["bboxes"] for s in batch]) if has_bboxes else None,
-        # (B, N_pred) or None
-        "bbox_scores": (
-            torch.stack([s["bbox_scores"] for s in batch]) if has_bboxes else None
-        ),
-        # list[Tensor[N_gt_i, K, 2]] or None  –  N_gt may differ per image
-        "gt_keypoints": [s["gt_keypoints"] for s in batch] if has_gt else None,
-        # list[Tensor[N_gt_i, K]] or None
-        "gt_visibility": [s["gt_visibility"] for s in batch] if has_gt else None,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +310,23 @@ def simple_collate(batch: list[dict[str, Any]]) -> dict[str, Any]:
 # 4=left_wrist     5=right_wrist     6=left_hip     7=right_hip
 # 8=left_knee      9=right_knee      10=left_ankle  11=right_ankle
 # 12=head          13=neck
+CROWDPOSE_JOINT_NAMES: dict[str, int] = {
+    "left_shoulder":  0,
+    "right_shoulder": 1,
+    "left_elbow":     2,
+    "right_elbow":    3,
+    "left_wrist":     4,
+    "right_wrist":    5,
+    "left_hip":       6,
+    "right_hip":      7,
+    "left_knee":      8,
+    "right_knee":     9,
+    "left_ankle":     10,
+    "right_ankle":    11,
+    "head":           12,
+    "neck":           13,
+}
+
 CROWDPOSE_EDGE_LIST: list[tuple[int, int]] = [
     (13, 0), (0, 2), (2, 4),   # left arm:   neck → shoulder → elbow → wrist
     (13, 1), (1, 3), (3, 5),   # right arm:  neck → shoulder → elbow → wrist
@@ -539,27 +336,62 @@ CROWDPOSE_EDGE_LIST: list[tuple[int, int]] = [
     (6, 7),                    # hips
 ]
 
+# Canonical pose graph: CrowdPose + virtual root node at index 0 (all original indices +1).
+# root = mean(left_hip, right_hip, neck); connected to those three joints.
+# 0=root  1=left_shoulder  2=right_shoulder  3=left_elbow   4=right_elbow
+# 5=left_wrist  6=right_wrist  7=left_hip  8=right_hip  9=left_knee
+# 10=right_knee  11=left_ankle  12=right_ankle  13=head  14=neck
+
+CANONICAL_POSE_GRAPH_JOINT_NAMES: dict[str, int] = {
+    "root":           0,   # virtual — mean of left_hip, right_hip, neck
+    "left_shoulder":  1,
+    "right_shoulder": 2,
+    "left_elbow":     3,
+    "right_elbow":    4,
+    "left_wrist":     5,
+    "right_wrist":    6,
+    "left_hip":       7,
+    "right_hip":      8,
+    "left_knee":      9,
+    "right_knee":     10,
+    "left_ankle":     11,
+    "right_ankle":    12,
+    "head":           13,
+    "neck":           14,
+}
+
+CANONICAL_POSE_GRAPH_EDGE_LIST: list[tuple[int, int]] = (
+    # All original CrowdPose edges, indices shifted by +1
+    [(u + 1, v + 1) for u, v in CROWDPOSE_EDGE_LIST]
+    + [
+        # Root connects to left_hip, right_hip, and neck
+        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["left_hip"]),
+        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["right_hip"]),
+        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["neck"]),
+    ]
+)
+
+
+def add_canonical_root_node(keypoints: Tensor) -> Tensor:
+    """Prepend a virtual root node (mean of left_hip, right_hip, neck) to a CrowdPose tensor.
+
+    (..., 14, 2) -> (..., 15, 2)
+    """
+    j = CROWDPOSE_JOINT_NAMES
+    root_pos = (
+        keypoints[..., j["left_hip"], :]
+        + keypoints[..., j["right_hip"], :]
+        + keypoints[..., j["neck"], :]
+    ) / 3.0                          # (..., 2)
+    root_pos = root_pos.unsqueeze(-2)  # (..., 1, 2)
+    return torch.cat([root_pos, keypoints], dim=-2)  # (..., 15, 2)
+
 
 def make_edge_index(
     edge_list: list[tuple[int, int]],
     make_undirected: bool = True,
 ) -> Tensor:
-    """Convert a list of ``(src, dst)`` keypoint-index pairs to a PyG edge index.
-
-    Parameters
-    ----------
-    edge_list:
-        List of ``(src, dst)`` tuples using 0-based keypoint indices.
-    make_undirected:
-        When ``True`` (default), each directed edge ``(u, v)`` is mirrored
-        with ``(v, u)`` so the resulting graph is undirected.
-
-    Returns
-    -------
-    Tensor
-        ``LongTensor[2, E]`` where ``E`` equals ``len(edge_list)`` when
-        ``make_undirected=False``, or ``2 * len(edge_list)`` otherwise.
-    """
+    """Convert [(src, dst), ...] to LongTensor[2, E]. Doubles edges if make_undirected=True."""
     if make_undirected:
         edge_list = edge_list + [(dst, src) for src, dst in edge_list]
     return torch.tensor(edge_list, dtype=torch.long).t().contiguous()
@@ -569,39 +401,21 @@ def create_graph_from_keypoints(
     edge_index: Tensor,
     keypoints: Tensor,
 ) -> dict[str, Tensor]:
-    """Build a PyG-compatible batched graph from a keypoints tensor.
+    """Pack B pose graphs into a single block-diagonal PyG graph.
 
-    All *B* pose graphs are packed into a single block-diagonal graph,
-    following the PyG mini-batch convention.  Node indices are laid out as::
+    node_idx[b, n, k] = b*N*K + n*K + k
 
-        node_idx[b, n, k] = b*N*K + n*K + k
+    Args:
+        edge_index  LongTensor[2, E]   – per-keypoint edges (indices in [0, K))
+        keypoints   FloatTensor[B, N, K, 2]
 
-    Parameters
-    ----------
-    edge_index:
-        ``LongTensor[2, E]`` – keypoint-level edge index (indices in
-        ``[0, K)``) as returned by :func:`make_edge_index`.
-    keypoints:
-        ``FloatTensor[B, N, K, 2]`` – ``(x, y)`` keypoint coordinates where
-        *B* is the batch size, *N* the number of people per image, and *K*
-        the number of keypoints per person.
-
-    Returns
-    -------
-    dict with the following keys:
-
-    ============= ============================================================
-    Key           Shape / description
-    ============= ============================================================
-    ``edge_index``  ``(2, B·N·E)`` – global edge index, pass to PyG conv layers
-    ``node_pos``    ``(B·N·K, 2)`` – flat node feature / position tensor
-    ``batch``       ``(B·N·K,)`` – PyG batch vector for pooling
-    ``batch_idx``   ``(B, N, K)`` – structured batch index; mask with
-                    ``batch_idx == b`` to select sample *b*
-    ``pose_idx``    ``(B, N, K)`` – structured pose index; mask with
-                    ``pose_idx == n`` to select person *n*
-    ``node_idx``    ``(B, N, K)`` – global flat node index for each ``(b,n,k)``
-    ============= ============================================================
+    Returns:
+        edge_index  (2, B*N*E)   – global block-diagonal edge index
+        node_pos    (B*N*K, 2)   – flat node positions
+        batch       (B*N*K,)     – PyG batch vector
+        batch_idx   (B, N, K)    – which sample each node belongs to
+        pose_idx    (B, N, K)    – which pose each node belongs to
+        node_idx    (B, N, K)    – global flat node index
     """
     B, N, K, _ = keypoints.shape
     device = keypoints.device
@@ -639,3 +453,60 @@ def create_graph_from_keypoints(
         "pose_idx":   pose_idx,         # (B, N, K)
         "node_idx":   node_idx,         # (B, N, K)
     }
+
+
+def prepare_pose_graph_batch(
+    keypoints: Tensor,
+    visibility: Tensor,
+    edge_index: Tensor | None = None,
+) -> dict[str, Tensor]:
+    """Build a canonical pose graph batch from raw CrowdPose keypoints.
+
+    Computes the root per (batch, person) using visible anchor joints
+    (left_hip, right_hip, neck); falls back to centroid of all visible joints.
+    Then calls create_graph_from_keypoints with the canonical edge index.
+
+    Args:
+        keypoints   FloatTensor[B, N, 14, 2]
+        visibility  FloatTensor[B, N, 14]    – 0=absent 1=occluded 2=visible
+        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
+
+    Returns: output of create_graph_from_keypoints, plus:
+        visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
+    """
+    if edge_index is None:
+        edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
+    ei = edge_index.to(keypoints.device)
+
+    j = CROWDPOSE_JOINT_NAMES
+    anchor_idx = torch.tensor(
+        [j["left_hip"], j["right_hip"], j["neck"]], device=keypoints.device
+    )  # (3,)
+
+    anchor_vis  = visibility[:, :, anchor_idx]          # (B, N, 3)
+    anchor_mask = anchor_vis > 0                        # (B, N, 3)
+    has_anchor  = anchor_mask.any(dim=2, keepdim=True)  # (B, N, 1)
+
+    # Mean of visible anchors; fallback to centroid of all visible joints
+    anchor_pos = keypoints[:, :, anchor_idx, :]                          # (B, N, 3, 2)
+    anchor_w   = anchor_mask.float().unsqueeze(-1)                       # (B, N, 3, 1)
+    root_from_anchors = (anchor_pos * anchor_w).sum(dim=2) / anchor_w.sum(dim=2).clamp(min=1)  # (B, N, 2)
+
+    all_mask      = (visibility > 0).float().unsqueeze(-1)               # (B, N, 14, 1)
+    root_from_all = (keypoints * all_mask).sum(dim=2) / all_mask.sum(dim=2).clamp(min=1)  # (B, N, 2)
+
+    root_pos = torch.where(has_anchor, root_from_anchors, root_from_all) # (B, N, 2)
+
+    # Root visibility: min of visible anchors, or 0 if none
+    root_vis = torch.where(
+        has_anchor.squeeze(2),                                            # (B, N)
+        anchor_vis.masked_fill(~anchor_mask, 2.0).min(dim=2).values,     # (B, N)
+        torch.zeros(keypoints.shape[:2], device=keypoints.device),       # (B, N)
+    )
+
+    canonical_kpts = torch.cat([root_pos.unsqueeze(2), keypoints], dim=2)  # (B, N, 15, 2)
+    canonical_vis  = torch.cat([root_vis.unsqueeze(2), visibility], dim=2) # (B, N, 15)
+
+    graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
+    graph["visibility"] = canonical_vis                      # (B, N, 15)
+    return graph

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 import random
 from typing import Any
@@ -13,12 +14,12 @@ from torch.utils.data import DataLoader
 
 from src.data import (
     CROWDPOSE_EDGE_LIST,
-    GroupedBatchSampler,
+    SceneGraphSampler,
+    PoseDataset,
     PredictionDataset,
     create_graph_from_keypoints,
     load_gt_annotations,
     make_edge_index,
-    simple_collate,
 )
 
 # ---------------------------------------------------------------------------
@@ -26,6 +27,20 @@ from src.data import (
 # ---------------------------------------------------------------------------
 
 NUM_KEYPOINTS = 14
+
+
+def _make_pose_samples(people_counts: list[int]) -> list[dict[str, Any]]:
+    """Return synthetic PoseDataset samples with the given per-image people counts."""
+    samples = []
+    for i, n in enumerate(people_counts):
+        rng = np.random.default_rng(seed=i)
+        samples.append({
+            "image_id":   i,
+            "img_path":   f"/fake/img_{i}.jpg",
+            "keypoints":  torch.from_numpy(rng.random((n, NUM_KEYPOINTS, 2)).astype(np.float32) * 640),
+            "visibility": torch.from_numpy(rng.integers(0, 3, (n, NUM_KEYPOINTS)).astype(np.float32)),
+        })
+    return samples
 
 
 def _make_predictions(
@@ -50,34 +65,28 @@ def _make_predictions(
 
 
 @pytest.fixture
-def dataset() -> PredictionDataset:
-    """12 images, 4 each for 1 / 2 / 3 people, with bboxes."""
+def dataset() -> PoseDataset:
+    """12 images, 4 each for 1 / 2 / 3 people."""
     counts = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
-    return PredictionDataset(
-        model_name="test-model",
-        architecture_type="top-down",
-        num_keypoints=NUM_KEYPOINTS,
-        predictions=_make_predictions(counts),
-    )
+    return PoseDataset(samples=_make_pose_samples(counts))
 
 
 def _make_gt_ann_json(image_ids: list[int], gt_counts: list[int], tmp_path) -> str:
     """Write a minimal COCO-style annotation JSON and return its path."""
-    import json
-
     annotations = []
     ann_id = 0
     for img_id, n_gt in zip(image_ids, gt_counts):
         rng = np.random.default_rng(seed=img_id)
         for _ in range(n_gt):
-            # flat [x, y, v, x, y, v, ...] for NUM_KEYPOINTS joints
             kpts_xy = (rng.random(NUM_KEYPOINTS * 2) * 640).tolist()
             vis = [2] * NUM_KEYPOINTS
             flat = []
             for k in range(NUM_KEYPOINTS):
                 flat += [kpts_xy[k * 2], kpts_xy[k * 2 + 1], vis[k]]
-            annotations.append({"id": ann_id, "image_id": img_id, "keypoints": flat,
-                                 "num_keypoints": NUM_KEYPOINTS, "category_id": 1})
+            annotations.append({
+                "id": ann_id, "image_id": img_id, "keypoints": flat,
+                "num_keypoints": NUM_KEYPOINTS, "category_id": 1,
+            })
             ann_id += 1
 
     data = {"images": [{"id": i} for i in image_ids], "annotations": annotations}
@@ -87,38 +96,38 @@ def _make_gt_ann_json(image_ids: list[int], gt_counts: list[int], tmp_path) -> s
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# PoseDataset tests
 # ---------------------------------------------------------------------------
 
 
-def test_dataset_getitem_shapes_and_keys(dataset):
+def test_pose_dataset_getitem_shapes_and_keys(dataset):
     """__getitem__ returns correct tensor shapes and all expected keys."""
     sample = dataset[4]  # an image with 2 people
-    assert set(sample.keys()) == {"image_id", "img_path", "keypoints", "keypoint_scores", "bboxes", "bbox_scores"}
+    assert set(sample.keys()) == {"image_id", "img_path", "keypoints", "visibility"}
     n = sample["keypoints"].shape[0]
     assert sample["keypoints"].shape == (n, NUM_KEYPOINTS, 2)
-    assert sample["keypoint_scores"].shape == (n, NUM_KEYPOINTS)
-    assert sample["bboxes"].shape == (n, 4)
-    assert sample["bbox_scores"].shape == (n,)
+    assert sample["visibility"].shape == (n, NUM_KEYPOINTS)
     assert sample["keypoints"].dtype == torch.float32
 
 
-def test_dataset_from_path_round_trip(tmp_path, dataset):
-    """from_path reconstructs an equivalent dataset from a pickle file."""
-    cache = tmp_path / "preds.pkl"
-    preds = _make_predictions([1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3])
-    payload = {"model_name": "m", "architecture_type": "top-down", "num_keypoints": NUM_KEYPOINTS, "predictions": preds}
-    cache.write_bytes(pickle.dumps(payload))
+def test_pose_dataset_from_path(tmp_path):
+    """from_path loads keypoints and visibility from a COCO annotation JSON."""
+    counts = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
+    ann_path = _make_gt_ann_json(list(range(12)), counts, tmp_path)
 
-    loaded = PredictionDataset.from_path(cache)
-    assert len(loaded) == len(dataset)
-    assert loaded.model_name == "m"
-    assert torch.allclose(loaded[0]["keypoints"], dataset[0]["keypoints"])
+    ds = PoseDataset.from_path(ann_path)
+    assert len(ds) == 12
+    by_id = {ds[i]["image_id"]: ds[i] for i in range(len(ds))}
+    for img_id, n in enumerate(counts):
+        s = by_id[img_id]
+        assert s["keypoints"].shape == (n, NUM_KEYPOINTS, 2)
+        assert s["visibility"].shape == (n, NUM_KEYPOINTS)
+        assert s["keypoints"].dtype == torch.float32
 
 
 def test_sampler_groups_and_covers_all_indices(dataset):
     """Sampler forms one group per unique N and yields every index exactly once."""
-    sampler = GroupedBatchSampler(dataset, batch_size=2, drop_last=False, shuffle=False)
+    sampler = SceneGraphSampler(dataset, batch_size=2, drop_last=False, shuffle=False)
     assert set(sampler.groups.keys()) == {1, 2, 3}
 
     seen = [idx for batch in sampler for idx in batch]
@@ -128,17 +137,17 @@ def test_sampler_groups_and_covers_all_indices(dataset):
 def test_sampler_drop_last(dataset):
     """drop_last=True discards partial batches; drop_last=False keeps them."""
     # 4 images per group, batch_size=3 → 1 full + 1 partial per group
-    full = GroupedBatchSampler(dataset, batch_size=3, drop_last=False, shuffle=False)
-    dropped = GroupedBatchSampler(dataset, batch_size=3, drop_last=True, shuffle=False)
-    assert len(list(full)) == 6      # 3 groups × 2 batches
+    full    = SceneGraphSampler(dataset, batch_size=3, drop_last=False, shuffle=False)
+    dropped = SceneGraphSampler(dataset, batch_size=3, drop_last=True,  shuffle=False)
+    assert len(list(full))    == 6   # 3 groups × 2 batches
     assert len(list(dropped)) == 3   # 3 groups × 1 full batch
 
 
 def test_sampler_shuffle_interleaves_groups(dataset):
     """Shuffled sampler interleaves batches from different groups; unshuffled does not."""
     random.seed(0)
-    shuffled = GroupedBatchSampler(dataset, batch_size=2, drop_last=False, shuffle=True)
-    unshuffled = GroupedBatchSampler(dataset, batch_size=2, drop_last=False, shuffle=False)
+    shuffled   = SceneGraphSampler(dataset, batch_size=2, drop_last=False, shuffle=True)
+    unshuffled = SceneGraphSampler(dataset, batch_size=2, drop_last=False, shuffle=False)
 
     def batch_n_values(sampler):
         """Return the sequence of N-people values for each yielded batch."""
@@ -154,52 +163,93 @@ def test_sampler_shuffle_interleaves_groups(dataset):
     assert ns_shuffled != sorted(ns_shuffled), "Shuffled should interleave groups"
 
     # But all indices must still be covered exactly once
-    seen = [idx for batch in GroupedBatchSampler(dataset, batch_size=2, drop_last=False, shuffle=True) for idx in batch]
+    seen = [idx for batch in SceneGraphSampler(dataset, batch_size=2, drop_last=False, shuffle=True) for idx in batch]
     assert sorted(seen) == list(range(len(dataset)))
 
 
-def test_collate_output_shapes_and_raises_on_heterogeneous_n(dataset):
-    """simple_collate stacks into (B, N, K, 2) and rejects mixed-N batches."""
-    # Normal case: uniform N
+def test_dataloader_collate_shapes(dataset):
+    """default_collate stacks uniform-N batches correctly; SceneGraphSampler ensures homogeneous N."""
+    import torch.utils.data
     batch = [dataset[i] for i in range(4, 8)]  # 4 images, each with 2 people
-    out = simple_collate(batch)
+    out = torch.utils.data.default_collate(batch)
     assert out["keypoints"].shape == (4, 2, NUM_KEYPOINTS, 2)
-    assert out["keypoint_scores"].shape == (4, 2, NUM_KEYPOINTS)
-    assert out["bboxes"].shape == (4, 2, 4)
-
-    # Edge case: mixed N should raise
-    with pytest.raises(RuntimeError, match="same number of people"):
-        simple_collate([dataset[0], dataset[4]])  # 1 person vs 2 people
+    assert out["visibility"].shape == (4, 2, NUM_KEYPOINTS)
+    assert isinstance(out["image_id"], torch.Tensor)  # int scalars get stacked
 
 
-def test_gt_keypoints_shapes_and_collate_as_list(tmp_path):
-    """GT keypoints land on each sample with correct shape; collated as a list."""
-    preds = _make_predictions([2, 2, 2, 2])          # 4 images, 2 predicted people each
-    gt_counts = [3, 1, 2, 0]                          # GT people count differs from predicted
+def test_create_dataloader_yields_homogeneous_batches(dataset):
+    """create_dataloader yields batches where every sample has the same N; all indices covered."""
+    loader = dataset.create_dataloader(batch_size=2, shuffle=False, drop_last=False)
 
-    ann_path = _make_gt_ann_json(list(range(4)), gt_counts, tmp_path)
-    gt = load_gt_annotations(ann_path)
+    all_image_ids = []
+    for batch in loader:
+        # Every batch must have shape (B, N, K, 2) with a consistent N across the batch
+        kpts = batch["keypoints"]          # (B, N, K, 2)
+        vis  = batch["visibility"]         # (B, N, K)
+        B = kpts.shape[0]
+        assert kpts.ndim == 4 and kpts.shape[2] == NUM_KEYPOINTS
+        assert vis.shape == (B, kpts.shape[1], NUM_KEYPOINTS)
+        all_image_ids.extend(batch["image_id"].tolist())
 
+    # Every sample in the dataset must appear exactly once
+    assert sorted(all_image_ids) == list(range(len(dataset)))
+
+
+# ---------------------------------------------------------------------------
+# PredictionDataset tests
+# ---------------------------------------------------------------------------
+
+
+def test_prediction_dataset_getitem():
+    """__getitem__ returns pred_* keys; GT keys absent when no annotations are loaded."""
+    preds = _make_predictions([2, 2])
     ds = PredictionDataset(
         model_name="m", architecture_type="top-down",
         num_keypoints=NUM_KEYPOINTS, predictions=preds,
-        gt_by_image_id=gt,
     )
-    assert ds.has_gt is True
+    s = ds[0]
+    assert set(s.keys()) == {"image_id", "img_path", "pred_keypoints", "pred_keypoint_scores", "bboxes", "bbox_scores"}
+    assert s["pred_keypoints"].shape == (2, NUM_KEYPOINTS, 2)
+    assert s["pred_keypoint_scores"].shape == (2, NUM_KEYPOINTS)
+    assert "keypoints" not in s and "visibility" not in s
 
-    # Per-sample shapes
+def test_prediction_dataset_from_path_with_gt(tmp_path):
+    """from_path loads predictions from pickle; GT accessible via get_gt() when ann_path given."""
+    gt_counts = [3, 1, 2, 0]
+    preds = _make_predictions([2, 2, 2, 2])
+    payload = {
+        "model_name": "resnet", "architecture_type": "top-down",
+        "num_keypoints": NUM_KEYPOINTS, "predictions": preds,
+    }
+    pkl_path = tmp_path / "preds.pkl"
+    pkl_path.write_bytes(pickle.dumps(payload))
+    ann_path = _make_gt_ann_json(list(range(4)), gt_counts, tmp_path)
+
+    ds = PredictionDataset.from_path(pkl_path, ann_path=ann_path)
+    assert ds.model_name == "resnet" and ds.has_gt
+
+    # GT is not in __getitem__ – accessed separately via get_gt()
     for i, n_gt in enumerate(gt_counts):
         s = ds[i]
-        assert "gt_keypoints" in s and "gt_visibility" in s
-        assert s["gt_keypoints"].shape == (n_gt, NUM_KEYPOINTS, 2)
-        assert s["gt_visibility"].shape == (n_gt, NUM_KEYPOINTS)
+        assert "keypoints" not in s and "visibility" not in s
+        gt = ds.get_gt(s["image_id"])
+        assert gt is not None
+        assert gt["keypoints"].shape  == (n_gt, NUM_KEYPOINTS, 2)
+        assert gt["visibility"].shape == (n_gt, NUM_KEYPOINTS)
 
-    # Collated: GT stays as a list (ragged N_gt)
+    # get_gt returns None when no annotations were loaded
+    ds_no_gt = PredictionDataset(
+        model_name="m", architecture_type="top-down",
+        num_keypoints=NUM_KEYPOINTS, predictions=preds,
+    )
+    assert ds_no_gt.get_gt(0) is None
+
+    # Batches are collatable with default_collate because all pred tensors are uniform
+    import torch.utils.data
+    sampler = SceneGraphSampler(ds, batch_size=4, group_key="pred_keypoints")
     batch = [ds[i] for i in range(4)]
-    out = simple_collate(batch)
-    assert isinstance(out["gt_keypoints"], list) and len(out["gt_keypoints"]) == 4
-    assert isinstance(out["gt_visibility"], list) and len(out["gt_visibility"]) == 4
-    assert out["gt_keypoints"][0].shape == (gt_counts[0], NUM_KEYPOINTS, 2)
+    out = torch.utils.data.default_collate(batch)
+    assert out["pred_keypoints"].shape == (4, 2, NUM_KEYPOINTS, 2)
 
 
 # ---------------------------------------------------------------------------
