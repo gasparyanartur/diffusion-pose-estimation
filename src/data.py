@@ -410,12 +410,13 @@ def create_graph_from_keypoints(
         keypoints   FloatTensor[B, N, K, 2]
 
     Returns:
-        edge_index  (2, B*N*E)   – global block-diagonal edge index
-        node_pos    (B*N*K, 2)   – flat node positions
-        batch       (B*N*K,)     – PyG batch vector
-        batch_idx   (B, N, K)    – which sample each node belongs to
-        pose_idx    (B, N, K)    – which pose each node belongs to
-        node_idx    (B, N, K)    – global flat node index
+        edge_index    (2, B*N*E)   – global block-diagonal edge index
+        node_pos      (B*N*K, 2)   – flat node positions
+        batch         (B*N*K,)     – PyG batch vector
+        batch_idx     (B, N, K)    – which sample each node belongs to
+        pose_idx      (B, N, K)    – which pose (person) each node belongs to (0..N-1)
+        kpt_type_idx  (B, N, K)    – keypoint type per node (0..K-1); use this for type embeddings
+        node_idx      (B, N, K)    – global flat node index
     """
     B, N, K, _ = keypoints.shape
     device = keypoints.device
@@ -432,8 +433,9 @@ def create_graph_from_keypoints(
     )  # (B, N, K)
 
     # Structured index tensors for masked selection
-    batch_idx = torch.arange(B, device=device).view(B, 1, 1).expand(B, N, K)  # (B, N, K)
-    pose_idx  = torch.arange(N, device=device).view(1, N, 1).expand(B, N, K)  # (B, N, K)
+    batch_idx    = torch.arange(B, device=device).view(B, 1, 1).expand(B, N, K)  # (B, N, K)
+    pose_idx     = torch.arange(N, device=device).view(1, N, 1).expand(B, N, K)  # (B, N, K)
+    kpt_type_idx = kpt_offset             .view(1, 1, K).expand(B, N, K)  # (B, N, K) values in [0, K-1]
 
     # Build flat block-diagonal edge index
     global_edge_from = node_idx[..., edge_index[0]].reshape(-1)  # (B*N*E,)
@@ -446,12 +448,13 @@ def create_graph_from_keypoints(
     node_pos = keypoints.reshape(B * N * K, 2)  # (B*N*K, 2)
 
     return {
-        "edge_index": flat_edge_index,  # (2, B*N*E)
-        "node_pos":   node_pos,         # (B*N*K, 2)
-        "batch":      batch_vec,        # (B*N*K,)
-        "batch_idx":  batch_idx,        # (B, N, K)
-        "pose_idx":   pose_idx,         # (B, N, K)
-        "node_idx":   node_idx,         # (B, N, K)
+        "edge_index":   flat_edge_index,  # (2, B*N*E)
+        "node_pos":     node_pos,         # (B*N*K, 2)
+        "batch":        batch_vec,        # (B*N*K,)
+        "batch_idx":    batch_idx,        # (B, N, K)
+        "pose_idx":     pose_idx,         # (B, N, K)
+        "kpt_type_idx": kpt_type_idx,     # (B, N, K)
+        "node_idx":     node_idx,         # (B, N, K)
     }
 
 
@@ -525,4 +528,6 @@ def prepare_pose_graph_batch(
 
     graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
     graph["visibility"] = canonical_vis                      # (B, N, 15)
+    graph["root_pos"]   = root_pos                           # (B, N, 2)  pixel-space root anchor
+    graph["scale"]      = scale                              # (B,)        normalisation divisor
     return graph

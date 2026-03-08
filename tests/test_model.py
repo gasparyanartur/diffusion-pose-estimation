@@ -82,7 +82,7 @@ def config() -> KeypointDiffusionConfig:
         dim_bone=16,
         dim_hidden=16,
         num_layers=2,
-        num_train_timesteps=50,
+        num_train_steps=50,
     )
 
 
@@ -148,7 +148,7 @@ class TestAddNoise:
         B, N, K = 3, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.rand(B * N * K, 2)
         batch_idx = torch.arange(B).repeat_interleave(N * K)
-        timestep = torch.randint(0, model.config.num_train_timesteps, (B,))
+        timestep = torch.randint(0, model.config.num_train_steps, (B,))
 
         noisy, noise = model.add_noise(node_pos, timestep, batch_idx)
 
@@ -156,7 +156,12 @@ class TestAddNoise:
         assert noise.shape == node_pos.shape, "noise shape mismatch"
 
     def test_zero_timestep_leaves_positions_unchanged(self, model):
-        """At t=0 the noise level is 0, so noisy positions should equal clean positions."""
+        """At t=0 sqrt(1-alpha_bar)=0, so noisy positions must equal clean positions.
+
+        The returned ``noise`` tensor is the raw Gaussian epsilon (VP convention)
+        and is NOT zero at t=0; only the *noise contribution to the noisy
+        positions* (b * epsilon, b=0) is zero.
+        """
         B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.rand(B * N * K, 2)
         batch_idx = torch.arange(B).repeat_interleave(N * K)
@@ -165,12 +170,13 @@ class TestAddNoise:
         noisy, noise = model.add_noise(node_pos, timestep, batch_idx)
 
         assert torch.allclose(noisy, node_pos, atol=1e-6), \
-            "Zero timestep should add no noise"
-        assert torch.allclose(noise, torch.zeros_like(noise), atol=1e-6)
+            "Zero timestep should add no noise to the positions (b=0 in VP schedule)"
+        # noise is raw epsilon (std~1), not the scaled contribution
+        assert noise.shape == node_pos.shape
 
     def test_max_timestep_adds_full_noise(self, model):
         """At t=T the noise level is 1, so |noise| should be approximately std(randn)."""
-        T = model.config.num_train_timesteps
+        T = model.config.num_train_steps
         B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.zeros(B * N * K, 2)
         batch_idx = torch.arange(B).repeat_interleave(N * K)
@@ -182,18 +188,25 @@ class TestAddNoise:
         assert noise.abs().mean().item() > 0.1, "Max timestep should add meaningful noise"
 
     def test_noise_scales_with_timestep(self, model):
-        """Higher timesteps should produce larger expected noise magnitude."""
+        """Higher timesteps produce larger deviation from the clean positions.
+
+        In the VP schedule ``x_t = sqrt(ab_t)*x0 + sqrt(1-ab_t)*eps``, the
+        noise contribution ``sqrt(1-ab_t)*eps`` grows with t, so
+        ``(noisy_high - x0).abs()`` > ``(noisy_low - x0).abs()``.
+        The raw returned epsilon is the same for both calls (same seed), so
+        comparing ``noise_high`` vs ``noise_low`` would give equality.
+        """
         B, N, K = 4, N_POSES, NUM_KEYPOINTS_CANONICAL
-        node_pos = torch.zeros(B * N * K, 2)
+        node_pos = torch.zeros(B * N * K, 2)  # x0 = 0, so noisy == noise contribution
         batch_idx = torch.arange(B).repeat_interleave(N * K)
 
         torch.manual_seed(0)
-        _, noise_low = model.add_noise(node_pos, torch.full((B,), 10, dtype=torch.long), batch_idx)
+        noisy_low, _ = model.add_noise(node_pos, torch.full((B,), 10, dtype=torch.long), batch_idx)
         torch.manual_seed(0)
-        _, noise_high = model.add_noise(node_pos, torch.full((B,), 40, dtype=torch.long), batch_idx)
+        noisy_high, _ = model.add_noise(node_pos, torch.full((B,), 40, dtype=torch.long), batch_idx)
 
-        assert noise_high.abs().mean() > noise_low.abs().mean(), \
-            "Higher timestep should produce larger noise"
+        assert noisy_high.abs().mean() > noisy_low.abs().mean(), \
+            "Higher timestep should produce larger deviation from clean positions"
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +231,12 @@ class TestBackwardProcess:
 
         node_pos = g["node_pos"]
         batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_timesteps, (B,))
+        timestep = torch.randint(0, model.config.num_train_steps, (B,))
 
         pred = model.backward_process(
             noisy_node_pos=node_pos,
             edge_index=g["edge_index"],
-            node_idx=g["pose_idx"].reshape(-1),
+            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
             batch_idx=batch_idx,
             timestep=timestep,
         )
@@ -233,12 +246,12 @@ class TestBackwardProcess:
         B, N = 2, N_POSES
         g = self._make_graph(B, N)
         batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_timesteps, (B,))
+        timestep = torch.randint(0, model.config.num_train_steps, (B,))
 
         pred = model.backward_process(
             noisy_node_pos=g["node_pos"],
             edge_index=g["edge_index"],
-            node_idx=g["pose_idx"].reshape(-1),
+            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
             batch_idx=batch_idx,
             timestep=timestep,
         )
@@ -249,12 +262,12 @@ class TestBackwardProcess:
         B, N = 2, N_POSES
         g = self._make_graph(B, N)
         batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_timesteps, (B,))
+        timestep = torch.randint(0, model.config.num_train_steps, (B,))
 
         pred = model.backward_process(
             noisy_node_pos=g["node_pos"],
             edge_index=g["edge_index"],
-            node_idx=g["pose_idx"].reshape(-1),
+            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
             batch_idx=batch_idx,
             timestep=timestep,
         )
@@ -320,9 +333,9 @@ class TestPoseDiffusionModule:
             f"Loss did not decrease over 5 steps: {losses}"
         )
 
-    def test_configure_optimizers_returns_adam(self, module):
+    def test_configure_optimizers_returns_adamw(self, module):
         opt = module.configure_optimizers()
-        assert isinstance(opt, torch.optim.Adam)
+        assert isinstance(opt, torch.optim.AdamW)
 
     def test_training_step_different_n_poses(self, config):
         """Module handles batches with a different number of people per image."""
