@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "name",
         metavar="NAME",
+        nargs = "?",
         help=f"Registered config name (default.  Use --list to see all.",
     )
     p.add_argument(
