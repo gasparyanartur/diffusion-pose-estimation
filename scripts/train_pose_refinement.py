@@ -197,6 +197,50 @@ def parse_args() -> argparse.Namespace:
         help="Stop training when val_loss does not improve for N epochs.  0 = disabled (default).",
     )
 
+    # --- DINO image conditioning ---
+    dino = p.add_argument_group("DINO image conditioning")
+    dino.add_argument(
+        "--dino-model-name",
+        default=None,
+        metavar="MODEL",
+        help=(
+            "HuggingFace model ID for the DINO backbone, e.g. "
+            "'facebook/dinov3-vits16-pretrain-lvd1689m'.  "
+            "When set, enables image conditioning (use_image_cond=True)."
+        ),
+    )
+    dino.add_argument(
+        "--dino-cache-train",
+        type=Path,
+        default=None,
+        metavar="PT",
+        help=(
+            "Precomputed DINO patch-feature cache for the training split, "
+            "produced by scripts/precompute_dino.py.  "
+            "When omitted, the backbone is run live (slow)."
+        ),
+    )
+    dino.add_argument(
+        "--dino-cache-val",
+        type=Path,
+        default=None,
+        metavar="PT",
+        help="Same as --dino-cache-train but for the validation / test split.",
+    )
+    dino.add_argument(
+        "--dim-image-cond",
+        type=int,
+        default=128,
+        help="Projected DINO feature dim per node when conditioning is enabled (default: %(default)s).",
+    )
+    dino.add_argument(
+        "--dino-neighborhood-radius",
+        type=int,
+        default=1,
+        metavar="R",
+        help="Half-width of the patch neighbourhood (r=1 → 3×3 = 9 patches; default: %(default)s).",
+    )
+
     # --- Hardware ---
     hw = p.add_argument_group("hardware")
     hw.add_argument("--accelerator", default="auto",    help="Lightning accelerator: auto|gpu|cpu (default: %(default)s).")
@@ -357,6 +401,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
+    use_image_cond = args.dino_model_name is not None
     model_config = KeypointDiffusionConfig(
         name=run_name,
         dim_pos=args.dim_pos,
@@ -366,11 +411,18 @@ def main() -> None:
         dim_hidden=args.dim_hidden,
         num_layers=args.num_layers,
         num_train_steps=args.num_train_steps,
+        use_image_cond=use_image_cond,
+        dim_image_cond=args.dim_image_cond,
     )
     model = KeypointDiffusionModel(config=model_config, num_keypoints=15)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info("%s  —  %s trainable parameters", type(model).__name__, f"{n_params:,}")
+    if use_image_cond:
+        log.info("Image conditioning: DINO model=%s  dim=%d  radius=%d",
+                 args.dino_model_name, args.dim_image_cond, args.dino_neighborhood_radius)
+        log.info("  train cache: %s", args.dino_cache_train or "(live backbone)")
+        log.info("  val/test cache: %s", args.dino_cache_val or "(live backbone)")
 
     module = PoseDiffusionModule(
         model=model,
@@ -385,6 +437,10 @@ def main() -> None:
         inference_noise_frac=args.inference_noise_frac,
         ap_batch_size=args.ap_batch_size,
         ap_eval_interval=args.ap_eval_interval,
+        dino_model_name=args.dino_model_name,
+        dino_neighborhood_radius=args.dino_neighborhood_radius,
+        dino_cache_train=str(args.dino_cache_train)  if args.dino_cache_train  else None,
+        dino_cache_val=str(args.dino_cache_val)    if args.dino_cache_val    else None,
     )
 
     # ------------------------------------------------------------------

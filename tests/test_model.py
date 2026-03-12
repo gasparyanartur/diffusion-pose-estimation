@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -17,6 +18,7 @@ from src.data import (
     PoseDataset,
 )
 from src.model import (
+    DinoConditioner,
     KeypointDiffusionConfig,
     KeypointDiffusionModel,
     PoseDiffusionModule,
@@ -345,3 +347,132 @@ class TestPoseDiffusionModule:
             batch = _make_batch(B=2, N=n_poses)
             loss = module.training_step(batch, batch_idx=0)
             assert torch.isfinite(loss), f"Non-finite loss with N={n_poses}"
+
+
+# ---------------------------------------------------------------------------
+# Image conditioning (DinoConditioner + conditioned backward_process)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_dino(dim: int):
+    """Return a callable that mimics DinoConditioner output without a real backbone."""
+    mock = MagicMock(spec=DinoConditioner)
+    mock.to.return_value = mock
+    mock._patch_cache = None   # signal: no cache loaded
+
+    def _call(kpt_pixel, img_hw, image_ids=None, pil_images=None):
+        b_, n_, k_, _ = kpt_pixel.shape   # k_ == 14
+        return torch.zeros(b_, n_, k_, dim)
+
+    mock.side_effect = _call
+    return mock
+
+
+class TestImageConditioning:
+    @pytest.fixture
+    def cond_config(self) -> KeypointDiffusionConfig:
+        return KeypointDiffusionConfig(
+            dim_pos=16, dim_index=16, dim_time=16, dim_bone=16,
+            dim_hidden=16, num_layers=2, num_train_steps=10,
+            use_image_cond=True, dim_image_cond=8,
+        )
+
+    def test_gather_neighborhood_picks_correct_patch(self):
+        """Each keypoint should retrieve the patch whose grid cell the pixel falls in.
+
+        Setup: 64×64 image, patch_size=16 → 4×4 grid (G=4).
+        Give every patch a unique fingerprint vector (patch index embedded in dim 0).
+        Place keypoints exactly at patch centres and verify the returned embedding
+        matches that specific patch's fingerprint.
+        """
+        from unittest.mock import MagicMock
+
+        G, D, patch = 4, 16, 16
+        image_size = G * patch  # 64
+
+        # Build a DinoConditioner stub (no real backbone needed)
+        c = object.__new__(DinoConditioner)
+        torch.nn.Module.__init__(c)
+        c.patch_size = patch
+        c.image_size = image_size
+        c.neighborhood_radius = 0   # r=0: only the centre patch, no pooling
+        c.grid_size = G
+        c.proj = torch.nn.Linear(D, D)
+
+        # Patch features: patch p has a unique fingerprint (p+1) in slot p%D
+        patch_feats = torch.zeros(1, G * G, D)
+        for p in range(G * G):
+            patch_feats[0, p, p % D] = float(p + 1)
+
+        # Place one keypoint at the centre of each patch, in an image the same
+        # size as the DINO input (so no rescaling needed)
+        num_kp = G * G
+        centres_x = torch.tensor([(cx + 0.5) * patch for cy in range(G) for cx in range(G)])
+        centres_y = torch.tensor([(cy + 0.5) * patch for cy in range(G) for cx in range(G)])
+        kpt_pixel = torch.stack([centres_x, centres_y], dim=-1).view(1, 1, num_kp, 2)
+        img_hw = torch.tensor([[float(image_size), float(image_size)]])
+
+        result = c._gather_neighborhood(patch_feats, kpt_pixel, img_hw)  # (1,1,16,D)
+
+        for p in range(G * G):
+            expected = patch_feats[0, p]
+            assert torch.allclose(result[0, 0, p], expected), \
+                f"Keypoint {p} should retrieve patch {p}, got {result[0,0,p]} vs {expected}"
+
+    def test_backward_process_accepts_image_cond(self, cond_config):
+        """backward_process runs without error when image_cond is supplied."""
+        model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        prepare_pose_graph_batch(batch)
+
+        image_cond = torch.zeros(BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, 8)
+        t = torch.ones(BATCH_SIZE, dtype=torch.long)
+        pred = model.backward_process(
+            noisy_node_pos=batch["node_pos"],
+            edge_index=batch["edge_index"],
+            kpt_type_idx=batch["kpt_type_idx"].reshape(-1),
+            batch_idx=batch["batch"],
+            timestep=t,
+            image_cond=image_cond,
+        )
+        assert pred.shape == (BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, 2)
+
+    def test_prepare_batch_adds_image_cond(self, cond_config):
+        """prepare_batch populates image_cond with the right node count."""
+        from unittest.mock import patch
+        from PIL.Image import Image as PILImage
+
+        model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        module.dino_conditioner = _make_mock_dino(8)
+
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
+        mock_img = MagicMock()
+        mock_img.height, mock_img.width = 480, 640
+        mock_img.convert.return_value = mock_img
+        with patch("src.model.Image.open", return_value=mock_img):
+            module.prepare_batch(batch)
+
+        expected_nodes = BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL
+        assert "image_cond" in batch
+        assert batch["image_cond"].shape == (expected_nodes, 8)
+
+    def test_training_step_with_image_cond(self, cond_config):
+        """End-to-end training step with mock DINO produces a finite loss."""
+        from unittest.mock import patch
+
+        model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        module.dino_conditioner = _make_mock_dino(8)
+
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
+        mock_img = MagicMock()
+        mock_img.height, mock_img.width = 480, 640
+        mock_img.convert.return_value = mock_img
+        with patch("src.model.Image.open", return_value=mock_img):
+            loss = module.training_step(batch, batch_idx=0)
+
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
