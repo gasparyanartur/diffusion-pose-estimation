@@ -254,14 +254,15 @@ class PoseDiffusionModule(pl.LightningModule):
         K    = 15  # canonical keypoints (14 + virtual root)
 
         # Score-based visibility proxy (consistent with training threshold)
-        visibility = (pred_scores > 0.1).float()  # (B, N, 14)
+        batch["keypoints"]  = pred_kpts
+        batch["visibility"] = (pred_scores > 0.1).float()  # (B, N, 14)
 
         # Convert predictions to canonical space (root-relative, normalised)
-        graph = prepare_pose_graph_batch(pred_kpts, visibility)
+        prepare_pose_graph_batch(batch)
 
-        edge_index  = graph["edge_index"]                 # (2, B*N*E)
-        node_idx    = graph["kpt_type_idx"].reshape(-1)   # (B*N*K,) values in [0, K-1]
-        batch_index = graph["batch"]                      # (B*N*K,)
+        edge_index  = batch["edge_index"]                 # (2, B*N*E)
+        node_idx    = batch["kpt_type_idx"].reshape(-1)   # (B*N*K,) values in [0, K-1]
+        batch_index = batch["batch"]                      # (B*N*K,)
         num_nodes   = B * N * K
 
         T       = self.model.config.num_train_steps
@@ -275,7 +276,7 @@ class PoseDiffusionModule(pl.LightningModule):
         # predictions → AP never collapses to 0 solely due to inference setup.
         t_vec = torch.full((B,), t_start, dtype=torch.long, device=pred_kpts.device)
         x_init_noisy, _ = self.model.add_noise(
-            node_pos=graph["node_pos"],
+            node_pos=batch["node_pos"],
             timestep=t_vec,
             batch_idx=batch_index,
         )  # (B*N*K, 2)
@@ -293,10 +294,9 @@ class PoseDiffusionModule(pl.LightningModule):
             x_init=x_init_noisy,
         )  # (B*N*K, 2)
 
-        # Convert back to pixel space using the root and scale from the graph
+        # Convert back to pixel space using the root and scale from the batch
         pred_canonical = pred_flat.view(B, N, K, 2)
-        root_pos   = graph["root_pos"]
-        pred_pixel = canonical_to_pixel(pred_canonical, root_pos, scale=graph["scale"])
+        pred_pixel = canonical_to_pixel(pred_canonical, batch["root_pos"], scale=batch["scale"])
 
         return pred_pixel, pred_scores, image_ids
 
@@ -321,19 +321,18 @@ class PoseDiffusionModule(pl.LightningModule):
 
     def _step(self, batch: dict, stage: str) -> Tensor:
         keypoints = batch["keypoints"]   # (B, N, 14, 2) pixel space
-        visibility = batch["visibility"] # (B, N, 14)
 
-        pose_graph_batch = prepare_pose_graph_batch(keypoints, visibility)
+        prepare_pose_graph_batch(batch)
 
         B, N = keypoints.shape[:2]
         K = 15  # canonical nodes: 14 joints + 1 virtual root
 
-        node_pos    = pose_graph_batch["node_pos"]                   # (B*N*K, 2) canonical
-        node_index  = pose_graph_batch["kpt_type_idx"].reshape(-1)   # (B*N*K,) values in [0, K-1]
-        batch_index = pose_graph_batch["batch"]                      # (B*N*K,)
-        edge_index  = pose_graph_batch["edge_index"]                 # (2, B*N*E)
-        root_pos    = pose_graph_batch["root_pos"]                   # (B, N, 2) pixel-space root
-        scale       = pose_graph_batch["scale"]                      # (B,) normalisation divisor
+        node_pos    = batch["node_pos"]                   # (B*N*K, 2) canonical
+        node_index  = batch["kpt_type_idx"].reshape(-1)   # (B*N*K,) values in [0, K-1]
+        batch_index = batch["batch"]                      # (B*N*K,)
+        edge_index  = batch["edge_index"]                 # (2, B*N*E)
+        root_pos    = batch["root_pos"]                   # (B, N, 2) pixel-space root
+        scale       = batch["scale"]                      # (B,) normalisation divisor
 
         timestep = torch.randint(
             1,

@@ -222,7 +222,7 @@ class TestBackwardProcess:
         vis = torch.ones(B, N, NUM_KEYPOINTS_CROWDPOSE)
         # Use raw CrowdPose keypoints for prepare_pose_graph_batch (expects 14 kp)
         raw_kpts = kpts[:, :, :NUM_KEYPOINTS_CROWDPOSE, :]
-        return prepare_pose_graph_batch(raw_kpts, vis)
+        return prepare_pose_graph_batch({"keypoints": raw_kpts, "visibility": vis})
 
     def test_output_shape(self, model):
         B, N = 3, N_POSES

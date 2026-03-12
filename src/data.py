@@ -418,28 +418,34 @@ def create_graph_from_keypoints(
 
 
 def prepare_pose_graph_batch(
-    keypoints: Tensor,
-    visibility: Tensor,
+    batch: dict,
     edge_index: Tensor | None = None,
-    img_size: Tensor | None = None, 
-) -> dict[str, Tensor]:
+    img_size: Tensor | None = None,
+) -> dict:
     """Build a canonical pose graph batch from raw CrowdPose keypoints.
+
+    Reads ``batch["keypoints"]`` and ``batch["visibility"]``, computes the
+    canonical graph representation, and updates *batch* in-place with all
+    graph fields.  Returns *batch* for convenience.
 
     Computes the root per (batch, person) using visible anchor joints
     (left_hip, right_hip, neck); falls back to centroid of all visible joints.
     Keypoints are then made root-relative and normalised by max(W, H)
-    (or 100 if img_size is not provided).
+    (or 800 if img_size is not provided).
 
     Args:
-        keypoints   FloatTensor[B, N, 14, 2]
-        visibility  FloatTensor[B, N, 14]    – 0=absent 1=occluded 2=visible
+        batch       dict with at least:
+                      keypoints   FloatTensor[B, N, 14, 2]
+                      visibility  FloatTensor[B, N, 14]  – 0=absent 1=occluded 2=visible
         edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
         img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
 
-    Returns: output of create_graph_from_keypoints, plus:
+    Returns: *batch* updated in-place with the output of create_graph_from_keypoints, plus:
         visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
         node_pos coordinates are root-relative and divided by max(W, H)
     """
+    keypoints  = batch["keypoints"]
+    visibility = batch["visibility"]
     if edge_index is None:
         edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
     ei = edge_index.to(keypoints.device)
@@ -486,7 +492,8 @@ def prepare_pose_graph_batch(
     canonical_kpts = canonical_kpts / scale.view(B, 1, 1, 1)
 
     graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
-    graph["visibility"] = canonical_vis                      # (B, N, 15)
-    graph["root_pos"]   = root_pos                           # (B, N, 2)  pixel-space root anchor
-    graph["scale"]      = scale                              # (B,)        normalisation divisor
-    return graph
+    graph["canonical_visibility"] = canonical_vis             # (B, N, 15)
+    graph["root_pos"]             = root_pos                  # (B, N, 2)  pixel-space root anchor
+    graph["scale"]                = scale                     # (B,)        normalisation divisor
+    batch.update(graph)
+    return batch

@@ -63,7 +63,7 @@ class TestCanonicalToPixel:
         kpts = _rand_pixel_kpts(B, N)
         vis  = _ones_vis(B, N)
 
-        graph     = prepare_pose_graph_batch(kpts, vis)
+        graph     = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
         canonical = graph["node_pos"].view(B, N, NUM_KP_CANONICAL, 2)  # (B, N, 15, 2)
         recovered = canonical_to_pixel(canonical, graph["root_pos"], scale=graph["scale"])
 
@@ -142,7 +142,7 @@ class TestCanonicalToPixel:
         kpts = _rand_pixel_kpts(B, N)
         vis  = (torch.rand(B, N, NUM_KP) > 0.4).float()  # ~60 % visible
 
-        graph     = prepare_pose_graph_batch(kpts, vis)
+        graph     = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
         canonical = graph["node_pos"].view(B, N, NUM_KP_CANONICAL, 2)
         recovered = canonical_to_pixel(canonical, graph["root_pos"], scale=graph["scale"])
 
@@ -479,7 +479,7 @@ class TestKeypointAPMetricIntegration:
             m_raw.update(pred_kpts, pred_scores, batch["image_id"])
 
             # Canonical roundtrip (simulate a perfect delta=0 model)
-            g = prepare_pose_graph_batch(pred_kpts, vis)
+            g = prepare_pose_graph_batch({"keypoints": pred_kpts, "visibility": vis})
             B2, N2 = pred_kpts.shape[:2]
             canonical = g["node_pos"].view(B2, N2, 15, 2)
             recovered = canonical_to_pixel(canonical, g["root_pos"], scale=g["scale"])

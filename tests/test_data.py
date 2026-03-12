@@ -356,11 +356,11 @@ def test_prepare_pose_graph_batch():
     vis  = torch.randint(0, 3, (B, N, K)).float()
 
     # --- without img_size: scale factor is 100 ---
-    g = prepare_pose_graph_batch(kpts, vis)
+    g = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
 
     # Output shapes
-    assert g["node_pos"].shape   == (B * N * 15, 2)
-    assert g["visibility"].shape == (B, N, 15)
+    assert g["node_pos"].shape              == (B * N * 15, 2)
+    assert g["canonical_visibility"].shape  == (B, N, 15)
 
     # Root node (index 0 per pose) must be exactly (0, 0) after root-relative shift
     node_pos = g["node_pos"].view(B, N, 15, 2)
@@ -372,7 +372,7 @@ def test_prepare_pose_graph_batch():
 
     # --- with img_size: scale factor is max(W, H) per image ---
     img_size = torch.tensor([[640.0, 480.0], [320.0, 240.0]])
-    g2 = prepare_pose_graph_batch(kpts, vis, img_size=img_size)
+    g2 = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis}, img_size=img_size)
 
     # Root still at origin
     node_pos2 = g2["node_pos"].view(B, N, 15, 2)
