@@ -23,6 +23,12 @@ from src.model import (
     KeypointDiffusionModel,
     PoseDiffusionModule,
     TimestepSinusoidalEmbedding,
+    compute_bone_loss,
+    compute_joint_loss,
+    image_dropout,
+    joint_dropout,
+    keypoint_jitter,
+    pose_dropout,
 )
 
 # ---------------------------------------------------------------------------
@@ -476,3 +482,178 @@ class TestImageConditioning:
 
         assert loss.ndim == 0
         assert torch.isfinite(loss)
+
+
+# ---------------------------------------------------------------------------
+# Standalone augmentation functions
+# ---------------------------------------------------------------------------
+
+
+class TestAugmentations:
+    """Tests for the four standalone augmentation functions."""
+
+    # --- joint_dropout ---
+
+    def test_joint_dropout_p1_zeroes_non_root_preserves_root(self):
+        """p=1 zeros every non-root joint and marks it absent; root survives."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.ones(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K)
+        new_vis  = joint_dropout(node_pos, can_vis, p=1.0)
+        pos_grid = node_pos.view(B, N, K, 2)
+        assert (pos_grid[:, :, 0, :] == 1.0).all(),   "Root position must not be zeroed"
+        assert (pos_grid[:, :, 1:, :] == 0.0).all(),  "Non-root positions should be zeroed"
+        assert (new_vis[:, :, 0] == 1.0).all(),        "Root visibility must not be zeroed"
+        assert (new_vis[:, :, 1:] == 0.0).all(),       "Non-root visibility should be zeroed"
+
+    def test_joint_dropout_p0_no_change(self):
+        """p=0 leaves positions and visibility completely unchanged."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.ones(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K)
+        new_vis  = joint_dropout(node_pos, can_vis, p=0.0)
+        assert (node_pos == 1.0).all()
+        assert (new_vis  == 1.0).all()
+
+    # --- pose_dropout ---
+
+    def test_pose_dropout_p1_zeroes_all(self):
+        """p=1 zeros every position and clears all visibility."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.ones(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K)
+        new_vis  = pose_dropout(node_pos, can_vis, p=1.0)
+        assert (node_pos == 0.0).all(), "All positions should be zeroed"
+        assert (new_vis  == 0.0).all(), "All visibility should be zeroed"
+
+    def test_pose_dropout_p0_no_change(self):
+        """p=0 leaves positions and visibility completely unchanged."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.ones(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K)
+        new_vis  = pose_dropout(node_pos, can_vis, p=0.0)
+        assert (node_pos == 1.0).all()
+        assert (new_vis  == 1.0).all()
+
+    # --- keypoint_jitter ---
+
+    def test_keypoint_jitter_zero_std_is_identity(self):
+        """std_px=0 returns a tensor equal to the input."""
+        kpts   = torch.randn(2, 3, 14, 2)
+        result = keypoint_jitter(kpts, std_px=0.0)
+        assert torch.allclose(result, kpts)
+
+    def test_keypoint_jitter_nonzero_std_changes_values(self):
+        """Non-zero std shifts at least some coordinates."""
+        torch.manual_seed(0)
+        kpts   = torch.zeros(2, 3, 14, 2)
+        result = keypoint_jitter(kpts, std_px=10.0)
+        assert not torch.allclose(result, kpts)
+
+    def test_keypoint_jitter_does_not_modify_input(self):
+        """The original tensor must be unchanged after jittering."""
+        kpts  = torch.ones(2, 3, 14, 2)
+        _     = keypoint_jitter(kpts, std_px=5.0)
+        assert (kpts == 1.0).all(), "Input tensor must not be mutated"
+
+    # --- image_dropout ---
+
+    def test_image_dropout_p1_zeroes_all(self):
+        """p=1 zeros every embedding row."""
+        cond = torch.ones(30, 16)
+        image_dropout(cond, p=1.0)
+        assert (cond == 0.0).all()
+
+    def test_image_dropout_p0_no_change(self):
+        """p=0 leaves every embedding row unchanged."""
+        cond = torch.ones(30, 16)
+        image_dropout(cond, p=0.0)
+        assert (cond == 1.0).all()
+
+
+# ---------------------------------------------------------------------------
+# Standalone loss functions
+# ---------------------------------------------------------------------------
+
+
+class TestLossFunctions:
+    """Tests for compute_joint_loss and compute_bone_loss."""
+
+    def _preds(self, B=2, N=3, K=14):
+        torch.manual_seed(0)
+        pred = torch.randn(B, N, K, 2) * 50 + 320
+        gt   = torch.randn(B, N, K, 2) * 50 + 320
+        return pred, gt
+
+    # --- compute_joint_loss ---
+
+    def test_joint_loss_zero_when_perfect(self):
+        """Zero loss when predictions equal ground truth (for any visibility)."""
+        _, gt = self._preds()
+        vis = torch.ones(2, 3, 14)  # all vis=1
+        assert compute_joint_loss(gt, gt, vis).item() == pytest.approx(0.0)
+
+    def test_joint_loss_absent_joints_ignored(self):
+        """Joints with visibility=0 do not affect the loss."""
+        pred, gt = self._preds(B=1, N=1)
+        pred_bad = pred.clone()
+        pred_bad[0, 0, 0, :] = 9999.0   # corrupt the first joint
+
+        vis_with  = torch.ones(1, 1, 14)            # joint 0 visible
+        vis_without = vis_with.clone()
+        vis_without[0, 0, 0] = 0.0                  # joint 0 absent
+
+        loss_with    = compute_joint_loss(pred_bad, gt, vis_with).item()
+        loss_without = compute_joint_loss(pred_bad, gt, vis_without).item()
+        assert loss_without < loss_with, "Absent joint should not inflate the loss"
+
+    def test_joint_loss_vis2_weights_more_than_vis1(self):
+        """A single visible joint (vis=2) contributes more than an occluded one (vis=1)."""
+        B, N, K = 1, 1, 2
+        pred = torch.zeros(B, N, K, 2)
+        gt   = torch.ones(B, N, K, 2)  # constant error of 1 per coord
+
+        # Only joint 0 active; compare vis=1 vs vis=2
+        vis1 = torch.zeros(B, N, K); vis1[0, 0, 0] = 1.0
+        vis2 = torch.zeros(B, N, K); vis2[0, 0, 0] = 2.0
+
+        # Both give MSE=2 (1^2+1^2), but denom differs (1 vs 2), so they are equal
+        # on a per-unit-weight basis.  What changes is the *contribution when mixed*:
+        # weight=2 means that joint dominates more in a multi-joint scenario.
+        vis_mix = torch.zeros(B, N, K)
+        vis_mix[0, 0, 0] = 1.0   # occluded
+        vis_mix[0, 0, 1] = 2.0   # visible
+        # With equal per-joint error, visible joint should pull more weight
+        # → weighted mean is closer to the "visible" error
+        pred_diff = pred.clone()
+        pred_diff[0, 0, 0] = gt[0, 0, 0] + torch.tensor([10.0, 0.0])  # big error on occluded
+        pred_diff[0, 0, 1] = gt[0, 0, 1] + torch.tensor([1.0, 0.0])   # small error on visible
+        loss = compute_joint_loss(pred_diff, gt, vis_mix).item()
+        # weighted mean = (1*100 + 2*1) / (1+2) = 34
+        assert loss == pytest.approx((1 * 100 + 2 * 1) / 3, rel=1e-5)
+
+    # --- compute_bone_loss ---
+
+    def test_bone_loss_zero_when_perfect(self):
+        """Zero loss when predicted lengths equal ground-truth lengths."""
+        from src.data import CROWDPOSE_EDGE_LIST
+        pred, gt = self._preds()
+        vis = torch.ones(2, 3, 14) * 2  # all fully visible
+        assert compute_bone_loss(gt, gt, vis, CROWDPOSE_EDGE_LIST).item() == pytest.approx(0.0)
+
+    def test_bone_loss_absent_edge_ignored(self):
+        """Edge with at least one absent endpoint (vis=0) must not affect the loss."""
+        from src.data import CROWDPOSE_EDGE_LIST
+        u, v = CROWDPOSE_EDGE_LIST[0]   # pick any edge
+        B, N, K = 1, 1, 14
+        pred = torch.zeros(B, N, K, 2)
+        gt   = torch.zeros(B, N, K, 2)
+        gt[0, 0, u] = torch.tensor([100.0, 0.0])  # big GT bone length
+
+        vis_present = torch.ones(B, N, K)
+        vis_absent  = vis_present.clone()
+        vis_absent[0, 0, u] = 0.0
+
+        loss_present = compute_bone_loss(pred, gt, vis_present, CROWDPOSE_EDGE_LIST).item()
+        loss_absent  = compute_bone_loss(pred, gt, vis_absent,  CROWDPOSE_EDGE_LIST).item()
+        assert loss_absent < loss_present, "Absent endpoint should reduce the loss"

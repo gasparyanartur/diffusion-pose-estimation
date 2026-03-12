@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +13,13 @@ from PIL import Image
 from torch import Tensor
 from torch_geometric.utils import scatter
 
-from src.data import CROWDPOSE_JOINT_NAMES, prepare_pose_graph_batch
+from src.data import (
+    CROWDPOSE_EDGE_LIST,
+    CROWDPOSE_JOINT_NAMES,
+    prepare_pose_graph_batch,
+    read_image_pil,
+    read_image_size,
+)
 from src.metrics import KeypointAPMetric, canonical_to_pixel
 
 
@@ -40,6 +46,24 @@ class KeypointDiffusionConfig:
     use_image_cond: bool = False
     dim_image_cond: int = 128  # projected DINO feature dim per node
 
+    # Training augmentations
+    aug_joint_drop: bool = True
+    p_joint_drop: float = (
+        0.1  # probability of dropping each non-root joint independently
+    )
+    aug_pose_drop: bool = True
+    p_pose_drop: float = 0.1  # probability of dropping an entire person
+    aug_jitter: bool = True
+    p_jitter_px: float = 4.0  # std-dev (pixels) of Gaussian keypoint coordinate noise
+    aug_img_drop: bool = True
+    p_img_drop: float = 0.1  # fraction of DINO node embeddings zeroed out
+
+    # Loss terms
+    use_joint_loss: bool = True
+    w_joint_loss: float = 1.0
+    use_bone_loss: bool = True
+    w_bone_loss: float = 1.0
+
 
 class TimestepSinusoidalEmbedding(torch.nn.Module):
     """Sinusoidal positional encoding for a batch of integer timesteps."""
@@ -63,19 +87,11 @@ class TimestepSinusoidalEmbedding(torch.nn.Module):
 
 
 class DinoConditioner(torch.nn.Module):
-    """Extract per-keypoint local DINO patch features.
+    """Per-keypoint local DINO patch features.
 
-    For each keypoint (in pixel space), gathers the surrounding ``(2r+1)×(2r+1)``
-    DINO patch features and mean-pools them into a single local embedding.
-    The DINO backbone is frozen; only the linear projection is trainable.
-
-    Args:
-        model_name:            HuggingFace model ID for a DINOv2/v3 ViT.
-        out_dim:               Output dimension after projection.
-        patch_size:            ViT patch size in pixels (default 16).
-        image_size:            DINO input resolution (default 224).
-        neighborhood_radius:   Half-width of the patch neighbourhood (``r=1``
-                               gathers a 3×3 window of 9 patches).
+    Gathers the (2r+1)×(2r+1) patch neighbourhood for each keypoint and
+    mean-pools it into a single projected embedding.  Backbone is frozen;
+    only the linear projection is trained.
     """
 
     def __init__(
@@ -111,13 +127,7 @@ class DinoConditioner(torch.nn.Module):
             self.load_cache(*cache_paths)
 
     def load_cache(self, *paths: str | Path) -> None:
-        """Load (and merge) one or more precomputed cache files.
-
-        Each file is a ``{image_id: Tensor(G*G, hidden_dim)}`` dict produced by
-        ``scripts/precompute_dino.py``.  Multiple files (e.g. train + val) are
-        merged into one lookup table.  After this call the DINO backbone is
-        never invoked — features are looked up by image_id instead.
-        """
+        """Merge one or more ``{image_id → patch_features}`` cache files into the lookup table."""
         merged: dict = {} if self._patch_cache is None else dict(self._patch_cache)
         for path in paths:
             data = torch.load(Path(path), map_location="cpu", weights_only=False)
@@ -133,11 +143,7 @@ class DinoConditioner(torch.nn.Module):
 
     @torch.no_grad()
     def _extract_patch_features(self, pil_images: list[Image.Image]) -> Tensor:
-        """Run DINO on a list of PIL images.
-
-        Returns patch features of shape ``(B, G*G, hidden_dim)`` where
-        ``G = grid_size``.  The CLS token is dropped.
-        """
+        """Run DINO; return patch features (B, G*G, hidden_dim) with CLS token dropped."""
         inputs = self.processor(images=pil_images, return_tensors="pt")
         inputs = {
             k: v.to(next(self.backbone.parameters()).device) for k, v in inputs.items()
@@ -151,46 +157,32 @@ class DinoConditioner(torch.nn.Module):
         kpt_pixel: Tensor,  # (B, N, K, 2)  pixel-space (x, y)
         img_hw: Tensor,  # (B, 2)  original (H, W)
     ) -> Tensor:
-        """Mean-pool the patch neighbourhood for every keypoint.
-
-        Returns ``(B, N, K, hidden_dim)``.
-        """
+        """Mean-pool the (2r+1)² patch window around each keypoint → (B, N, K, D)."""
         B, N, K, _ = kpt_pixel.shape
-        G = self.grid_size
-        D = patch_feats.shape[-1]
-        r = self.neighborhood_radius
+        G, D, r = self.grid_size, patch_feats.shape[-1], self.neighborhood_radius
+        W = 2 * r + 1
         device = patch_feats.device
 
-        # Scale keypoint pixel coords → DINO input space [0, image_size)
-        img_h = img_hw[:, 0].float().view(B, 1, 1)  # (B, 1, 1)
-        img_w = img_hw[:, 1].float().view(B, 1, 1)  # (B, 1, 1)
-        x_scaled = kpt_pixel[..., 0].to(device) * (self.image_size / img_w)  # (B, N, K)
-        y_scaled = kpt_pixel[..., 1].to(device) * (self.image_size / img_h)  # (B, N, K)
+        # Scale pixel coords → DINO input space, then find the centre patch per keypoint
+        img_h = img_hw[:, 0].float().view(B, 1, 1)
+        img_w = img_hw[:, 1].float().view(B, 1, 1)
+        x_scaled = kpt_pixel[..., 0].to(device) * (self.image_size / img_w)
+        y_scaled = kpt_pixel[..., 1].to(device) * (self.image_size / img_h)
+        cx = (x_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) centre col
+        cy = (y_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) centre row
 
-        # Centre patch grid indices (clamped to valid range)
-        cx = (x_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K)
-        cy = (y_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K)
+        # All W² (Δcol, Δrow) offsets in the window
+        offsets = torch.arange(-r, r + 1, device=device)
+        dcol, drow = torch.meshgrid(offsets, offsets, indexing="ij")
+        dcol, drow = dcol.reshape(-1), drow.reshape(-1)  # (W²,)
 
-        # Build 2-D neighbourhood offset grids
-        offsets = torch.arange(-r, r + 1, device=device)  # (2r+1,)
-        px = (cx.unsqueeze(-1) + offsets).clamp(0, G - 1)  # (B, N, K, 2r+1)
-        py = (cy.unsqueeze(-1) + offsets).clamp(0, G - 1)  # (B, N, K, 2r+1)
+        # Neighbour patch indices for every keypoint: (B, N, K, W²) → flat (B, N*K*W²)
+        cols = (cx.unsqueeze(-1) + dcol).clamp(0, G - 1)
+        rows = (cy.unsqueeze(-1) + drow).clamp(0, G - 1)
+        patch_idx = (rows * G + cols).reshape(B, N * K * W * W)
 
-        # All (px, py) pairs — outer product along the last two dims
-        px_grid = px.unsqueeze(-1).expand(*px.shape, 2 * r + 1)  # (B,N,K,2r+1,2r+1)
-        py_grid = py.unsqueeze(-2).expand(
-            *py.shape[:-1], 2 * r + 1, 2 * r + 1
-        )  # same shape
-
-        num_p = (2 * r + 1) ** 2
-        flat_idx = (py_grid * G + px_grid).reshape(B, N * K * num_p)  # (B, NK·num_p)
-
-        # Gather from patch_feats (B, G*G, D)
-        gathered = patch_feats.gather(
-            1, flat_idx.unsqueeze(-1).expand(-1, -1, D)  # (B, NK·num_p, D)
-        )
-        gathered = gathered.view(B, N, K, num_p, D)
-        return gathered.mean(dim=3)  # (B, N, K, D)
+        gathered = patch_feats.gather(1, patch_idx.unsqueeze(-1).expand(-1, -1, D))
+        return gathered.view(B, N, K, W * W, D).mean(dim=3)
 
     # ------------------------------------------------------------------
     # Forward
@@ -198,34 +190,29 @@ class DinoConditioner(torch.nn.Module):
 
     def forward(
         self,
-        kpt_pixel: Tensor,  # (B, N, K, 2) pixel-space keypoints (x, y)
+        kpt_pixel: Tensor,  # (B, N, K, 2) pixel-space (x, y)
         img_hw: Tensor,  # (B, 2) original image (H, W)
-        image_ids: list[int] | None = None,  # required when using a precomputed cache
-        pil_images: list[Image.Image] | None = None,  # required when not using a cache
+        image_ids: list[int] | None = None,
+        pil_images: list[Image.Image] | None = None,
     ) -> Tensor:
-        """Return per-keypoint DINO embeddings of shape ``(B, N, K, out_dim)``.
+        """Return per-keypoint DINO embeddings (B, N, K, out_dim).
 
-        Exactly one of *image_ids* (cache path) or *pil_images* (live backbone)
-        must be provided.
+        Provide image_ids when using a precomputed cache, or pil_images for live inference.
         """
         if self._patch_cache is not None:
             if image_ids is None:
                 raise ValueError(
                     "image_ids must be provided when using a precomputed cache"
                 )
-            device = kpt_pixel.device
             patch_feats = torch.stack([self._patch_cache[iid] for iid in image_ids]).to(
-                device
-            )  # (B, G*G, D)
+                kpt_pixel.device
+            )
         else:
             if pil_images is None:
                 raise ValueError("pil_images must be provided when no cache is loaded")
-            patch_feats = self._extract_patch_features(pil_images)  # (B, G*G, D)
+            patch_feats = self._extract_patch_features(pil_images)
 
-        local_feats = self._gather_neighborhood(
-            patch_feats, kpt_pixel, img_hw
-        )  # (B, N, K, D)
-        return self.proj(local_feats)  # (B, N, K, out_dim)
+        return self.proj(self._gather_neighborhood(patch_feats, kpt_pixel, img_hw))
 
 
 class KeypointDiffusionModel(torch.nn.Module):
@@ -280,13 +267,11 @@ class KeypointDiffusionModel(torch.nn.Module):
         batch_idx: Tensor,
         **kwargs,
     ) -> tuple[Tensor, Tensor]:
-        noise = torch.randn_like(node_pos)  # (B*N*K, 2)
-        a = self._sqrt_alpha_bars[timestep][batch_idx].unsqueeze(-1)  # (B*N*K, 1)
-        b = self._sqrt_one_minus_alpha_bars[timestep][batch_idx].unsqueeze(
-            -1
-        )  # (B*N*K, 1)
-        noisy_node_pos = a * node_pos + b * noise
-        return noisy_node_pos, noise
+        noise = torch.randn_like(node_pos)
+        t_node = timestep[batch_idx]  # broadcast (B,) → (B*N*K,)
+        a = self._sqrt_alpha_bars[t_node].unsqueeze(-1)
+        b = self._sqrt_one_minus_alpha_bars[t_node].unsqueeze(-1)
+        return a * node_pos + b * noise, noise
 
     def backward_process(
         self,
@@ -310,16 +295,16 @@ class KeypointDiffusionModel(torch.nn.Module):
         timestep_emb = self.timestep_embedding(timestep)  # (B, dim_time)
         timestep_emb = timestep_emb[batch_idx]  # (B*N*K, dim_time)
 
-        # 4. Bone-vector embedding aggregated back to nodes
-        #    Bone vectors are naturally edge features; we mean-pool them per
-        #    destination node so they become node features of the right size.
-        edge_src = edge_index[0]  # (B*N*E,)
-        edge_dst = edge_index[1]  # (B*N*E,)
-        bone_vectors = noisy_node_pos[edge_dst] - noisy_node_pos[edge_src]  # (B*N*E, 2)
-        bone_emb_edges = self.bone_vector_embedding(bone_vectors)  # (B*N*E, dim_bone)
-        bone_emb = scatter(  # (B*N*K, dim_bone)
-            bone_emb_edges, edge_dst, dim=0, dim_size=num_nodes, reduce="mean"
-        )
+        # 4. Bone-vector embedding: embed each edge, then mean-pool back to destination nodes
+        edge_src, edge_dst = edge_index[0], edge_index[1]
+        bone_vecs = noisy_node_pos[edge_dst] - noisy_node_pos[edge_src]  # (B*N*E, 2)
+        bone_emb = scatter(
+            self.bone_vector_embedding(bone_vecs),
+            edge_dst,
+            dim=0,
+            dim_size=num_nodes,
+            reduce="mean",
+        )  # (B*N*K, dim_bone)
 
         # 5. Concatenate all node features and run GNN
         features = [pos_emb, idx_emb, timestep_emb, bone_emb]
@@ -344,11 +329,13 @@ class KeypointDiffusionModel(torch.nn.Module):
     ) -> Tensor:
         T = self.config.num_train_steps
         t_start = start_t if start_t is not None else T
-        S = num_inference_steps if num_inference_steps is not None else t_start
+        num_steps = num_inference_steps if num_inference_steps is not None else t_start
         device = device or edge_index.device
 
         # Build decreasing timestep schedule: [t_start, ..., 1]
-        timesteps = torch.linspace(t_start, 1, S, dtype=torch.long, device=device)
+        timesteps = torch.linspace(
+            t_start, 1, num_steps, dtype=torch.long, device=device
+        )
 
         # Start from provided initial estimate or pure Gaussian noise
         if x_init is not None:
@@ -356,37 +343,106 @@ class KeypointDiffusionModel(torch.nn.Module):
         else:
             x = torch.randn(num_nodes, 2, device=device)
 
-        for i, t_scalar in enumerate(timesteps):
-            t_prev = (
-                timesteps[i + 1]
-                if i + 1 < len(timesteps)
-                else torch.zeros(1, device=device)[0]
-            )
-
-            t_batch = t_scalar.expand(batch_idx.max().item() + 1)  # (B,)
+        prev_timestep_list = torch.cat(
+            [timesteps[1:], timesteps.new_zeros(1)]
+        )  # trailing 0 = clean
+        for timestep, prev_timestep in zip(timesteps, prev_timestep_list):
+            timestep_batch = timestep.expand(batch_idx.max().item() + 1)  # (B,)
 
             delta_x = self.backward_process(
                 noisy_node_pos=x,
                 edge_index=edge_index,
                 kpt_type_idx=kpt_type_idx,
                 batch_idx=batch_idx,
-                timestep=t_batch,
+                timestep=timestep_batch,
                 image_cond=image_cond,
             )  # (B*N*K, 2)
-            x_0_hat = x - delta_x
+            x0_pred = x - delta_x
 
             # DDIM deterministic update — VP schedule.
-            # At t_prev=0: a_prev=1, b_prev=0  →  x = x_0_hat  (clean sample). ✓
-            t_idx = t_scalar.long()
-            t_prev_idx = t_prev.long()
-            a_t = self._sqrt_alpha_bars[t_idx]
-            b_t = self._sqrt_one_minus_alpha_bars[t_idx]
-            a_prev = self._sqrt_alpha_bars[t_prev_idx]
-            b_prev = self._sqrt_one_minus_alpha_bars[t_prev_idx]
-            eps_hat = (x - a_t * x_0_hat) / b_t
-            x = a_prev * x_0_hat + b_prev * eps_hat
+            # At prev_timestep=0: alpha_prev=1, sigma_prev=0  →  x = x0_pred  (clean sample). ✓
+            timestep_idx = timestep.long()
+            prev_timestep_idx = prev_timestep.long()
+            alpha_t = self._sqrt_alpha_bars[timestep_idx]
+            sigma_t = self._sqrt_one_minus_alpha_bars[timestep_idx]
+            alpha_prev = self._sqrt_alpha_bars[prev_timestep_idx]
+            sigma_prev = self._sqrt_one_minus_alpha_bars[prev_timestep_idx]
+            noise_pred = (x - alpha_t * x0_pred) / sigma_t
+            x = alpha_prev * x0_pred + sigma_prev * noise_pred
 
         return x
+
+
+# ---------------------------------------------------------------------------
+# Standalone augmentation functions  (pure, stateless — easy to unit-test)
+# ---------------------------------------------------------------------------
+
+
+def joint_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
+    """Zero random non-root joints in-place; return updated visibility (dropped joints → 0)."""
+    B, N, K = can_vis.shape
+    # Root (index 0) is never dropped; sample only the K-1 remaining joints
+    drop_mask = torch.zeros_like(can_vis, dtype=torch.bool)
+    drop_mask[:, :, 1:] = torch.bernoulli(
+        torch.full((B, N, K - 1), p, device=node_pos.device)
+    ).bool()
+    node_pos[drop_mask.reshape(-1)] = 0.0
+    return can_vis.masked_fill(drop_mask, 0.0)
+
+
+def pose_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
+    """Zero all joints of random persons in-place; return updated visibility (dropped → 0)."""
+    B, N, K = can_vis.shape
+    person_drop = torch.bernoulli(torch.full((B, N), p, device=node_pos.device)).bool()
+    drop_mask = person_drop.unsqueeze(-1).expand(B, N, K)
+    node_pos[drop_mask.reshape(-1)] = 0.0
+    return can_vis.masked_fill(drop_mask, 0.0)
+
+
+def keypoint_jitter(keypoints: Tensor, std_px: float) -> Tensor:
+    """Return new keypoints with zero-mean Gaussian noise (std=std_px pixels) added."""
+    return keypoints + torch.randn_like(keypoints) * std_px
+
+
+def image_dropout(image_cond: Tensor, p: float) -> None:
+    """Zero random rows of image_cond (B*N*K, D) in-place with probability p."""
+    drop = torch.bernoulli(
+        torch.full((image_cond.shape[0],), p, device=image_cond.device)
+    ).bool()
+    image_cond[drop] = 0.0
+
+
+def compute_joint_loss(
+    pred_pixel: Tensor,  # (B, N, K, 2)
+    gt_pixel: Tensor,  # (B, N, K, 2)
+    visibility: Tensor,  # (B, N, K)  0=absent 1=occluded 2=visible
+) -> Tensor:
+    """Visibility-weighted per-joint MSE (absent→0, occluded→1, visible→2 weight)."""
+    visibility_weight = visibility.float()  # (B, N, K)
+    per_joint_sq_err = ((pred_pixel - gt_pixel) ** 2).sum(dim=-1)  # (B, N, K)
+    total_weight = visibility_weight.sum().clamp(min=1.0)
+    return (per_joint_sq_err * visibility_weight).sum() / total_weight
+
+
+def compute_bone_loss(
+    pred_pixel: Tensor,  # (B, N, K, 2)
+    gt_pixel: Tensor,  # (B, N, K, 2)
+    visibility: Tensor,  # (B, N, K)  0/1/2
+    edge_list: list[tuple[int, int]],
+) -> Tensor:
+    """Visibility-weighted bone-length MSE averaged over edges.
+
+    Edge weight = vis[u] * vis[v]; absent endpoint → 0, both visible → 4.
+    """
+    visibility_weight = visibility.float()
+    loss = gt_pixel.new_zeros(())
+    for u, v in edge_list:
+        edge_weight = visibility_weight[:, :, u] * visibility_weight[:, :, v]  # (B, N)
+        weight_sum = edge_weight.sum().clamp(min=1.0)
+        pred_len = (pred_pixel[:, :, u] - pred_pixel[:, :, v]).norm(dim=-1)  # (B, N)
+        gt_len = (gt_pixel[:, :, u] - gt_pixel[:, :, v]).norm(dim=-1)  # (B, N)
+        loss = loss + ((pred_len - gt_len).pow(2) * edge_weight).sum() / weight_sum
+    return loss / len(edge_list)
 
 
 class PoseDiffusionModule(pl.LightningModule):
@@ -448,76 +504,110 @@ class PoseDiffusionModule(pl.LightningModule):
     # Batch preparation (graph build + optional DINO conditioning)
     # ------------------------------------------------------------------
 
-    def prepare_batch(self, batch: dict) -> dict:
-        """Build the canonical pose graph and, if enabled, add DINO conditioning.
-
-        Replaces standalone ``prepare_pose_graph_batch`` calls inside the module.
-        Updates *batch* in-place and returns it for convenience.
-
-        After this call *batch* contains all fields from
-        :func:`~src.data.prepare_pose_graph_batch` plus, when DINO conditioning
-        is active, ``image_cond`` of shape ``(B*N*K, dim_image_cond)``.
-        """
+    def prepare_batch(self, batch: dict, augment: bool = False) -> dict:
+        """Build graph, optionally augment (jitter before DINO so coordinates match), add DINO conditioning."""
         prepare_pose_graph_batch(batch)
+
+        if augment:
+            self._augment_graph(batch)
+
         if self.dino_conditioner is not None:
             self._add_dino_conditioning(batch)
+
+        if augment:
+            self._augment_image_cond(batch)
+
         return batch
 
+    # ------------------------------------------------------------------
+    # Augmentation helpers
+    # ------------------------------------------------------------------
+
+    def _augment_graph(self, batch: dict) -> None:
+        """Joint/pose dropout and pixel jitter (runs before DINO so jittered coords are used)."""
+        cfg = self.model.config
+        node_pos = batch["node_pos"]  # (B*N*K, 2)  canonical
+        can_vis = batch["canonical_visibility"]  # (B, N, K)
+
+        if cfg.aug_joint_drop:
+            can_vis = joint_dropout(node_pos, can_vis, cfg.p_joint_drop)
+        if cfg.aug_pose_drop:
+            can_vis = pose_dropout(node_pos, can_vis, cfg.p_pose_drop)
+        batch["canonical_visibility"] = can_vis
+
+        if cfg.aug_jitter:
+            keypoints = batch["keypoints"]  # (B, N, 14, 2) pixel-space
+            batch["gt_keypoints"] = keypoints.clone()
+            batch["keypoints"] = keypoint_jitter(keypoints, cfg.p_jitter_px)
+
+    def _augment_image_cond(self, batch: dict) -> None:
+        """Zero random DINO node embeddings in-place (runs after DINO conditioning)."""
+        image_cond = batch.get("image_cond")
+        if image_cond is None or not self.model.config.aug_img_drop:
+            return
+        image_dropout(image_cond, self.model.config.p_img_drop)
+
+    def get_loss(self, batch: dict, outputs: dict) -> dict[str, Tensor]:
+        """Compute weighted losses; active terms and weights are set in KeypointDiffusionConfig."""
+        cfg = self.model.config
+        pred_pixel = outputs["pred_pixel"]  # (B, N, 14, 2)
+        gt_pixel = batch.get("gt_keypoints", batch["keypoints"])  # (B, N, 14, 2)
+        visibility = batch["visibility"]  # (B, N, 14)  0=absent 1=occluded 2=visible
+
+        losses: dict[str, Tensor] = {}
+        if cfg.use_joint_loss:
+            losses["joint_loss"] = (
+                compute_joint_loss(pred_pixel, gt_pixel, visibility) * cfg.w_joint_loss
+            )
+        if cfg.use_bone_loss:
+            losses["bone_loss"] = (
+                compute_bone_loss(pred_pixel, gt_pixel, visibility, CROWDPOSE_EDGE_LIST)
+                * cfg.w_bone_loss
+            )
+        if not losses:
+            raise ValueError(
+                "All losses are disabled — enable at least one loss in KeypointDiffusionConfig"
+            )
+        losses["loss"] = sum(losses.values())
+        return losses
+
     def _add_dino_conditioning(self, batch: dict) -> None:
-        """Load images, run DinoConditioner, and store per-node embeddings in batch.
+        """Run DINO and write ``batch["image_cond"]`` (B*N*15, dim_image_cond).
 
-        The 14 CrowdPose keypoints are embedded individually.  The virtual root
-        node's embedding is computed as the mean of its three anchor joints
-        (left_hip, right_hip, neck), matching the geometric definition of the
-        root used in :func:`~src.data.prepare_pose_graph_batch`.
-
-        Writes ``batch["image_cond"]`` of shape ``(B*N*15, dim_image_cond)``.
+        Root embedding = mean of anchor joints (left_hip, right_hip, neck).
         """
-        keypoints = batch[
-            "keypoints"
-        ]  # (B, N, 14, 2) pixel space (unchanged by prepare_batch)
+        keypoints = batch["keypoints"]  # (B, N, 14, 2) pixel-space (possibly jittered)
         B, N = keypoints.shape[:2]
-        image_ids: list[int] = [int(iid) for iid in batch["image_id"]]
+        image_ids: list[int] = [int(img_id) for img_id in batch["image_id"]]
 
         if self.dino_conditioner._patch_cache is not None:
-            # Fast path: look up precomputed patch features, no backbone needed.
-            # img_hw is still required by _gather_neighborhood to scale keypoints.
-            hw_list = [
-                (Image.open(p).height, Image.open(p).width) for p in batch["img_path"]
-            ]
-            img_hw = torch.tensor(hw_list, dtype=torch.float32, device=self.device)
-            kpt_emb = self.dino_conditioner(
-                kpt_pixel=keypoints.to(self.device),
-                img_hw=img_hw,
-                image_ids=image_ids,
-            )  # (B, N, 14, dim_image_cond)
+            # Fast path: patch features already cached — only need dimensions to scale keypoints.
+            pil_images = None
+            image_sizes = [read_image_size(p) for p in batch["img_path"]]
         else:
-            # Slow path: load PIL images and run the backbone live.
-            pil_images: list[Image.Image] = []
-            hw_list: list[tuple[int, int]] = []
-            for path in batch["img_path"]:
-                img = Image.open(path).convert("RGB")
-                pil_images.append(img)
-                hw_list.append((img.height, img.width))
-            img_hw = torch.tensor(hw_list, dtype=torch.float32, device=self.device)
-            kpt_emb = self.dino_conditioner(
-                kpt_pixel=keypoints.to(self.device),
-                img_hw=img_hw,
-                pil_images=pil_images,
-            )  # (B, N, 14, dim_image_cond)
+            # Slow path: load images and run the backbone live (no cache available).
 
-        # Compute root embedding as mean of anchor joints
+            pil_images = [read_image_pil(p) for p in batch["img_path"]]
+            image_sizes = [(img.height, img.width) for img in pil_images]
+
+        img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)
+        keypoint_emb = self.dino_conditioner(
+            kpt_pixel=keypoints.to(self.device),
+            img_hw=img_hw,
+            pil_images=pil_images,
+            image_ids=image_ids,
+        )
+
+        # Root embedding = mean of three anchor joints
         j = CROWDPOSE_JOINT_NAMES
         anchor_idx = [j["left_hip"], j["right_hip"], j["neck"]]
-        root_emb = kpt_emb[:, :, anchor_idx, :].mean(
+        root_emb = keypoint_emb[:, :, anchor_idx, :].mean(
             dim=2, keepdim=True
-        )  # (B, N, 1, dim_image_cond)
+        )  # (B, N, 1, D)
 
-        # Prepend root → (B, N, 15, dim_image_cond), flatten to (B*N*15, dim_image_cond)
-        full_emb = torch.cat([root_emb, kpt_emb], dim=2)  # (B, N, 15, dim_image_cond)
-        batch["image_cond"] = full_emb.reshape(
-            B * N * 15, -1
-        )  # (B*N*K, dim_image_cond)
+        # Prepend root then flatten: (B, N, 15, D) → (B*N*15, D)
+        node_emb = torch.cat([root_emb, keypoint_emb], dim=2)
+        batch["image_cond"] = node_emb.reshape(B * N * 15, -1)
 
     # ------------------------------------------------------------------
     # AP evaluation helpers
@@ -543,46 +633,44 @@ class PoseDiffusionModule(pl.LightningModule):
         B, N = pred_kpts.shape[:2]
         K = 15  # canonical keypoints (14 + virtual root)
 
-        # Score-based visibility proxy (consistent with training threshold)
         batch["keypoints"] = pred_kpts
-        batch["visibility"] = (pred_scores > 0.1).float()  # (B, N, 14)
+        # Detector confidence > 0.1 → treat as visible (matches the threshold used in training data)
+        batch["visibility"] = (pred_scores > 0.1).float()
 
         # Convert predictions to canonical space (root-relative, normalised)
         self.prepare_batch(batch)
 
         edge_index = batch["edge_index"]  # (2, B*N*E)
-        node_idx = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
-        batch_index = batch["batch"]  # (B*N*K,)
+        node_type_idx = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
+        node_batch_idx = batch["batch"]  # (B*N*K,)
         num_nodes = B * N * K
 
         T = self.model.config.num_train_steps
         t_start = max(1, round(T * self._inference_noise_frac))
 
-        # Add noise at the inference starting timestep.  Noise level
-        # t_start/T keeps the input in-distribution for the model (which was
-        # trained on noisy inputs for every t in [0, T-1]).  Using a small
-        # fraction (default 10 %) means only minor noise is added, so an
-        # undertrained model still produces coordinates close to the detector
-        # predictions → AP never collapses to 0 solely due to inference setup.
-        t_vec = torch.full((B,), t_start, dtype=torch.long, device=pred_kpts.device)
+        # Add a small amount of noise so the model sees in-distribution inputs
+        # while keeping predictions close to the detector output.
+        noise_timestep = torch.full(
+            (B,), t_start, dtype=torch.long, device=pred_kpts.device
+        )
         x_init_noisy, _ = self.model.add_noise(
             node_pos=batch["node_pos"],
-            timestep=t_vec,
-            batch_idx=batch_index,
+            timestep=noise_timestep,
+            batch_idx=node_batch_idx,
         )  # (B*N*K, 2)
 
-        S = (
+        num_steps = (
             self.num_inference_steps
             if self.num_inference_steps is not None
             else t_start
         )
 
-        pred_flat = self.model.ddim_sample(
+        nodes_canonical_flat = self.model.ddim_sample(
             edge_index=edge_index,
-            kpt_type_idx=node_idx,
-            batch_idx=batch_index,
+            kpt_type_idx=node_type_idx,
+            batch_idx=node_batch_idx,
             num_nodes=num_nodes,
-            num_inference_steps=S,
+            num_inference_steps=num_steps,
             start_t=t_start,
             device=pred_kpts.device,
             x_init=x_init_noisy,
@@ -590,12 +678,12 @@ class PoseDiffusionModule(pl.LightningModule):
         )  # (B*N*K, 2)
 
         # Convert back to pixel space using the root and scale from the batch
-        pred_canonical = pred_flat.view(B, N, K, 2)
-        pred_pixel = canonical_to_pixel(
-            pred_canonical, batch["root_pos"], scale=batch["scale"]
+        nodes_canonical = nodes_canonical_flat.view(B, N, K, 2)
+        joint_pred_pixel = canonical_to_pixel(
+            nodes_canonical, batch["root_pos"], scale=batch["scale"]
         )
 
-        return pred_pixel, pred_scores, image_ids
+        return joint_pred_pixel, pred_scores, image_ids
 
     def _run_ap_eval(
         self,
@@ -618,16 +706,14 @@ class PoseDiffusionModule(pl.LightningModule):
             self._ap_step(batch, metric)
 
     def _step(self, batch: dict, stage: str) -> Tensor:
-        keypoints = batch["keypoints"]  # (B, N, 14, 2) pixel space
+        self.prepare_batch(batch, augment=(stage == "train"))
 
-        self.prepare_batch(batch)
-
-        B, N = keypoints.shape[:2]
+        B, N = batch["keypoints"].shape[:2]
         K = 15  # canonical nodes: 14 joints + 1 virtual root
 
         node_pos = batch["node_pos"]  # (B*N*K, 2) canonical
-        node_index = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
-        batch_index = batch["batch"]  # (B*N*K,)
+        node_type_idx = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
+        node_batch_idx = batch["batch"]  # (B*N*K,)
         edge_index = batch["edge_index"]  # (2, B*N*E)
         root_pos = batch["root_pos"]  # (B, N, 2) pixel-space root
         scale = batch["scale"]  # (B,) normalisation divisor
@@ -642,54 +728,68 @@ class PoseDiffusionModule(pl.LightningModule):
         noisy_node_pos, _ = self.model.add_noise(
             node_pos=node_pos,
             timestep=timestep,
-            batch_idx=batch_index,
+            batch_idx=node_batch_idx,
         )
 
         pred_delta = self.model.backward_process(
             noisy_node_pos=noisy_node_pos,
             edge_index=edge_index,
-            kpt_type_idx=node_index,
-            batch_idx=batch_index,
+            kpt_type_idx=node_type_idx,
+            batch_idx=node_batch_idx,
             timestep=timestep,
             image_cond=batch.get("image_cond"),
         )
 
-        # Predicted clean positions in canonical space; drop the virtual root (index 0)
-        pred_x0_flat = noisy_node_pos - pred_delta  # (B*N*K, 2)
-        pred_x0_joints = pred_x0_flat.view(B, N, K, 2)[
-            :, :, 1:, :
-        ]  # (B, N, 14, 2) canonical
-
-        # Invert normalisation back to absolute pixel space:
-        #   canonical = (pixel - root) / scale  →  pixel = canonical * scale + root
-        pred_pixel = pred_x0_joints * scale.view(B, 1, 1, 1) + root_pos.unsqueeze(
-            2
+        # Drop virtual root (index 0); invert normalisation back to pixel space
+        # canonical = (pixel − root) / scale  →  pixel = canonical * scale + root
+        joint_pred_canonical = (noisy_node_pos - pred_delta).view(B, N, K, 2)[
+            :, :, 1:
+        ]  # (B, N, 14, 2)
+        joint_pred_pixel = (
+            joint_pred_canonical * scale[:, None, None, None] + root_pos[:, :, None]
         )  # (B, N, 14, 2)
 
-        joint_loss = torch.nn.functional.mse_loss(pred_pixel, keypoints)
-        
-        # TODO: Add bone length loss
+        outputs = {
+            "pred_pixel": joint_pred_pixel,
+            "pred_canonical": joint_pred_canonical,
+            "timestep": timestep,
+        }
 
-        loss =  joint_loss
-        return loss, B
+        losses = self.get_loss(batch, outputs)
+        return losses, B
 
     def training_step(self, batch: dict, batch_idx: int) -> Tensor:
-        loss, B = self._step(batch, stage="train")
+        losses, B = self._step(batch, stage="train")
         self.log(
-            "train_loss", loss, batch_size=B, prog_bar=True, on_step=True, on_epoch=True
+            "train_loss",
+            losses["loss"],
+            batch_size=B,
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
         )
-        return loss
+        return losses["loss"]
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
-        loss, B = self._step(batch, stage="val")
+        losses, B = self._step(batch, stage="val")
         self.log(
-            "val_loss", loss, batch_size=B, prog_bar=True, on_step=False, on_epoch=True
+            "val_loss",
+            losses["loss"],
+            batch_size=B,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
         )
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
-        loss, B = self._step(batch, stage="test")
+        losses, B = self._step(batch, stage="test")
         self.log(
-            "test_loss", loss, batch_size=B, prog_bar=True, on_step=False, on_epoch=True
+            "test_loss",
+            losses["loss"],
+            batch_size=B,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
         )
 
     def on_validation_epoch_end(self) -> None:

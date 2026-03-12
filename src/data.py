@@ -6,13 +6,34 @@ import json
 import pickle
 import random
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 import numpy as np
 import torch
+from PIL import Image
 from torch import Tensor
+from torchvision.io import read_image as tv_read_image
 from torch.utils.data import Dataset
+
+
+@lru_cache(maxsize=8192)
+def read_image_size(path: str) -> tuple[int, int]:
+    """Return (height, width) for an image file. Results are cached by path."""
+    with Image.open(path) as img:
+        return img.height, img.width
+
+
+def read_image_pil(path: str) -> Image.Image:
+    """Load an image as an RGB PIL Image."""
+    with Image.open(path) as img:
+        return img.convert("RGB")
+
+
+def read_image(path: str) -> torch.Tensor:
+    """Load an image from disk as a uint8 RGB tensor of shape (3, H, W)."""
+    return tv_read_image(path).to(torch.uint8)
 
 
 def load_gt_annotations(
