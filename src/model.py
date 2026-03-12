@@ -1,21 +1,4 @@
-"""Graph-based keypoint diffusion model.
-
-Architecture overview
----------------------
-Forward process
-    Gaussian noise is added to root-relative, normalised keypoint positions.
-    The noise scale is proportional to the normalised timestep t/T.
-
-Backward process (denoising)
-    A GNN (GAT) receives per-node features built from four sources:
-
-    * position embedding  – linear projection of the noisy (x, y) position
-    * keypoint-index embedding – learned embedding of the joint type (0…K-1)
-    * timestep embedding  – sinusoidal embedding broadcast from batch to nodes
-    * bone-vector embedding – edge bone vectors aggregated (mean) to nodes
-
-    The GNN predicts a 2-D residual for every node (the denoised position).
-"""
+"""Graph-based keypoint diffusion model."""
 
 from __future__ import annotations
 
@@ -30,11 +13,6 @@ from torch_geometric.utils import scatter
 
 from src.data import prepare_pose_graph_batch
 from src.metrics import KeypointAPMetric, canonical_to_pixel
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -57,22 +35,8 @@ class KeypointDiffusionConfig:
     num_train_steps: int = 100
 
 
-# ---------------------------------------------------------------------------
-# Modules
-# ---------------------------------------------------------------------------
-
-
 class TimestepSinusoidalEmbedding(torch.nn.Module):
-    """Sinusoidal embedding for a scalar integer timestep (batch of B values).
-
-    Produces a (B, dim) float tensor whose columns are alternating cosine /
-    sine functions of exponentially spaced frequencies — identical to the
-    original DDPM / Transformer positional encoding.
-
-    Args:
-        dim: Output embedding dimension (must be even).
-        max_period: Controls the minimum frequency (default 10 000).
-    """
+    """Sinusoidal positional encoding for a batch of integer timesteps."""
 
     def __init__(self, dim: int, max_period: int = 10_000) -> None:
         super().__init__()
@@ -82,12 +46,6 @@ class TimestepSinusoidalEmbedding(torch.nn.Module):
         self.max_period = max_period
 
     def forward(self, timestep: Tensor) -> Tensor:
-        """Args:
-            timestep: LongTensor of shape (B,).
-
-        Returns:
-            FloatTensor of shape (B, dim).
-        """
         half_dim = self.dim // 2
         freqs = torch.exp(
             -torch.arange(half_dim, dtype=torch.float32, device=timestep.device)
@@ -99,14 +57,7 @@ class TimestepSinusoidalEmbedding(torch.nn.Module):
 
 
 class KeypointDiffusionModel(torch.nn.Module):
-    """Graph diffusion model over pose keypoints.
-
-    Args:
-        config: Model hyperparameters.
-        num_keypoints: Number of keypoints per pose (default 15, canonical
-            CrowdPose + virtual root node produced by
-            :func:`src.data.prepare_pose_graph_batch`).
-    """
+    """Graph diffusion model over pose keypoints."""
 
     def __init__(
         self,
@@ -135,10 +86,7 @@ class KeypointDiffusionModel(torch.nn.Module):
             out_channels=2,
         )
 
-        # DDPM variance-preserving (VP) noise schedule.
-        # Timesteps are 1-indexed: t=1 (smallest noise) to t=T (largest noise).
-        # alpha_bars has shape (T+1,) with alpha_bars[0]=1.0 (no noise) so
-        # that t_prev=0 in DDIM produces the clean sample automatically.
+        # VP noise schedule; alpha_bars[0]=1 (clean), alpha_bars[T]=most noisy.
         T      = config.num_train_steps
         betas  = torch.linspace(1e-4, 0.02, T)                          # (T,)
         alphas = 1.0 - betas
@@ -147,10 +95,6 @@ class KeypointDiffusionModel(torch.nn.Module):
         self.register_buffer("_sqrt_alpha_bars",           ab.sqrt())
         self.register_buffer("_sqrt_one_minus_alpha_bars", (1.0 - ab).clamp(min=0.0).sqrt())
 
-    # ------------------------------------------------------------------
-    # Forward / backward diffusion
-    # ------------------------------------------------------------------
-
     def add_noise(
         self,
         node_pos: Tensor,
@@ -158,28 +102,6 @@ class KeypointDiffusionModel(torch.nn.Module):
         batch_idx: Tensor,
         **kwargs,
     ) -> tuple[Tensor, Tensor]:
-        """DDPM variance-preserving (VP) forward process.
-
-        Samples the noisy position at timestep *t* directly from the
-        closed-form marginal distribution:
-
-        .. math::
-
-            x_t = \\sqrt{\\bar\\alpha_t}\\,x_0 + \\sqrt{1-\\bar\\alpha_t}\\,\\epsilon,
-            \\quad \\epsilon \\sim \\mathcal{N}(0, I)
-
-        Args:
-            node_pos:  FloatTensor (B*N*K, 2) – clean node positions in
-                       canonical space.
-            timestep:  LongTensor  (B,)       – integer diffusion timestep
-                       in ``[1, num_train_steps]`` (1-indexed).
-            batch_idx: LongTensor  (B*N*K,)   – batch index per node (flat).
-
-        Returns:
-            noisy_node_pos: (B*N*K, 2)
-            noise:          (B*N*K, 2) – the raw unscaled Gaussian noise
-                            ``epsilon`` that was added.
-        """
         noise = torch.randn_like(node_pos)                            # (B*N*K, 2)
         a = self._sqrt_alpha_bars[timestep][batch_idx].unsqueeze(-1)  # (B*N*K, 1)
         b = self._sqrt_one_minus_alpha_bars[timestep][batch_idx].unsqueeze(-1)  # (B*N*K, 1)
@@ -195,26 +117,6 @@ class KeypointDiffusionModel(torch.nn.Module):
         timestep: Tensor,
         **kwargs,
     ) -> Tensor:
-        """Predict the position correction (delta) for every node.
-
-        The model outputs a residual ``delta_x`` such that
-        ``x_0_hat = noisy_node_pos - delta_x`` approximates the clean pose.
-        Predicting the correction rather than the absolute position biases the
-        model towards small, local adjustments.
-
-        Args:
-            noisy_node_pos: FloatTensor (B*N*K, 2)  – noisy node positions.
-            edge_index:     LongTensor  (2, B*N*E)  – block-diagonal edge index
-                            built from global flat node indices.
-            kpt_type_idx:   LongTensor  (B*N*K,)   – keypoint type per node,
-                            values in [0, K-1].  Fed into the joint-type embedding.
-            batch_idx:      LongTensor  (B*N*K,)   – batch index per node (flat).
-            timestep:       LongTensor  (B,)        – diffusion timestep.
-
-        Returns:
-            FloatTensor (B*N*K, 2) – predicted correction ``delta_x``.
-            Apply ``noisy_node_pos - delta_x`` to obtain the denoised positions.
-        """
         num_nodes = noisy_node_pos.shape[0]
 
         # 1. Position embedding
@@ -255,45 +157,6 @@ class KeypointDiffusionModel(torch.nn.Module):
         device: torch.device | None = None,
         x_init: Tensor | None = None,
     ) -> Tensor:
-        """Run DDIM denoising to a clean pose.
-
-        At each step *t* the model predicts the clean positions ``x_0_hat``
-        via ``x_0_hat = x_t - delta_x``.  The DDIM deterministic update rule
-        for the DDPM variance-preserving (VP) schedule is:
-
-        .. math::
-
-            \\hat{\\epsilon} = \\frac{x_t - \\sqrt{\\bar\\alpha_t}\\hat{x}_0}
-                                    {\\sqrt{1-\\bar\\alpha_t}}
-
-            x_{t-1} = \\sqrt{\\bar\\alpha_{t-1}}\\,\\hat{x}_0
-                    + \\sqrt{1-\\bar\\alpha_{t-1}}\\,\\hat{\\epsilon}
-
-        Args:
-            edge_index:          LongTensor  (2, B*N*E)  – block-diagonal edges
-                                 built from global flat node indices.
-            kpt_type_idx:        LongTensor  (B*N*K,)   – keypoint type per node,
-                                 values in [0, K-1].
-            batch_idx:           LongTensor  (B*N*K,)   – batch index per node.
-            num_nodes:           Total number of nodes (B*N*K).
-            num_inference_steps: Number of denoising steps.  Defaults to
-                                 ``start_t`` when *start_t* is given, else to
-                                 ``config.num_train_steps``.
-            start_t:             First (highest) timestep in the DDIM schedule.
-                                 Defaults to ``config.num_train_steps``.  Setting
-                                 this below T limits how many steps are run and
-                                 bounds the delta accumulation.
-            device:              Target device.  Inferred from *edge_index* when
-                                 ``None``.
-            x_init:              Optional FloatTensor (B*N*K, 2).  When given
-                                 the chain starts here instead of from pure
-                                 Gaussian noise.  Use this to refine existing
-                                 detector predictions.
-
-        Returns:
-            FloatTensor (B*N*K, 2) – predicted clean node positions in canonical
-            (root-relative, normalised) space.
-        """
         T       = self.config.num_train_steps
         t_start = start_t if start_t is not None else T
         S       = num_inference_steps if num_inference_steps is not None else t_start
@@ -336,54 +199,8 @@ class KeypointDiffusionModel(torch.nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Lightning training module
-# ---------------------------------------------------------------------------
-
-
 class PoseDiffusionModule(pl.LightningModule):
-    """PyTorch-Lightning wrapper for :class:`KeypointDiffusionModel`.
-
-    Training loop
-    -------------
-    For each batch:
-
-    1. Build a canonical pose-graph with :func:`src.data.prepare_pose_graph_batch`.
-    2. Sample a random diffusion timestep per image.
-    3. Add noise to node positions proportional to the timestep.
-    4. Run the backward process to predict the clean positions.
-    5. Compute MSE loss between predictions and the clean positions.
-
-    Args:
-        model: The underlying :class:`KeypointDiffusionModel`.
-        lr: Peak learning rate for Adam (default 1e-3).
-        weight_decay: AdamW weight-decay coefficient (default 0).
-        lr_T_max: Period for cosine annealing in epochs.  If ``None``,
-            no LR schedule is applied.
-        val_ann_file: Path to the CrowdPose annotation JSON for OKS scoring.
-            Required together with *val_pred_cache* to enable AP evaluation.
-        test_ann_file: Same as *val_ann_file* but for the test split.
-        val_pred_cache: Path to the prediction pickle produced by
-            ``scripts/extract_predictions.py``.  When given together with
-            *val_ann_file*, DDIM refinement is run over the cached predictions
-            at every validation epoch end and OKS-AP is logged.
-        test_pred_cache: Same as *val_pred_cache* but for the test split.
-        num_inference_steps: Number of DDIM denoising steps used when computing
-            AP.  Defaults to ``int(inference_noise_frac * num_train_steps)``.
-        ap_batch_size: Batch size for iterating the prediction cache during AP
-            evaluation (default 8).
-        ap_eval_interval: Run val AP evaluation every this many epochs.  0
-            disables val AP entirely (AP is still computed at test time).
-            Default 0.
-        inference_noise_frac: Fraction of the total diffusion timesteps to use
-            as the DDIM starting noise level.  Noise at level
-            ``round(T * inference_noise_frac)`` is added to the canonical
-            detector predictions before DDIM; the chain runs from that level
-            down to t=1.  Smaller values preserve the detector predictions
-            more faithfully (lower floor AP, faster inference).  Larger values
-            allow bigger corrections but require a more converged model.
-            Default 0.1 (10 % of T, ≈ 80 px noise at T=100, scale=800).
-    """
+    """PyTorch-Lightning wrapper for KeypointDiffusionModel."""
 
     def __init__(
         self,
@@ -416,46 +233,19 @@ class PoseDiffusionModule(pl.LightningModule):
         self._val_metric  = KeypointAPMetric(val_ann_file)  if val_ann_file  else None
         self._test_metric = KeypointAPMetric(test_ann_file) if test_ann_file else None
 
-    # ------------------------------------------------------------------
-    # AP inference helper
-    # ------------------------------------------------------------------
-
     def _ap_step(
         self,
         batch: dict,
         metric: KeypointAPMetric,
     ) -> None:
         """Refine one batch of detector predictions with DDIM and feed results to *metric*."""
-        pred_pixel, pred_scores, image_ids = self._refine_batch(batch)
+        pred_pixel, pred_scores, image_ids = self._refine_prediction_batch(batch)
         metric.update(pred_pixel, pred_scores, image_ids)
 
-    def _refine_batch(
+    def _refine_prediction_batch(
         self,
         batch: dict,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """Run DDIM refinement on one batch of detector predictions.
-
-        The canonical detector predictions are used as the DDIM starting point
-        (no noise is added).  This means an untrained model that predicts
-        delta≈0 falls back gracefully to the raw detector output, giving
-        AP ≈ detector baseline.  A trained model that learns meaningful
-        corrections can push AP above the baseline.
-
-        Adding noise before DDIM was tried but found to be harmful: the full
-        noise level (σ=1.0 in canonical space ≈ 800 px) requires the model to
-        have fully converged before AP becomes non-zero.  Without noise, AP is
-        meaningful even during early training.
-
-        Args:
-            batch: dict with keys ``pred_keypoints (B,N,14,2)``,
-                   ``pred_keypoint_scores (B,N,14)`` and ``image_id (B,)``.
-
-        Returns:
-            pred_pixel:  FloatTensor (B, N, 14, 2) – refined pixel keypoints.
-            pred_scores: FloatTensor (B, N, 14)    – original detector scores
-                         (scores are not modified by the model).
-            image_ids:   Tensor (B,)               – COCO image ids.
-        """
         pred_kpts   = batch["pred_keypoints"].to(self.device)         # (B, N, 14, 2) pixel
         pred_scores = batch["pred_keypoint_scores"].to(self.device)   # (B, N, 14)
         image_ids   = batch["image_id"]                               # (B,)
@@ -529,10 +319,6 @@ class PoseDiffusionModule(pl.LightningModule):
         for batch in tqdm(loader, desc=desc, leave=False, unit="batch"):
             self._ap_step(batch, metric)
 
-    # ------------------------------------------------------------------
-    # Shared step
-    # ------------------------------------------------------------------
-
     def _step(self, batch: dict, stage: str) -> Tensor:
         keypoints = batch["keypoints"]   # (B, N, 14, 2) pixel space
         visibility = batch["visibility"] # (B, N, 14)
@@ -580,10 +366,6 @@ class PoseDiffusionModule(pl.LightningModule):
 
         loss = torch.nn.functional.mse_loss(pred_pixel, keypoints)
         return loss, B
-
-    # ------------------------------------------------------------------
-    # Lightning hooks
-    # ------------------------------------------------------------------
 
     def training_step(self, batch: dict, batch_idx: int) -> Tensor:
         loss, B = self._step(batch, stage="train")

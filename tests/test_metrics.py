@@ -545,7 +545,7 @@ class TestKeypointAPMetricIntegration:
             patch.object(module.model, "ddim_sample",  side_effect=lambda **kw: kw["x_init"]),
         ):
             for batch in loader:
-                pred_pixel, pred_scores, image_ids = module._refine_batch(batch)
+                pred_pixel, pred_scores, image_ids = module._refine_prediction_batch(batch)
                 m_id.update(pred_pixel, pred_scores, image_ids)
         ap_identity = m_id.compute().get("coco/AP", -1.0)
 
@@ -609,7 +609,7 @@ class TestKeypointAPMetricIntegration:
             patch.object(module.model, "add_noise",   side_effect=capture_add_noise),
             patch.object(module.model, "ddim_sample", side_effect=capture_ddim),
         ):
-            module._refine_batch(dummy_batch)
+            module._refine_prediction_batch(dummy_batch)
 
         expected_t_start = max(1, round(T * frac))          # 15
         expected_S       = expected_t_start                  # default: S = t_start

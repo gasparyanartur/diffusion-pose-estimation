@@ -15,11 +15,6 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
-
-
 def load_gt_annotations(
     ann_path: Path | str,
 ) -> dict[int, list[dict[str, Any]]]:
@@ -34,15 +29,7 @@ def load_gt_annotations(
 
 
 class PoseDataset(Dataset):
-    """One sample per image; N people, K=14 keypoints each.
-    Pairs with SceneGraphSampler so every batch has uniform N.
-
-    __getitem__ returns:
-        image_id    int
-        img_path    str
-        keypoints   Tensor[N, 14, 2]  – raw (x, y) CrowdPose joints
-        visibility  Tensor[N, 14]     – 0=absent 1=occluded 2=visible
-    """
+    """One sample per image; N people, K=14 keypoints each."""
 
     def __init__(
         self,
@@ -121,17 +108,7 @@ class PoseDataset(Dataset):
 
 
 class PredictionDataset(PoseDataset):
-    """PoseDataset + model predictions. Predictions are returned by __getitem__.
-    GT annotations (ragged N_gt) are available via get_gt(image_id).
-
-    __getitem__ returns:
-        image_id             int
-        img_path             str
-        pred_keypoints       Tensor[N, K, 2]
-        pred_keypoint_scores Tensor[N, K]
-        bboxes               Tensor[N, 4]   (top-down only)
-        bbox_scores          Tensor[N]      (top-down only)
-    """
+    """PoseDataset extended with model predictions and optional GT annotations."""
 
     def __init__(
         self,
@@ -148,10 +125,6 @@ class PredictionDataset(PoseDataset):
         self.has_bboxes: bool = bool(predictions) and "bboxes" in predictions[0]
         self._gt_by_image_id = gt_by_image_id
         self.has_gt: bool = gt_by_image_id is not None
-
-    # ------------------------------------------------------------------
-    # Constructors
-    # ------------------------------------------------------------------
 
     @classmethod
     def from_path(cls, path: Path | str, ann_path: Path | str | None = None, **kwargs: Any) -> "PredictionDataset":
@@ -193,10 +166,6 @@ class PredictionDataset(PoseDataset):
             **kwargs,
         )
 
-    # ------------------------------------------------------------------
-    # Dataset interface
-    # ------------------------------------------------------------------
-
     def __len__(self) -> int:
         return len(self.predictions)
 
@@ -214,12 +183,7 @@ class PredictionDataset(PoseDataset):
         return sample
 
     def get_gt(self, image_id: int) -> dict[str, Any] | None:
-        """Return GT keypoints and visibility for an image, or None if no annotations loaded.
-
-        Returns:
-            keypoints   Tensor[N_gt, K, 2]
-            visibility  Tensor[N_gt, K]
-        """
+        """Return GT keypoints and visibility for an image, or None if no annotations loaded."""
         if not self.has_gt or self._gt_by_image_id is None:
             return None
         gt_anns = self._gt_by_image_id.get(image_id, [])
@@ -234,11 +198,6 @@ class PredictionDataset(PoseDataset):
             "keypoints":  torch.from_numpy(kpts[:, :, :2]),  # (N_gt, K, 2)
             "visibility": torch.from_numpy(kpts[:, :, 2]),   # (N_gt, K)
         }
-
-
-# ---------------------------------------------------------------------------
-# Sampler
-# ---------------------------------------------------------------------------
 
 
 class SceneGraphSampler:
@@ -268,13 +227,6 @@ class SceneGraphSampler:
             n_people: int = sample[group_key].shape[0]
             self.groups[n_people].append(idx)
 
-        # Pre-compute the full batch list once so __iter__ is a trivial walk.
-        #
-        # Non-shuffled: batches are ordered by ascending group size, indices
-        #   within each group are in dataset order.
-        # Shuffled: indices within each group are shuffled first, then the
-        #   resulting batch list is shuffled globally so batches from different
-        #   groups are interleaved randomly.
         all_batches: list[list[int]] = []
         for n_people in sorted(self.groups):
             indices = list(self.groups[n_people])
@@ -290,20 +242,12 @@ class SceneGraphSampler:
 
         self._batches: list[list[int]] = all_batches
 
-    # ------------------------------------------------------------------
-    # Sampler interface
-    # ------------------------------------------------------------------
-
     def __iter__(self) -> Iterator[list[int]]:
         yield from self._batches
 
     def __len__(self) -> int:
         return len(self._batches)
 
-
-# ---------------------------------------------------------------------------
-# Graph utilities
-# ---------------------------------------------------------------------------
 
 # CrowdPose skeleton: 14 keypoints (0-indexed)
 # 0=left_shoulder  1=right_shoulder  2=left_elbow   3=right_elbow
@@ -401,23 +345,7 @@ def create_graph_from_keypoints(
     edge_index: Tensor,
     keypoints: Tensor,
 ) -> dict[str, Tensor]:
-    """Pack B pose graphs into a single block-diagonal PyG graph.
-
-    node_idx[b, n, k] = b*N*K + n*K + k
-
-    Args:
-        edge_index  LongTensor[2, E]   – per-keypoint edges (indices in [0, K))
-        keypoints   FloatTensor[B, N, K, 2]
-
-    Returns:
-        edge_index    (2, B*N*E)   – global block-diagonal edge index
-        node_pos      (B*N*K, 2)   – flat node positions
-        batch         (B*N*K,)     – PyG batch vector
-        batch_idx     (B, N, K)    – which sample each node belongs to
-        pose_idx      (B, N, K)    – which pose (person) each node belongs to (0..N-1)
-        kpt_type_idx  (B, N, K)    – keypoint type per node (0..K-1); use this for type embeddings
-        node_idx      (B, N, K)    – global flat node index
-    """
+    """Pack B pose graphs into a single block-diagonal PyG graph."""
     B, N, K, _ = keypoints.shape
     device = keypoints.device
 
@@ -464,23 +392,7 @@ def prepare_pose_graph_batch(
     edge_index: Tensor | None = None,
     img_size: Tensor | None = None, 
 ) -> dict[str, Tensor]:
-    """Build a canonical pose graph batch from raw CrowdPose keypoints.
-
-    Computes the root per (batch, person) using visible anchor joints
-    (left_hip, right_hip, neck); falls back to centroid of all visible joints.
-    Keypoints are then made root-relative and normalised by max(W, H)
-    (or 100 if img_size is not provided).
-
-    Args:
-        keypoints   FloatTensor[B, N, 14, 2]
-        visibility  FloatTensor[B, N, 14]    – 0=absent 1=occluded 2=visible
-        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
-        img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
-
-    Returns: output of create_graph_from_keypoints, plus:
-        visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
-        node_pos coordinates are root-relative and divided by max(W, H)
-    """
+    """Build a canonical, root-relative, normalised pose graph batch from CrowdPose keypoints."""
     if edge_index is None:
         edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
     ei = edge_index.to(keypoints.device)

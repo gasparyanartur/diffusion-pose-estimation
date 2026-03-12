@@ -12,11 +12,6 @@ import urllib.request
 from pathlib import Path
 
 
-# ---------------------------------------------------------------------------
-# Checkpoint download
-# ---------------------------------------------------------------------------
-
-
 def _progress(count: int, block: int, total: int) -> None:
     pct = min(100, int(count * block * 100 / total))
     print(f"\r  {pct:3d}%", end="", flush=True)
@@ -31,11 +26,6 @@ def download_checkpoint(url: str, dest: Path) -> None:
     print(f"[checkpoint] Downloading from:\n  {url}")
     urllib.request.urlretrieve(url, dest, _progress)
     print(f"\n[checkpoint] Saved to: {dest}")
-
-
-# ---------------------------------------------------------------------------
-# Config patching  (private)
-# ---------------------------------------------------------------------------
 
 
 def _patch_config(
@@ -76,11 +66,6 @@ def _patch_config(
     abs_ann = data_root_str + ann_file
     cfg.test_evaluator.ann_file = abs_ann
     cfg.val_evaluator.ann_file = abs_ann
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 
 def run_benchmark(
