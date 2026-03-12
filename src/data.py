@@ -29,7 +29,15 @@ def load_gt_annotations(
 
 
 class PoseDataset(Dataset):
-    """One sample per image; N people, K=14 keypoints each."""
+    """One sample per image; N people, K=14 keypoints each.
+    Pairs with SceneGraphSampler so every batch has uniform N.
+
+    __getitem__ returns:
+        image_id    int
+        img_path    str
+        keypoints   Tensor[N, 14, 2]  – raw (x, y) CrowdPose joints
+        visibility  Tensor[N, 14]     – 0=absent 1=occluded 2=visible
+    """
 
     def __init__(
         self,
@@ -227,6 +235,13 @@ class SceneGraphSampler:
             n_people: int = sample[group_key].shape[0]
             self.groups[n_people].append(idx)
 
+        # Pre-compute the full batch list once so __iter__ is a trivial walk.
+        #
+        # Non-shuffled: batches are ordered by ascending group size, indices
+        #   within each group are in dataset order.
+        # Shuffled: indices within each group are shuffled first, then the
+        #   resulting batch list is shuffled globally so batches from different
+        #   groups are interleaved randomly.
         all_batches: list[list[int]] = []
         for n_people in sorted(self.groups):
             indices = list(self.groups[n_people])
@@ -345,7 +360,23 @@ def create_graph_from_keypoints(
     edge_index: Tensor,
     keypoints: Tensor,
 ) -> dict[str, Tensor]:
-    """Pack B pose graphs into a single block-diagonal PyG graph."""
+    """Pack B pose graphs into a single block-diagonal PyG graph.
+
+    node_idx[b, n, k] = b*N*K + n*K + k
+
+    Args:
+        edge_index  LongTensor[2, E]   – per-keypoint edges (indices in [0, K))
+        keypoints   FloatTensor[B, N, K, 2]
+
+    Returns:
+        edge_index    (2, B*N*E)   – global block-diagonal edge index
+        node_pos      (B*N*K, 2)   – flat node positions
+        batch         (B*N*K,)     – PyG batch vector
+        batch_idx     (B, N, K)    – which sample each node belongs to
+        pose_idx      (B, N, K)    – which pose (person) each node belongs to (0..N-1)
+        kpt_type_idx  (B, N, K)    – keypoint type per node (0..K-1); use this for type embeddings
+        node_idx      (B, N, K)    – global flat node index
+    """
     B, N, K, _ = keypoints.shape
     device = keypoints.device
 
@@ -392,7 +423,23 @@ def prepare_pose_graph_batch(
     edge_index: Tensor | None = None,
     img_size: Tensor | None = None, 
 ) -> dict[str, Tensor]:
-    """Build a canonical, root-relative, normalised pose graph batch from CrowdPose keypoints."""
+    """Build a canonical pose graph batch from raw CrowdPose keypoints.
+
+    Computes the root per (batch, person) using visible anchor joints
+    (left_hip, right_hip, neck); falls back to centroid of all visible joints.
+    Keypoints are then made root-relative and normalised by max(W, H)
+    (or 100 if img_size is not provided).
+
+    Args:
+        keypoints   FloatTensor[B, N, 14, 2]
+        visibility  FloatTensor[B, N, 14]    – 0=absent 1=occluded 2=visible
+        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
+        img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
+
+    Returns: output of create_graph_from_keypoints, plus:
+        visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
+        node_pos coordinates are root-relative and divided by max(W, H)
+    """
     if edge_index is None:
         edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
     ei = edge_index.to(keypoints.device)

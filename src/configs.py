@@ -1,4 +1,22 @@
-"""Predefined benchmark configurations for src.benchmark.run_benchmark."""
+"""
+Predefined benchmark configurations.
+
+Each entry is a plain dict with the keys consumed by src.benchmark.run_benchmark.
+Add new dicts here to register additional model + dataset combinations.
+
+Keys
+----
+mmpose_dir       : Path  – root of the MMPose source clone
+config_path      : Path  – absolute path to the MMPose model config (.py)
+checkpoint       : Path  – local checkpoint file (.pth)
+checkpoint_url   : str | None – download URL; None to skip auto-download
+data_root        : Path  – root directory for dataset files
+ann_file         : str   – annotation file, relative to data_root
+img_prefix       : str   – image directory, relative to data_root
+metainfo_config  : Path  – absolute path to dataset metainfo config (.py)
+bbox_file        : str | None – detector-box file, relative to data_root;
+                               None → GT bounding boxes (oracle mode)
+"""
 
 from src import defaults
 
