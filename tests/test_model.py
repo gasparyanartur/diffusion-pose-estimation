@@ -779,24 +779,50 @@ class TestMultiStepAPEval:
             "ddim_sample must receive num_inference_steps=3"
         )
 
-    def test_ap_step_passes_num_steps_to_refine(self, config):
-        """_ap_step forwards num_steps down to _refine_prediction_batch."""
+    def test_ap_step_passes_num_steps_as_n_passes(self, config):
+        """_ap_step forwards num_steps as n_passes to _iterative_refine_batch."""
         model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
         M = self._B * self._N * 15
         module.model.ddim_sample = MagicMock(return_value=torch.zeros(M, 2))
 
-        captured: list[int | None] = []
-        orig = module._refine_prediction_batch
+        captured: list[int] = []
+        orig = module._iterative_refine_batch
 
-        def _spy(batch, num_steps=None):
-            captured.append(num_steps)
-            return orig(batch, num_steps=num_steps)
+        def _spy(batch, n_passes):
+            captured.append(n_passes)
+            return orig(batch, n_passes=n_passes)
 
-        module._refine_prediction_batch = _spy
+        module._iterative_refine_batch = _spy
         module._ap_step(self._pred_batch(), MagicMock(), num_steps=7)
 
         assert captured == [7]
+
+    def test_raw_refiner_skips_noise_and_uses_one_ddim_step(self, config):
+        """raw_refiner=True: add_noise is never called and ddim_sample gets num_inference_steps=1."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model, raw_refiner=True)
+        M = self._B * self._N * 15
+
+        add_noise_calls: list = []
+        orig_add_noise = module.model.add_noise
+        def _spy_add_noise(**kw):
+            add_noise_calls.append(kw)
+            return orig_add_noise(**kw)
+        module.model.add_noise = _spy_add_noise
+
+        ddim_calls: list = []
+        module.model.ddim_sample = MagicMock(
+            side_effect=lambda **kw: (ddim_calls.append(kw) or torch.zeros(M, 2))
+        )
+
+        module._refine_prediction_batch(self._pred_batch())
+
+        assert len(add_noise_calls) == 0, "raw_refiner must not call add_noise"
+        assert len(ddim_calls) == 1
+        assert ddim_calls[0]["num_inference_steps"] == 1, (
+            f"raw_refiner must use 1 DDIM step, got {ddim_calls[0]['num_inference_steps']}"
+        )
 
     def test_run_ap_eval_passes_num_steps_to_ap_step(self, config):
         """_run_ap_eval forwards num_steps to every _ap_step call."""

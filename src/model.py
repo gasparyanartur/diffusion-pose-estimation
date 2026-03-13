@@ -870,7 +870,8 @@ class PoseDiffusionModule(pl.LightningModule):
         ap_batch_size: int = 8,
         ap_eval_interval: int = 0,
         ap_step_counts: list[int] | None = None,
-        inference_noise_frac: float = 0.1,
+        start_inference_noise_frac: float = 0.4,
+        raw_refiner: bool = False,
         # DINO conditioning
         dino_model_name: str | None = None,
         dino_neighborhood_radius: int = 1,
@@ -892,7 +893,8 @@ class PoseDiffusionModule(pl.LightningModule):
         self._ap_batch_size = ap_batch_size
         self._ap_eval_interval = ap_eval_interval
         self._ap_step_counts = ap_step_counts
-        self._inference_noise_frac = inference_noise_frac
+        self._start_inference_noise_frac = start_inference_noise_frac
+        self._raw_refiner = raw_refiner
         self._val_pred_cache = val_pred_cache
         self._test_pred_cache = test_pred_cache
 
@@ -1088,13 +1090,36 @@ class PoseDiffusionModule(pl.LightningModule):
         metric: KeypointAPMetric,
         num_steps: int | None = None,
     ) -> None:
-        pred_pixel, pred_scores, image_ids = self._refine_prediction_batch(batch, num_steps=num_steps)
+        n_passes = num_steps if num_steps is not None else 1
+        pred_pixel, pred_scores, image_ids = self._iterative_refine_batch(batch, n_passes=n_passes)
         metric.update(pred_pixel, pred_scores, image_ids)
+
+    def _iterative_refine_batch(
+        self,
+        batch: dict,
+        n_passes: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Run refinement n_passes times, halving noise_frac each pass.
+
+        Pass i uses noise_frac = start_inference_noise_frac / 2^i (0-indexed),
+        feeding each pass's pixel output as the next pass's input.
+        """
+        start_frac = self._start_inference_noise_frac
+        current_batch = batch
+        for i in range(n_passes):
+            noise_frac = start_frac / (2 ** i)
+            pred_pixel, pred_scores, image_ids = self._refine_prediction_batch(
+                current_batch, noise_frac=noise_frac
+            )
+            if i < n_passes - 1:
+                current_batch = {**batch, "pred_keypoints": pred_pixel.detach()}
+        return pred_pixel, pred_scores, image_ids
 
     def _refine_prediction_batch(
         self,
         batch: dict,
         num_steps: int | None = None,
+        noise_frac: float | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         pred_kpts = batch["pred_keypoints"].to(self.device)  # (B, N, 14, 2) pixel
         pred_scores = batch["pred_keypoint_scores"].to(self.device)  # (B, N, 14)
@@ -1108,25 +1133,31 @@ class PoseDiffusionModule(pl.LightningModule):
         sample, graph = self.prepare_batch(batch)
 
         T = self.model.config.num_train_steps
-        t_start = max(1, round(T * self._inference_noise_frac))
+        frac = noise_frac if noise_frac is not None else self._start_inference_noise_frac
+        t_start = max(1, round(T * frac))
 
-        # Add a small amount of noise so the model sees in-distribution inputs
-        # while keeping predictions close to the detector output.
-        noise_timestep = torch.full(
-            (graph.B,), t_start, dtype=torch.long, device=pred_kpts.device
-        )
-        x_init_noisy, _ = self.model.add_noise(
-            node_pos=graph.node_pos,
-            timestep=noise_timestep,
-            batch_idx=graph.node_batch,
-        )  # (B*N*K, 2)
+        if self._raw_refiner:
+            # No noise — feed clean detector output directly; single backward pass.
+            x_init_noisy = graph.node_pos
+            n_steps = 1
+        else:
+            # Add a small amount of noise so the model sees in-distribution inputs
+            # while keeping predictions close to the detector output.
+            noise_timestep = torch.full(
+                (graph.B,), t_start, dtype=torch.long, device=pred_kpts.device
+            )
+            x_init_noisy, _ = self.model.add_noise(
+                node_pos=graph.node_pos,
+                timestep=noise_timestep,
+                batch_idx=graph.node_batch,
+            )  # (B*N*K, 2)
 
-        default_steps = (
-            self.num_inference_steps
-            if self.num_inference_steps is not None
-            else t_start
-        )
-        n_steps = num_steps if num_steps is not None else default_steps
+            default_steps = (
+                self.num_inference_steps
+                if self.num_inference_steps is not None
+                else t_start
+            )
+            n_steps = num_steps if num_steps is not None else default_steps
 
         nodes_canonical_flat = self.model.ddim_sample(
             edge_index=graph.edge_index,

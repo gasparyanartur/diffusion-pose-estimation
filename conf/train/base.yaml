@@ -16,9 +16,10 @@ grad_clip: 1.0          # 0 = disabled
 early_stop_patience: 0  # 0 = disabled
 
 # DDIM inference (used when running AP evaluation during training)
-num_inference_steps: null   # null → use round(inference_noise_frac × num_train_steps)
-inference_noise_frac: 0.1
-ap_step_counts: [1, 2, 4, 8]  # null → single-pass AP; list → evaluate at each step count for refinement curve
+num_inference_steps: 5   # null → use round(start_inference_noise_frac × num_train_steps) DDIM steps per pass
+start_inference_noise_frac: 0.4  # noise frac for pass 1; halved each subsequent pass (0.4 → 0.2 → 0.1 → ...)
+raw_refiner: false        # if true: skip noise, force 1 DDIM step (pure single-pass denoising)
+ap_step_counts: [1, 2, 3]  # null → single-pass AP; list → evaluate at each iterative-pass count
 
 # Logging
 log_every_n_steps: 50

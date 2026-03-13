@@ -1,12 +1,10 @@
-# KeypointDiffusionConfig — base (128-dim, 4 layers)
+# KeypointDiffusionConfig — base (shared defaults; override size params in small/large)
 
-# Feature dimensions
+# Feature dimensions (overridden by small/large)
 dim_pos: 128
 dim_index: 128
 dim_time: 128
 dim_edge: 64
-
-# GNN backbone
 dim_hidden: 128
 num_layers: 4
 num_heads: 4
@@ -16,7 +14,7 @@ num_train_steps: 100
 sigma_min: 0.002
 sigma_max: 0.5
 
-# DINO local conditioning
+# DINO local conditioning (dim overridden by small/large)
 use_image_cond: true
 dim_image_cond: 128
 

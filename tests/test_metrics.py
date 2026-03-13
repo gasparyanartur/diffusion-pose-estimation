@@ -535,7 +535,7 @@ class TestKeypointAPMetricIntegration:
                                          dim_hidden=16, num_layers=1,
                                          num_train_steps=100)
         model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
-        module = PoseDiffusionModule(model=model, inference_noise_frac=0.0)  # no noise
+        module = PoseDiffusionModule(model=model, start_inference_noise_frac=0.0)  # no noise
         module.eval()
 
         dataset = PredictionDataset.from_path(str(PRED_CACHE))
@@ -572,7 +572,7 @@ class TestKeypointAPMetricIntegration:
             "(check root_pos / scale passing or root-keypoint dropping)."
         )
 
-    def test_inference_noise_frac_controls_starting_timestep(self):
+    def test_start_inference_noise_frac_controls_starting_timestep(self):
         """_refine_batch must add noise at t_start=round(T*frac), not at T=100.
 
         We verify the mechanism (not AP value) by monkeypatching add_noise and
@@ -594,7 +594,7 @@ class TestKeypointAPMetricIntegration:
                                          dim_hidden=16, num_layers=1,
                                          num_train_steps=T)
         model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
-        module = PoseDiffusionModule(model=model, inference_noise_frac=frac)
+        module = PoseDiffusionModule(model=model, start_inference_noise_frac=frac)
         module.eval()
 
         B = 4
