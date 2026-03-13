@@ -138,7 +138,13 @@ def main(cfg: DictConfig) -> None:
         f"{len(train_ds):,}", f"{len(val_ds):,}", f"{len(test_ds):,}",
     )
 
-    loader_kwargs = dict(batch_size=cfg.train.batch_size, num_workers=cfg.data.num_workers)
+    use_gpu = cfg.hardware.accelerator in ("gpu", "cuda")
+    loader_kwargs = dict(
+        batch_size=cfg.train.batch_size,
+        num_workers=cfg.data.num_workers,
+        load_images=cfg.model.use_cnn_cond,  # pre-load images in workers only when CNN is active
+        pin_memory=use_gpu,
+    )
     train_loader = train_ds.create_dataloader(**loader_kwargs, shuffle=True,  drop_last=True)
     val_loader   = val_ds.create_dataloader(**loader_kwargs,   shuffle=False, drop_last=False)
     test_loader  = test_ds.create_dataloader(**loader_kwargs,  shuffle=False, drop_last=False)

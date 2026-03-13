@@ -1,4 +1,4 @@
 # Let Lightning auto-detect accelerator and devices.
 accelerator: auto
 devices: auto
-precision: 32-true
+precision: bf16-mixed

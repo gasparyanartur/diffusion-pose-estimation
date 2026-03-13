@@ -8,12 +8,12 @@ test_ann: crowdpose/annotations/crowdpose_test.json
 img_dir: crowdpose/images
 
 # Prediction caches for OKS-AP evaluation (produced by scripts/extract_predictions.py)
-val_pred_cache: null
-test_pred_cache: null
+val_pred_cache: results/cache/rtmpose-m_crowdpose_val_predictions.pkl
+test_pred_cache: results/cache/rtmpose-m_crowdpose_test_predictions.pkl
 
 # AP evaluation settings
 ap_batch_size: 256
-ap_eval_interval: 0   # 0 = disable periodic val AP; AP still runs once after training
+ap_eval_interval: 10   # run val AP every N epochs (0 = only after training)
 
 # DataLoader
 num_workers: 4

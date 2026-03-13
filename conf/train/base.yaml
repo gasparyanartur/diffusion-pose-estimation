@@ -10,7 +10,7 @@ cfg_guidance_scale: 1.0  # classifier-free guidance at inference; 1.0 = no guida
 
 # Trainer
 batch_size: 256
-max_epochs: 5000
+max_epochs: 1000
 seed: 42
 grad_clip: 1.0          # 0 = disabled
 early_stop_patience: 0  # 0 = disabled

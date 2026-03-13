@@ -955,6 +955,19 @@ class PoseDiffusionModule(pl.LightningModule):
     # Batch preparation (graph build + optional DINO conditioning)
     # ------------------------------------------------------------------
 
+    def transfer_batch_to_device(self, batch: dict, device: torch.device, dataloader_idx: int) -> dict:
+        """Move batch to device, but keep pre-loaded images on CPU.
+
+        Lightning normally moves every tensor in the batch to the accelerator
+        device.  Images are only needed on CPU for patch extraction, so we pop
+        them out before the transfer and put them back afterwards.
+        """
+        images = batch.pop("image", None)
+        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
+        if images is not None:
+            batch["image"] = images  # keep as CPU tensors
+        return batch
+
     def prepare_batch(self, batch: dict, augment: bool = False) -> dict:
         """Build graph, optionally augment (jitter before conditioning so coordinates match), add image conditioning."""
         prepare_pose_graph_batch(batch)
@@ -1107,8 +1120,11 @@ class PoseDiffusionModule(pl.LightningModule):
 
         if self.cnn_conditioner is not None:
             cnn = self.cnn_conditioner
-            # Keep images on CPU — only the extracted patches are moved to GPU.
-            images_cpu = [read_image(p).float().div(255.0) for p in batch["img_path"]]
+            # Use images pre-loaded by DataLoader workers if available;
+            # otherwise fall back to reading from disk on the training process.
+            images_cpu: list[Tensor] = batch.get("image") or [
+                read_image(p).float().div(255.0) for p in batch["img_path"]
+            ]
             cnn_feat = torch.stack([
                 cnn.cnn(
                     cnn._extract_patches(images_cpu[b], kpt[b].cpu()).to(self.device)

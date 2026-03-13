@@ -49,6 +49,17 @@ def load_gt_annotations(
     return gt
 
 
+def _collate_with_images(batch: list[dict]) -> dict:
+    """Like default_collate but keeps 'image' as a list (images have variable spatial size)."""
+    import torch.utils.data
+    images = [s["image"] for s in batch] if "image" in batch[0] else None
+    other = [{k: v for k, v in s.items() if k != "image"} for s in batch]
+    result = torch.utils.data.default_collate(other)
+    if images is not None:
+        result["image"] = images
+    return result
+
+
 class PoseDataset(Dataset):
     """One sample per image; N people, K=14 keypoints each.
     Pairs with SceneGraphSampler so every batch has uniform N.
@@ -64,9 +75,11 @@ class PoseDataset(Dataset):
         self,
         samples: list[dict[str, Any]],
         num_keypoints: int = 14,
+        load_images: bool = False,
     ) -> None:
         self.samples = samples
         self.num_keypoints = num_keypoints
+        self._load_images = load_images
 
     @classmethod
     def from_path(
@@ -119,21 +132,41 @@ class PoseDataset(Dataset):
         shuffle: bool = True,
         drop_last: bool = False,
         num_workers: int = 0,
+        load_images: bool = False,
+        pin_memory: bool = False,
         **kwargs: Any,
     ) -> "torch.utils.data.DataLoader":
-        """DataLoader backed by SceneGraphSampler (homogeneous N per batch)."""
+        """DataLoader backed by SceneGraphSampler (homogeneous N per batch).
+
+        Args:
+            load_images: If True, each worker loads the full image tensor in
+                __getitem__ and stores it in batch["image"] as a list.  This
+                moves disk I/O off the GPU-process training step and into the
+                CPU worker threads, overlapping with GPU compute.
+            pin_memory: Use pinned (page-locked) memory for faster host→GPU
+                transfers.  Recommended when training on a GPU.
+        """
         import torch.utils.data
+        self._load_images = load_images
         sampler = SceneGraphSampler(self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
         return torch.utils.data.DataLoader(
-            self, batch_sampler=sampler, collate_fn=torch.utils.data.default_collate,
-            num_workers=num_workers, **kwargs,
+            self, batch_sampler=sampler,
+            collate_fn=_collate_with_images,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(num_workers > 0),
+            **kwargs,
         )
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
-        return self.samples[idx]
+        sample = self.samples[idx]
+        if self._load_images:
+            sample = dict(sample)  # shallow copy to avoid mutating the cache
+            sample["image"] = read_image(sample["img_path"]).float().div(255.0)
+        return sample
 
 
 class PredictionDataset(PoseDataset):
