@@ -51,11 +51,35 @@ DEKR_W32_CROWDPOSE_300: dict = {
         "dekr_hrnet-w32_8xb10-300e_crowdpose-512x512_147bae97-20221228.pth"
     ),
     "data_root": defaults.DATA_ROOT,
-    "ann_file": "crowdpose/annotations/mmpose_crowdpose_test.json",
+    "ann_file": "crowdpose/annotations/crowdpose_test.json",
     "img_prefix": "crowdpose/images/",
     "metainfo_config": defaults.MMPOSE_DIR / "configs/_base_/datasets/crowdpose.py",
     "bbox_file": None,  # bottom-up: no person detector needed
 }
+
+
+
+# w48
+DEKR_W48_CROWDPOSE_300: dict = {
+    "name": "dekr_hrnet-w48_8xb5-300e_crowdpose-640x640",
+    "mmpose_dir": defaults.MMPOSE_DIR,
+    "config_path": (
+        defaults.MMPOSE_DIR
+        / "configs/body_2d_keypoint/dekr/crowdpose"
+        / "dekr_hrnet-w48_8xb5-300e_crowdpose-640x640.py"
+    ),
+    "checkpoint": defaults.CHECKPOINTS_DIR / "dekr-hrnet-w48_crowdpose.pth",
+    "checkpoint_url": (
+        "https://download.openmmlab.com/mmpose/v1/body_2d_keypoint/dekr/crowdpose/"
+        "dekr_hrnet-w48_8xb5-300e_crowdpose-640x640_4ea6031e-20230128.pth"
+    ),
+    "data_root": defaults.DATA_ROOT,
+    "ann_file": "crowdpose/annotations/crowdpose_test.json",
+    "img_prefix": "crowdpose/images/",
+    "metainfo_config": defaults.MMPOSE_DIR / "configs/_base_/datasets/crowdpose.py",
+    "bbox_file": None,  # bottom-up: no person detector needed
+}
+
 
 # ---------------------------------------------------------------------------
 # RTMPose-M  ×  CrowdPose  (210 epochs)
@@ -84,7 +108,7 @@ RTMPOSE_M_CROWDPOSE_210: dict = {
 # ---------------------------------------------------------------------------
 # Registry  –  maps name → config dict
 # ---------------------------------------------------------------------------
-ALL_CONFIGS = [DEKR_W32_CROWDPOSE_300, RTMPOSE_M_CROWDPOSE_210]
+ALL_CONFIGS = [DEKR_W32_CROWDPOSE_300, RTMPOSE_M_CROWDPOSE_210, DEKR_W48_CROWDPOSE_300]
 REGISTRY: dict[str, dict] = {
     cfg["name"]: cfg
     for cfg in ALL_CONFIGS
