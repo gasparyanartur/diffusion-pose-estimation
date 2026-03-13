@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.data import prepare_pose_graph_batch
+from src.data import prepare_sample, prepare_pose_graph_batch
 from src.metrics import KeypointAPMetric, canonical_to_pixel
 
 # ---------------------------------------------------------------------------
@@ -32,6 +32,7 @@ NUM_KP_CANONICAL = 15  # after virtual root is prepended
 
 VAL_ANN_FILE  = Path("data/crowdpose/annotations/crowdpose_val.json")
 PRED_CACHE    = Path("results/cache/rtmpose-m_crowdpose_val_predictions.pkl")
+MINI_ANN_FILE = Path("tests/fixtures/mini_crowdpose_val.json")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,19 +57,13 @@ def _ones_vis(B: int, N: int, K: int = NUM_KP) -> torch.Tensor:
 class TestCanonicalToPixel:
     """Verify that the coordinate inversion is exact and handles all input shapes."""
 
-    def test_roundtrip_recovers_original_keypoints(self):
-        """Encoding via prepare_pose_graph_batch then decoding via
-        canonical_to_pixel should give back the exact pixel keypoints."""
-        B, N = 3, 4
-        kpts = _rand_pixel_kpts(B, N)
-        vis  = _ones_vis(B, N)
-
-        graph     = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
-        canonical = graph["node_pos"].view(B, N, NUM_KP_CANONICAL, 2)  # (B, N, 15, 2)
-        recovered = canonical_to_pixel(canonical, graph["root_pos"], scale=graph["scale"])
-
+    def test_roundtrip_recovers_original_keypoints(self, sample_b2n3, graph_b2n3):
+        """canonical_to_pixel must exactly invert prepare_pose_graph_batch."""
+        B, N = sample_b2n3.B, sample_b2n3.N
+        canonical = graph_b2n3.node_pos.view(B, N, NUM_KP_CANONICAL, 2)
+        recovered = canonical_to_pixel(canonical, graph_b2n3.root_pos, scale=graph_b2n3.scale)
         assert recovered.shape == (B, N, NUM_KP, 2)
-        torch.testing.assert_close(recovered, kpts, atol=1e-4, rtol=1e-4,
+        torch.testing.assert_close(recovered, sample_b2n3.keypoints, atol=1e-4, rtol=1e-4,
                                    msg="canonical→pixel roundtrip must recover original keypoints")
 
     def test_virtual_root_is_dropped(self):
@@ -136,17 +131,15 @@ class TestCanonicalToPixel:
 
         torch.testing.assert_close(out_b - out_a, torch.ones_like(out_a) * 50.0)
 
-    def test_roundtrip_with_partial_visibility(self):
+    def test_roundtrip_with_partial_visibility(self, sample_b2n3):
         """Roundtrip still works correctly when some joints are invisible (vis=0)."""
-        B, N = 2, 3
-        kpts = _rand_pixel_kpts(B, N)
-        vis  = (torch.rand(B, N, NUM_KP) > 0.4).float()  # ~60 % visible
-
-        graph     = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
-        canonical = graph["node_pos"].view(B, N, NUM_KP_CANONICAL, 2)
-        recovered = canonical_to_pixel(canonical, graph["root_pos"], scale=graph["scale"])
-
-        torch.testing.assert_close(recovered, kpts, atol=1e-4, rtol=1e-4)
+        B, N = sample_b2n3.B, sample_b2n3.N
+        vis_partial = (torch.rand(B, N, NUM_KP) > 0.4).float()
+        _s = prepare_sample({"keypoints": sample_b2n3.keypoints, "visibility": vis_partial})
+        graph = prepare_pose_graph_batch(_s)
+        canonical = graph.node_pos.view(B, N, NUM_KP_CANONICAL, 2)
+        recovered = canonical_to_pixel(canonical, graph.root_pos, scale=graph.scale)
+        torch.testing.assert_close(recovered, sample_b2n3.keypoints, atol=1e-4, rtol=1e-4)
 
 
 # ===========================================================================
@@ -279,13 +272,35 @@ def val_metric():
     return KeypointAPMetric(str(VAL_ANN_FILE))
 
 
+@pytest.fixture(scope="module")
+def mini_metric():
+    """KeypointAPMetric backed by the checked-in mini fixture (always available)."""
+    import sys
+    sys.path.insert(0, "external/mmpose")
+    return KeypointAPMetric(str(MINI_ANN_FILE))
+
+
+@pytest.fixture
+def sample_b2n3() -> object:
+    """Canonical B=2, N=3 PoseSample with full visibility; seed=0."""
+    kpts = _rand_pixel_kpts(2, 3)
+    vis  = _ones_vis(2, 3)
+    return prepare_sample({"keypoints": kpts, "visibility": vis})
+
+
+@pytest.fixture
+def graph_b2n3(sample_b2n3) -> object:
+    """PoseGraphBatch built from sample_b2n3."""
+    return prepare_pose_graph_batch(sample_b2n3)
+
+
 class TestKeypointAPMetricIntegration:
     """Integration tests that need the real annotation file."""
 
     # --- reset ---
 
-    def test_reset_clears_state(self, val_metric):
-        m = val_metric
+    def test_reset_clears_state(self, mini_metric):
+        m = mini_metric
         m.reset()
         valid_id = list(m._valid_img_ids)[0]
         kpts   = torch.rand(1, 1, NUM_KP, 2) * 640
@@ -297,10 +312,10 @@ class TestKeypointAPMetricIntegration:
 
     # --- _n_images counting ---
 
-    def test_n_images_equals_persons_processed(self, val_metric):
+    def test_n_images_equals_persons_processed(self, mini_metric):
         """_n_images must equal the total number of person samples sent to
         CocoMetric.process, not the number of images (they differ by N people)."""
-        m = val_metric
+        m = mini_metric
         m.reset()
 
         valid_ids = list(m._valid_img_ids)[:3]
@@ -313,9 +328,9 @@ class TestKeypointAPMetricIntegration:
             f"Expected _n_images={B*N} (one per person), got {m._n_images}"
         )
 
-    def test_n_images_matches_metric_results_length(self, val_metric):
+    def test_n_images_matches_metric_results_length(self, mini_metric):
         """_n_images must equal len(metric.results) so collect_results doesn't truncate."""
-        m = val_metric
+        m = mini_metric
         m.reset()
 
         valid_ids = list(m._valid_img_ids)[:4]
@@ -328,8 +343,8 @@ class TestKeypointAPMetricIntegration:
             "_n_images must equal len(metric.results) or collect_results will truncate"
         )
 
-    def test_invalid_image_ids_are_skipped(self, val_metric):
-        m = val_metric
+    def test_invalid_image_ids_are_skipped(self, mini_metric):
+        m = mini_metric
         m.reset()
         # IDs that are definitely not in the val set
         bad_ids = torch.tensor([-1, -2, -3])
@@ -338,8 +353,8 @@ class TestKeypointAPMetricIntegration:
         m.update(kpts, scores, bad_ids)
         assert m._n_images == 0
 
-    def test_mixed_valid_invalid_ids(self, val_metric):
-        m = val_metric
+    def test_mixed_valid_invalid_ids(self, mini_metric):
+        m = mini_metric
         m.reset()
         valid_id = list(m._valid_img_ids)[0]
         N = 2
@@ -352,8 +367,8 @@ class TestKeypointAPMetricIntegration:
 
     # --- compute returns empty dict when no predictions ---
 
-    def test_compute_returns_empty_dict_when_no_predictions(self, val_metric):
-        m = val_metric
+    def test_compute_returns_empty_dict_when_no_predictions(self, mini_metric):
+        m = mini_metric
         m.reset()
         result = m.compute()
         assert result == {}, f"Expected empty dict, got {result}"
@@ -401,9 +416,9 @@ class TestKeypointAPMetricIntegration:
 
     # --- multiple people per image all survive (anti-regression for the id-collision bug) ---
 
-    def test_all_persons_survive_deduplication(self, val_metric):
+    def test_all_persons_survive_deduplication(self, mini_metric):
         """N people per image must all be present in metric.results — not deduplicated."""
-        m = val_metric
+        m = mini_metric
         m.reset()
 
         valid_id = list(m._valid_img_ids)[0]
@@ -479,10 +494,11 @@ class TestKeypointAPMetricIntegration:
             m_raw.update(pred_kpts, pred_scores, batch["image_id"])
 
             # Canonical roundtrip (simulate a perfect delta=0 model)
-            g = prepare_pose_graph_batch({"keypoints": pred_kpts, "visibility": vis})
+            _sample = prepare_sample({"keypoints": pred_kpts, "visibility": vis})
+            g = prepare_pose_graph_batch(_sample)
             B2, N2 = pred_kpts.shape[:2]
-            canonical = g["node_pos"].view(B2, N2, 15, 2)
-            recovered = canonical_to_pixel(canonical, g["root_pos"], scale=g["scale"])
+            canonical = g.node_pos.view(B2, N2, 15, 2)
+            recovered = canonical_to_pixel(canonical, g.root_pos, scale=g.scale)
             m_roundtrip.update(recovered, pred_scores, batch["image_id"])
 
         ap_raw       = m_raw.compute().get("coco/AP", -1.0)
@@ -516,7 +532,7 @@ class TestKeypointAPMetricIntegration:
         )
 
         cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
-                                         dim_bone=16, dim_hidden=16, num_layers=1,
+                                         dim_hidden=16, num_layers=1,
                                          num_train_steps=100)
         model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
         module = PoseDiffusionModule(model=model, inference_noise_frac=0.0)  # no noise
@@ -565,10 +581,7 @@ class TestKeypointAPMetricIntegration:
         matters is that the noise is small (frac*T, not T) so a TRAINED model
         that predicts delta≈0 can gracefully fall back to the detector output.
         """
-        import sys
-        sys.path.insert(0, "external/mmpose")
         from unittest.mock import patch
-        from src.data import PredictionDataset
         from src.model import (
             KeypointDiffusionConfig,
             KeypointDiffusionModel,
@@ -578,15 +591,12 @@ class TestKeypointAPMetricIntegration:
         frac   = 0.15
         T      = 100
         cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
-                                         dim_bone=16, dim_hidden=16, num_layers=1,
+                                         dim_hidden=16, num_layers=1,
                                          num_train_steps=T)
         model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
         module = PoseDiffusionModule(model=model, inference_noise_frac=frac)
         module.eval()
 
-        # Build a minimal single-batch dataset from a few dummy samples
-        # (We only need one batch to check the timestep values)
-        import torch
         B = 4
         dummy_batch = {
             "pred_keypoints":       torch.rand(B, 2, 14, 2) * 800,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -12,7 +12,10 @@ from torch.utils.data import DataLoader
 
 from src.data import (
     CANONICAL_POSE_GRAPH_EDGE_LIST,
+    PoseSample,
+    PoseGraphBatch,
     make_edge_index,
+    prepare_sample,
     prepare_pose_graph_batch,
     SceneGraphSampler,
     PoseDataset,
@@ -107,6 +110,24 @@ def module(model) -> PoseDiffusionModule:
     return PoseDiffusionModule(model=model)
 
 
+@pytest.fixture
+def batch_b4n3() -> dict[str, Any]:
+    """Canonical B=4, N=3 batch dict."""
+    return _make_batch(B=BATCH_SIZE, N=N_POSES)
+
+
+@pytest.fixture
+def sample_b4n3(batch_b4n3) -> PoseSample:
+    """Canonical B=4, N=3 PoseSample."""
+    return prepare_sample(batch_b4n3)
+
+
+@pytest.fixture
+def graph_b4n3(sample_b4n3) -> PoseGraphBatch:
+    """Canonical B=4, N=3 PoseGraphBatch."""
+    return prepare_pose_graph_batch(sample_b4n3)
+
+
 # ---------------------------------------------------------------------------
 # TimestepSinusoidalEmbedding
 # ---------------------------------------------------------------------------
@@ -155,66 +176,39 @@ class TestTimestepSinusoidalEmbedding:
 
 
 class TestAddNoise:
-    def test_output_shapes(self, model):
-        B, N, K = 3, N_POSES, NUM_KEYPOINTS_CANONICAL
-        node_pos = torch.rand(B * N * K, 2)
-        batch_idx = torch.arange(B).repeat_interleave(N * K)
-        timestep = torch.randint(0, model.config.num_train_steps, (B,))
+    def test_output_shapes(self, model, graph_b4n3):
+        g = graph_b4n3
+        timestep = torch.randint(0, model.config.num_train_steps, (g.B,))
+        noisy, noise = model.add_noise(g.node_pos, timestep, g.node_batch)
+        assert noisy.shape == g.node_pos.shape
+        assert noise.shape == g.node_pos.shape
 
-        noisy, noise = model.add_noise(node_pos, timestep, batch_idx)
+    def test_zero_timestep_leaves_positions_unchanged(self, model, graph_b4n3):
+        """At t=0 sigma=0 so add_noise must return x unchanged (noise contribution = sigma*eps = 0)."""
+        g = graph_b4n3
+        timestep = torch.zeros(g.B, dtype=torch.long)
+        noisy, noise = model.add_noise(g.node_pos, timestep, g.node_batch)
+        assert torch.allclose(noisy, g.node_pos, atol=1e-6)
+        assert noise.shape == g.node_pos.shape
 
-        assert noisy.shape == node_pos.shape, "noisy_node_pos shape mismatch"
-        assert noise.shape == node_pos.shape, "noise shape mismatch"
-
-    def test_zero_timestep_leaves_positions_unchanged(self, model):
-        """At t=0 sigma=0, so the VE forward process adds no noise: noisy == clean.
-
-        The returned ``noise`` tensor is the raw unit Gaussian epsilon and is
-        NOT zero at t=0; only the *noise contribution* (sigma * epsilon, sigma=0)
-        is zero.
-        """
-        B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
-        node_pos = torch.rand(B * N * K, 2)
-        batch_idx = torch.arange(B).repeat_interleave(N * K)
-        timestep = torch.zeros(B, dtype=torch.long)
-
-        noisy, noise = model.add_noise(node_pos, timestep, batch_idx)
-
-        assert torch.allclose(noisy, node_pos, atol=1e-6), \
-            "Zero timestep should add no noise to the positions (b=0 in VP schedule)"
-        # noise is raw epsilon (std~1), not the scaled contribution
-        assert noise.shape == node_pos.shape
-
-    def test_max_timestep_adds_full_noise(self, model):
-        """At t≈T the noise level ≈ sigma_max, so |noisy - x0| should be substantial."""
+    def test_max_timestep_adds_full_noise(self, model, graph_b4n3):
+        """At t≈T the noise level ≈ sigma_max; with x0=0 the noisy output equals sigma*eps."""
+        g = graph_b4n3
         T = model.config.num_train_steps
-        B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
-        node_pos = torch.zeros(B * N * K, 2)
-        batch_idx = torch.arange(B).repeat_interleave(N * K)
-        timestep = torch.full((B,), T - 1, dtype=torch.long)  # t = T-1
+        node_pos = torch.zeros_like(g.node_pos)  # x0=0: noisy − 0 = noise contribution
+        timestep = torch.full((g.B,), T - 1, dtype=torch.long)
+        noisy, noise = model.add_noise(node_pos, timestep, g.node_batch)
+        assert noise.abs().mean().item() > 0.1
 
-        noisy, noise = model.add_noise(node_pos, timestep, batch_idx)
-
-        # noise should have magnitude proportional to (T-1)/T ≈ 1
-        assert noise.abs().mean().item() > 0.1, "Max timestep should add meaningful noise"
-
-    def test_noise_scales_with_timestep(self, model):
-        """Higher timesteps produce larger deviation from the clean positions.
-
-        In the VE schedule ``x_t = x0 + sigma_t * eps``, sigma_t grows with t,
-        so ``(noisy_high - x0).abs()`` > ``(noisy_low - x0).abs()``.
-        """
-        B, N, K = 4, N_POSES, NUM_KEYPOINTS_CANONICAL
-        node_pos = torch.zeros(B * N * K, 2)  # x0 = 0, so noisy == noise contribution
-        batch_idx = torch.arange(B).repeat_interleave(N * K)
-
+    def test_noise_scales_with_timestep(self, model, graph_b4n3):
+        """sigma_t grows with t: deviation from clean positions must increase with timestep."""
+        g = graph_b4n3
+        node_pos = torch.zeros_like(g.node_pos)  # x0=0: deviation = sigma_t * eps
         torch.manual_seed(0)
-        noisy_low, _ = model.add_noise(node_pos, torch.full((B,), 10, dtype=torch.long), batch_idx)
+        noisy_low,  _ = model.add_noise(node_pos, torch.full((g.B,), 10, dtype=torch.long), g.node_batch)
         torch.manual_seed(0)
-        noisy_high, _ = model.add_noise(node_pos, torch.full((B,), 40, dtype=torch.long), batch_idx)
-
-        assert noisy_high.abs().mean() > noisy_low.abs().mean(), \
-            "Higher timestep should produce larger deviation from clean positions"
+        noisy_high, _ = model.add_noise(node_pos, torch.full((g.B,), 40, dtype=torch.long), g.node_batch)
+        assert noisy_high.abs().mean() > noisy_low.abs().mean()
 
 
 # ---------------------------------------------------------------------------
@@ -223,70 +217,43 @@ class TestAddNoise:
 
 
 class TestBackwardProcess:
-    def _make_graph(self, B: int, N: int) -> dict[str, torch.Tensor]:
-        """Build a minimal pose graph for B images with N people each."""
-        K = NUM_KEYPOINTS_CANONICAL
-        kpts = torch.rand(B, N, K, 2) * 100
-        vis = torch.ones(B, N, NUM_KEYPOINTS_CROWDPOSE)
-        # Use raw CrowdPose keypoints for prepare_pose_graph_batch (expects 14 kp)
-        raw_kpts = kpts[:, :, :NUM_KEYPOINTS_CROWDPOSE, :]
-        return prepare_pose_graph_batch({"keypoints": raw_kpts, "visibility": vis})
-
-    def test_output_shape(self, model):
-        B, N = 3, N_POSES
-        K = NUM_KEYPOINTS_CANONICAL
-        g = self._make_graph(B, N)
-
-        node_pos = g["node_pos"]
-        batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_steps, (B,))
-
+    def test_output_shape(self, model, graph_b4n3):
+        g = graph_b4n3
+        timestep = torch.randint(0, model.config.num_train_steps, (g.B,))
         pred = model.backward_process(
-            noisy_node_pos=node_pos,
-            edge_index=g["edge_index"],
-            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
-            batch_idx=batch_idx,
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
             timestep=timestep,
         )
-        assert pred.shape == (B * N * K, 2), f"Expected ({B*N*K}, 2), got {pred.shape}"
+        assert pred.shape == (g.num_nodes, 2)
 
-    def test_output_is_float32(self, model):
-        B, N = 2, N_POSES
-        g = self._make_graph(B, N)
-        batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_steps, (B,))
-
+    def test_output_is_float32(self, model, graph_b4n3):
+        g = graph_b4n3
+        timestep = torch.randint(0, model.config.num_train_steps, (g.B,))
         pred = model.backward_process(
-            noisy_node_pos=g["node_pos"],
-            edge_index=g["edge_index"],
-            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
-            batch_idx=batch_idx,
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
             timestep=timestep,
         )
         assert pred.dtype == torch.float32
 
-    def test_gradients_flow_through_prediction(self, model):
+    def test_gradients_flow_through_prediction(self, model, graph_b4n3):
         """Loss computed on backward_process output should allow gradients to flow."""
-        B, N = 2, N_POSES
-        g = self._make_graph(B, N)
-        batch_idx = g["batch"]
-        timestep = torch.randint(0, model.config.num_train_steps, (B,))
-
+        g = graph_b4n3
+        timestep = torch.randint(0, model.config.num_train_steps, (g.B,))
         pred = model.backward_process(
-            noisy_node_pos=g["node_pos"],
-            edge_index=g["edge_index"],
-            kpt_type_idx=g["kpt_type_idx"].reshape(-1),
-            batch_idx=batch_idx,
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
             timestep=timestep,
         )
-        loss = pred.mean()
-        loss.backward()
-
-        # At least one parameter should have a non-None, non-zero gradient
-        has_grad = any(
-            p.grad is not None and p.grad.abs().sum() > 0
-            for p in model.parameters()
-        )
+        pred.mean().backward()
+        has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters())
         assert has_grad, "No gradients reached model parameters"
 
 
@@ -302,44 +269,34 @@ class TestPoseDiffusionModule:
         sampler = SceneGraphSampler(ds, batch_size=BATCH_SIZE, shuffle=False)
         return DataLoader(ds, batch_sampler=sampler)
 
-    def test_training_step_returns_scalar_loss(self, module):
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        loss = module.training_step(batch, batch_idx=0)
-        assert loss.ndim == 0, "Loss should be a scalar tensor"
-        assert loss.item() >= 0.0, "MSE loss must be non-negative"
+    def test_training_step_returns_scalar_loss(self, module, batch_b4n3):
+        loss = module.training_step(batch_b4n3, batch_idx=0)
+        assert loss.ndim == 0
+        assert loss.item() >= 0.0
 
-    def test_training_step_loss_is_finite(self, module):
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        loss = module.training_step(batch, batch_idx=0)
-        assert torch.isfinite(loss), f"Loss is not finite: {loss.item()}"
+    def test_training_step_loss_is_finite(self, module, batch_b4n3):
+        loss = module.training_step(batch_b4n3, batch_idx=0)
+        assert torch.isfinite(loss)
 
-    def test_training_step_gradients_propagate(self, module):
-        """Calling backward() on the training-step loss should populate all parameter gradients."""
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        loss = module.training_step(batch, batch_idx=0)
+    def test_training_step_gradients_propagate(self, module, batch_b4n3):
+        """backward() on the training-step loss must populate all parameter gradients."""
+        loss = module.training_step(batch_b4n3, batch_idx=0)
         loss.backward()
-
         for name, param in module.named_parameters():
             assert param.grad is not None, f"Parameter '{name}' has no gradient"
 
-    def test_training_step_loss_decreases_over_steps(self, module):
+    def test_training_step_loss_decreases_over_steps(self, module, batch_b4n3):
         """A few gradient steps with Adam should reduce the training loss."""
         optimizer = torch.optim.Adam(module.parameters(), lr=1e-2)
-
         torch.manual_seed(0)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES, seed=0)
-
         losses = []
         for _ in range(5):
             optimizer.zero_grad()
-            loss = module.training_step(batch, batch_idx=0)
+            loss = module.training_step(batch_b4n3, batch_idx=0)
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
-
-        assert losses[-1] < losses[0], (
-            f"Loss did not decrease over 5 steps: {losses}"
-        )
+        assert losses[-1] < losses[0], f"Loss did not decrease over 5 steps: {losses}"
 
     def test_configure_optimizers_returns_adamw(self, module):
         result = module.configure_optimizers()
@@ -388,9 +345,13 @@ def _make_mock_dino(dim: int, raw_dim: int | None = None):
         b_, n_, k_, _ = kpt_pixel.shape
         return torch.zeros(b_, n_, k_, raw_dim)
 
+    def _fetch(image_ids, device=None):
+        return torch.zeros(len(image_ids), 196, raw_dim)
+
     mock.proj = torch.nn.Linear(raw_dim, dim)
     mock.side_effect = _call
     mock._gather_neighborhood = MagicMock(side_effect=_gather)
+    mock.fetch_patch_feats = MagicMock(side_effect=_fetch)
     return mock
 
 
@@ -465,22 +426,13 @@ class TestPatchCNNConditioner:
 
         Non-contiguous inputs (e.g. from expand()) can trigger the CUDA allocator
         assertion (!block->expandable_segment_) when passed to Conv2d.
+        Note: per-channel slices like patches[:, :3] are never contiguous; only
+        the full (M, 5, P, P) output is required to be contiguous.
         """
         image = torch.rand(3, 64, 80)
         kpt = torch.rand(2, 3, 2) * 60
         patches = cnn_cond._extract_patches(image, kpt)
         assert patches.is_contiguous(), "patches must be contiguous for Conv2d"
-
-    def test_rgb_and_spatial_channels_contiguous_after_cat(self, cnn_cond):
-        """The full (M, 5, P, P) patches tensor from torch.cat must be contiguous.
-        (Per-channel slices like patches[:, :3] are never contiguous — only
-        the whole output matters for Conv2d.)
-        """
-        image = torch.rand(3, 64, 80)
-        kpt = torch.rand(3, 5, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)
-        # The full output is contiguous (checked separately); per-channel slices aren't.
-        assert patches.is_contiguous()
 
     def test_cnn_can_forward_extract_patches_output(self, cnn_cond):
         """cnn Sequential can run on the _extract_patches output without error."""
@@ -534,7 +486,7 @@ class TestPatchCNNConditioner:
         assert module.dino_conditioner is None   # no dino_model_name provided
         assert module.fuse_proj is None          # fusion only when BOTH conditioners active
 
-    def test_training_step_with_cnn_cond(self, cnn_config):
+    def test_training_step_with_cnn_cond(self, cnn_config, batch_b4n3):
         """End-to-end training step with CNN conditioning produces a finite loss."""
         import tempfile
         from PIL import Image as PILImage
@@ -543,21 +495,14 @@ class TestPatchCNNConditioner:
         module = PoseDiffusionModule(model)
         assert module.cnn_conditioner is not None
 
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-
-        # Write tiny real PNG images so read_image can load them
         with tempfile.TemporaryDirectory() as tmp:
-            paths = []
-            for i in range(BATCH_SIZE):
-                p = f"{tmp}/img_{i}.png"
+            paths = [f"{tmp}/img_{i}.png" for i in range(BATCH_SIZE)]
+            for p in paths:
                 PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
-                paths.append(p)
-            batch["img_path"] = paths
-
+            batch = {**batch_b4n3, "img_path": paths}
             loss = module.training_step(batch, batch_idx=0)
 
-        assert loss.ndim == 0
-        assert torch.isfinite(loss)
+        assert loss.ndim == 0 and torch.isfinite(loss)
 
 
 class TestLocalSpatialCondition:
@@ -591,18 +536,17 @@ class TestLocalSpatialCondition:
         module = PoseDiffusionModule(model)
         assert module.fuse_proj is None  # CNN only — no DINO
 
-    def test_training_step_with_combined_conditioning(self, combined_config):
+    def test_training_step_with_combined_conditioning(self, combined_config, batch_b4n3):
         """Training step with DINO (mocked) + CNN produces a finite loss."""
         import tempfile
         from PIL import Image as PILImage
 
         module = self._module_with_both(combined_config)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
         with tempfile.TemporaryDirectory() as tmp:
             paths = [f"{tmp}/img_{i}.png" for i in range(BATCH_SIZE)]
             for p in paths:
                 PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
-            batch["img_path"] = paths
+            batch = {**batch_b4n3, "img_path": paths}
             loss = module.training_step(batch, batch_idx=0)
 
         assert loss.ndim == 0 and torch.isfinite(loss)
@@ -619,9 +563,10 @@ class TestLocalSpatialCondition:
             for p in paths:
                 PILImage.new("RGB", (80, 64), color=(0, 0, 0)).save(p)
             batch["img_path"] = paths
-            module.prepare_batch(batch)
+            _, graph = module.prepare_batch(batch)
 
-        assert batch["image_cond"].shape == (2 * N_POSES * NUM_KEYPOINTS_CANONICAL, self._OUT_DIM)
+        assert graph.image_cond is not None
+        assert graph.image_cond.shape == (2 * N_POSES * NUM_KEYPOINTS_CANONICAL, self._OUT_DIM)
 
 
 class TestImageConditioning:
@@ -675,63 +620,46 @@ class TestImageConditioning:
             assert torch.allclose(result[0, 0, p], expected), \
                 f"Keypoint {p} should retrieve patch {p}, got {result[0,0,p]} vs {expected}"
 
-    def test_backward_process_accepts_image_cond(self, cond_config):
+    def test_backward_process_accepts_image_cond(self, cond_config, graph_b4n3):
         """backward_process runs without error when image_cond is supplied."""
         model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        prepare_pose_graph_batch(batch)
-
-        image_cond = torch.zeros(BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, 8)
-        t = torch.ones(BATCH_SIZE, dtype=torch.long)
+        g = graph_b4n3
+        image_cond = torch.zeros(g.num_nodes, 8)
+        t = torch.ones(g.B, dtype=torch.long)
         pred = model.backward_process(
-            noisy_node_pos=batch["node_pos"],
-            edge_index=batch["edge_index"],
-            kpt_type_idx=batch["kpt_type_idx"].reshape(-1),
-            batch_idx=batch["batch"],
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
             timestep=t,
             image_cond=image_cond,
         )
-        assert pred.shape == (BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, 2)
+        assert pred.shape == (g.num_nodes, 2)
 
-    def test_prepare_batch_adds_image_cond(self, cond_config):
+    def test_prepare_batch_adds_image_cond(self, cond_config, batch_b4n3):
         """prepare_batch populates image_cond with the right node count."""
-        from unittest.mock import patch
-        from PIL.Image import Image as PILImage
-
         model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
         module.dino_conditioner = _make_mock_dino(8)
 
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
-        mock_img = MagicMock()
-        mock_img.height, mock_img.width = 480, 640
-        mock_img.convert.return_value = mock_img
-        with patch("src.model.Image.open", return_value=mock_img):
-            module.prepare_batch(batch)
+        batch = {**batch_b4n3, "img_path": [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]}
+        with patch("src.model.read_image_size", return_value=(480, 640)):
+            _, graph = module.prepare_batch(batch)
 
-        expected_nodes = BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL
-        assert "image_cond" in batch
-        assert batch["image_cond"].shape == (expected_nodes, 8)
+        assert graph.image_cond is not None
+        assert graph.image_cond.shape == (graph.num_nodes, 8)
 
-    def test_training_step_with_image_cond(self, cond_config):
+    def test_training_step_with_image_cond(self, cond_config, batch_b4n3):
         """End-to-end training step with mock DINO produces a finite loss."""
-        from unittest.mock import patch
-
         model = KeypointDiffusionModel(cond_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
         module.dino_conditioner = _make_mock_dino(8)
 
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
-        mock_img = MagicMock()
-        mock_img.height, mock_img.width = 480, 640
-        mock_img.convert.return_value = mock_img
-        with patch("src.model.Image.open", return_value=mock_img):
+        batch = {**batch_b4n3, "img_path": [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]}
+        with patch("src.model.read_image_size", return_value=(480, 640)):
             loss = module.training_step(batch, batch_idx=0)
 
-        assert loss.ndim == 0
-        assert torch.isfinite(loss)
+        assert loss.ndim == 0 and torch.isfinite(loss)
 
 
 # ---------------------------------------------------------------------------
@@ -772,23 +700,19 @@ class TestGlobalImageCond:
         model = KeypointDiffusionModel(cfg, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         assert model.global_cond_mlp[0].in_features == cfg.dim_time
 
-    def test_get_global_image_cond_shape(self, global_config):
-        """get_global_image_cond returns (B*N*15, dim_global_image_cond)."""
+    def test_get_global_image_cond_shape(self, global_config, sample_b4n3, graph_b4n3):
+        """get_global_image_cond returns (num_nodes, dim_global_image_cond)."""
         module = self._module_with_global(global_config)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        prepare_pose_graph_batch(batch)
-        result = module.get_global_image_cond(batch)
+        result = module.get_global_image_cond(sample_b4n3, graph_b4n3)
         assert result is not None
-        assert result.shape == (BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, self._GLOBAL_DIM)
+        assert result.shape == (graph_b4n3.num_nodes, self._GLOBAL_DIM)
 
-    def test_get_global_image_cond_none_without_proj(self):
+    def test_get_global_image_cond_none_without_proj(self, sample_b4n3, graph_b4n3):
         """Returns None when use_global_image_cond=False (no proj created)."""
         cfg = KeypointDiffusionConfig(dim_time=16, num_train_steps=10)
         model = KeypointDiffusionModel(cfg, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        prepare_pose_graph_batch(batch)
-        assert module.get_global_image_cond(batch) is None
+        assert module.get_global_image_cond(sample_b4n3, graph_b4n3) is None
 
     def test_raises_if_global_cond_enabled_without_dino(self, global_config):
         """PoseDiffusionModule raises ValueError at init when use_global_image_cond=True
@@ -797,29 +721,27 @@ class TestGlobalImageCond:
         with pytest.raises(ValueError, match="use_global_image_cond"):
             PoseDiffusionModule(model)  # no dino_model_name → dino_conditioner is None
 
-    def test_backward_process_accepts_global_image_cond(self, global_config):
+    def test_backward_process_accepts_global_image_cond(self, global_config, graph_b4n3):
         """backward_process runs without error when global_image_cond is supplied."""
         model = KeypointDiffusionModel(global_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        prepare_pose_graph_batch(batch)
-        M = BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL
-        t = torch.ones(BATCH_SIZE, dtype=torch.long)
+        g = graph_b4n3
+        t = torch.ones(g.B, dtype=torch.long)
         pred = model.backward_process(
-            noisy_node_pos=batch["node_pos"],
-            edge_index=batch["edge_index"],
-            kpt_type_idx=batch["kpt_type_idx"].reshape(-1),
-            batch_idx=batch["batch"],
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
             timestep=t,
-            global_image_cond=torch.zeros(M, self._GLOBAL_DIM),
+            global_image_cond=torch.zeros(g.num_nodes, self._GLOBAL_DIM),
         )
-        assert pred.shape == (M, 2)
+        assert pred.shape == (g.num_nodes, 2)
 
-    def test_training_step_with_global_cond(self, global_config):
+    def test_training_step_with_global_cond(self, global_config, batch_b4n3):
         """End-to-end training step with global DINO conditioning produces a finite loss."""
         module = self._module_with_global(global_config)
-        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
-        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
-        loss = module.training_step(batch, batch_idx=0)
+        batch = {**batch_b4n3, "img_path": [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]}
+        with patch("src.model.read_image_size", return_value=(480, 640)):
+            loss = module.training_step(batch, batch_idx=0)
         assert loss.ndim == 0 and torch.isfinite(loss)
 
 
@@ -1114,6 +1036,32 @@ class TestAugmentations:
         cond = torch.ones(30, 16)
         image_dropout(cond, p=0.0)
         assert (cond == 1.0).all()
+
+    # --- _augment_sample and prepare_batch augmentation ---
+
+    def test_augment_sample_creates_new_keypoint_tensor(self, module, sample_b4n3):
+        """keypoint_jitter returns a new tensor; _augment_sample must replace sample.keypoints."""
+        module.model.config.aug_jitter = True
+        original_id = id(sample_b4n3.keypoints)
+        module._augment_sample(sample_b4n3)
+        assert id(sample_b4n3.keypoints) != original_id
+
+    def test_augment_sample_gt_keypoints_unchanged(self, module, sample_b4n3):
+        """gt_keypoints must not be reassigned by _augment_sample; it always points to the original tensor."""
+        module.model.config.aug_jitter = True
+        original_gt = sample_b4n3.gt_keypoints
+        module._augment_sample(sample_b4n3)
+        assert sample_b4n3.gt_keypoints is original_gt
+
+    def test_prepare_batch_augment_changes_node_pos(self, module, batch_b4n3):
+        """prepare_batch(augment=True) builds node_pos from jittered keypoints; node_pos must differ from the clean run."""
+        module.model.config.aug_jitter = True
+        _, graph_clean = module.prepare_batch(batch_b4n3, augment=False)
+        torch.manual_seed(0)
+        _, graph_noisy = module.prepare_batch(batch_b4n3, augment=True)
+        assert not torch.allclose(graph_clean.node_pos, graph_noisy.node_pos), (
+            "node_pos should differ with augment=True (jitter applied before graph construction)"
+        )
 
 
 # ---------------------------------------------------------------------------

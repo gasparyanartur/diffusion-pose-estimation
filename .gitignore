@@ -12,10 +12,12 @@ wheels/
 /data
 /external
 /results
+/sweeps
 /checkpoints
 
 /logs
 /lightning_logs
+.plan
 
 # Exclude cached predictions (can be regenerated)
 results/cache/*.pkl

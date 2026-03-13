@@ -6,6 +6,7 @@ import json
 import pickle
 import random
 from collections import defaultdict
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Literal
@@ -471,16 +472,95 @@ def create_graph_from_keypoints(
     }
 
 
+@dataclass
+class PoseSample:
+    """Raw data from the DataLoader, owned before canonical graph construction."""
+
+    keypoints: Tensor       # (B, N, 14, 2)  pixel-space CrowdPose joints; may be jittered
+    visibility: Tensor      # (B, N, 14)      0=absent 1=occluded 2=visible
+    gt_keypoints: Tensor    # (B, N, 14, 2)  always the clean original
+
+    image_id: list[int] = field(default_factory=list)
+    img_path: list[str] = field(default_factory=list)
+    image: list[Tensor] | None = None
+
+    @property
+    def B(self) -> int:
+        return self.keypoints.shape[0]
+
+    @property
+    def N(self) -> int:
+        return self.keypoints.shape[1]
+
+
+@dataclass
+class PoseGraphBatch:
+    """Canonical pose graph batch, derived from a PoseSample."""
+
+    node_pos: Tensor                # (B*N*K, 2)  root-relative, normalised
+    edge_index: Tensor              # (2, B*N*E)
+    node_batch: Tensor              # (B*N*K,)    PyG batch vector
+    batch_idx: Tensor               # (B, N, K)
+    pose_idx: Tensor                # (B, N, K)
+    kpt_type_idx: Tensor            # (B, N, K)
+    node_idx: Tensor                # (B, N, K)
+    canonical_visibility: Tensor    # (B, N, 15)
+    root_pos: Tensor                # (B, N, 2)   pixel-space root anchor
+    scale: Tensor                   # (B,)        normalisation divisor
+
+    # Optional — populated during prepare_batch
+    image_cond: torch.Tensor | None = None
+    global_image_cond: torch.Tensor | None = None
+
+    @property
+    def B(self) -> int:
+        return self.scale.shape[0]
+
+    @property
+    def N(self) -> int:
+        return self.batch_idx.shape[1]
+
+    @property
+    def K(self) -> int:
+        return self.canonical_visibility.shape[2]  # 15
+
+    @property
+    def num_nodes(self) -> int:
+        return self.B * self.N * self.K
+
+    @property
+    def flat_kpt_type_idx(self) -> Tensor:
+        return self.kpt_type_idx.reshape(-1)
+
+
+def prepare_sample(batch: dict) -> PoseSample:
+    """Build a PoseSample from a raw DataLoader batch dict.
+
+    Sets ``gt_keypoints`` to the same tensor as ``keypoints``.  If
+    augmentation later replaces ``sample.keypoints`` via ``keypoint_jitter``
+    (which returns a new tensor), ``gt_keypoints`` keeps pointing to the
+    original — no clone needed.
+    """
+    keypoints  = batch["keypoints"]
+    visibility = batch["visibility"]
+    image_id_raw = batch.get("image_id", [])
+    image_id = [int(i) for i in image_id_raw] if len(image_id_raw) else []
+    return PoseSample(
+        keypoints=keypoints,
+        visibility=visibility,
+        gt_keypoints=keypoints,
+        image_id=image_id,
+        img_path=list(batch.get("img_path", [])),
+        image=batch.get("image"),
+    )
+
+
 def prepare_pose_graph_batch(
-    batch: dict,
+    sample: PoseSample,
     edge_index: Tensor | None = None,
     img_size: Tensor | None = None,
-) -> dict:
-    """Build a canonical pose graph batch from raw CrowdPose keypoints.
-
-    Reads ``batch["keypoints"]`` and ``batch["visibility"]``, computes the
-    canonical graph representation, and updates *batch* in-place with all
-    graph fields.  Returns *batch* for convenience.
+) -> PoseGraphBatch:
+    """Build a canonical pose graph batch from a PoseSample.
 
     Computes the root per (batch, person) using visible anchor joints
     (left_hip, right_hip, neck); falls back to centroid of all visible joints.
@@ -488,18 +568,12 @@ def prepare_pose_graph_batch(
     (or 800 if img_size is not provided).
 
     Args:
-        batch       dict with at least:
-                      keypoints   FloatTensor[B, N, 14, 2]
-                      visibility  FloatTensor[B, N, 14]  – 0=absent 1=occluded 2=visible
+        sample      PoseSample with keypoints (B, N, 14, 2) and visibility (B, N, 14)
         edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
         img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
-
-    Returns: *batch* updated in-place with the output of create_graph_from_keypoints, plus:
-        visibility  FloatTensor[B, N, 15]  – canonical visibility with root prepended
-        node_pos coordinates are root-relative and divided by max(W, H)
     """
-    keypoints  = batch["keypoints"]
-    visibility = batch["visibility"]
+    keypoints  = sample.keypoints
+    visibility = sample.visibility
     if edge_index is None:
         edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
     ei = edge_index.to(keypoints.device)
@@ -546,8 +620,16 @@ def prepare_pose_graph_batch(
     canonical_kpts = canonical_kpts / scale.view(B, 1, 1, 1)
 
     graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
-    graph["canonical_visibility"] = canonical_vis             # (B, N, 15)
-    graph["root_pos"]             = root_pos                  # (B, N, 2)  pixel-space root anchor
-    graph["scale"]                = scale                     # (B,)        normalisation divisor
-    batch.update(graph)
-    return batch
+
+    return PoseGraphBatch(
+        node_pos=graph["node_pos"],
+        edge_index=graph["edge_index"],
+        node_batch=graph["batch"],
+        batch_idx=graph["batch_idx"],
+        pose_idx=graph["pose_idx"],
+        kpt_type_idx=graph["kpt_type_idx"],
+        node_idx=graph["node_idx"],
+        canonical_visibility=canonical_vis,
+        root_pos=root_pos,
+        scale=scale,
+    )

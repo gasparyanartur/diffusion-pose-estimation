@@ -327,7 +327,50 @@ are directly comparable (the same noise pattern is applied each epoch).
 
 ---
 
-## 6. Running a benchmark
+## 6. Sweep training
+
+A sweep runs multiple training jobs sequentially, each with a different set of
+hyperparameters. Results for every task land in their own isolated directory
+so they can be compared side-by-side.
+
+### Sweep file format
+
+Create a plain-text `.sweep` file under `sweeps/`. Each non-blank,
+non-comment line is one training run expressed as standard Hydra overrides:
+
+```
+# sweeps/my_sweep.sweep
+model=base  train.lr=1e-3
+model=base  train.lr=3e-4
+model=large train.lr=1e-3  train.max_epochs=500
+```
+
+See `sweeps/example.sweep` for a ready-to-use example.
+
+### Running a single task
+
+Task IDs are 1-based and count only non-blank, non-comment lines:
+
+```bash
+# Run the first task in the sweep
+bash scripts/run_sweep.sh sweeps/my_sweep.sweep 1
+```
+
+Output is written to `results/sweeps/<sweep_name>/task_<task_id>/`.  
+Training and final test evaluation are handled by `train_pose_refinement.py`;
+results are saved to `test_results.json` in that directory.
+
+### Running all tasks sequentially
+
+```bash
+for i in $(seq 1 $(grep -cve '^\s*#\|^\s*$' sweeps/my_sweep.sweep)); do
+    bash scripts/run_sweep.sh sweeps/my_sweep.sweep $i
+done
+```
+
+---
+
+## 7. Running a benchmark
 
 ```bash
 # List available configurations
@@ -342,7 +385,7 @@ See `python scripts/benchmark_mmpose.py --help` for all options.
 
 ---
 
-## 7. Adding a new benchmark configuration
+## 8. Adding a new benchmark configuration
 
 Open `src/configs.py` and add a new dict following the existing pattern, then
 append it to `ALL_CONFIGS`:
@@ -370,7 +413,9 @@ to both `benchmark_mmpose.py` and `extract_predictions.py`.
 
 ---
 
-## 8. Results
+## 9. Results
 
 Benchmark metrics are written to `results/<name>/metrics.yaml`.  
-Training test-set results are written to `results/diffusion_training/<run>/<timestamp>/test_results.json`.
+Training test-set results are written to `results/diffusion_training/<run>/<timestamp>/test_results.json`.  
+Sweep task results are written to `results/sweeps/<sweep_name>/task_<task_id>/test_results.json`.
+Sweep task results are written to `results/sweeps/<sweep_name>/task_<task_id>/test_results.json`.
