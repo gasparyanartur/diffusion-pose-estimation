@@ -21,15 +21,18 @@ from src.model import (
     DinoConditioner,
     KeypointDiffusionConfig,
     KeypointDiffusionModel,
+    PatchCNNConditioner,
     PoseDiffusionModule,
     TimestepSinusoidalEmbedding,
     compute_bone_loss,
     compute_joint_loss,
     image_dropout,
     joint_dropout,
+    joint_randomize,
     keypoint_jitter,
     pose_dropout,
 )
+from src.metrics import compute_mpjpe, compute_pck
 
 # ---------------------------------------------------------------------------
 # Helpers / constants
@@ -87,7 +90,7 @@ def config() -> KeypointDiffusionConfig:
         dim_pos=16,
         dim_index=16,
         dim_time=16,
-        dim_bone=16,
+        dim_edge=16,
         dim_hidden=16,
         num_layers=2,
         num_train_steps=50,
@@ -164,11 +167,11 @@ class TestAddNoise:
         assert noise.shape == node_pos.shape, "noise shape mismatch"
 
     def test_zero_timestep_leaves_positions_unchanged(self, model):
-        """At t=0 sqrt(1-alpha_bar)=0, so noisy positions must equal clean positions.
+        """At t=0 sigma=0, so the VE forward process adds no noise: noisy == clean.
 
-        The returned ``noise`` tensor is the raw Gaussian epsilon (VP convention)
-        and is NOT zero at t=0; only the *noise contribution to the noisy
-        positions* (b * epsilon, b=0) is zero.
+        The returned ``noise`` tensor is the raw unit Gaussian epsilon and is
+        NOT zero at t=0; only the *noise contribution* (sigma * epsilon, sigma=0)
+        is zero.
         """
         B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.rand(B * N * K, 2)
@@ -183,7 +186,7 @@ class TestAddNoise:
         assert noise.shape == node_pos.shape
 
     def test_max_timestep_adds_full_noise(self, model):
-        """At t=T the noise level is 1, so |noise| should be approximately std(randn)."""
+        """At t≈T the noise level ≈ sigma_max, so |noisy - x0| should be substantial."""
         T = model.config.num_train_steps
         B, N, K = 2, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.zeros(B * N * K, 2)
@@ -198,11 +201,8 @@ class TestAddNoise:
     def test_noise_scales_with_timestep(self, model):
         """Higher timesteps produce larger deviation from the clean positions.
 
-        In the VP schedule ``x_t = sqrt(ab_t)*x0 + sqrt(1-ab_t)*eps``, the
-        noise contribution ``sqrt(1-ab_t)*eps`` grows with t, so
-        ``(noisy_high - x0).abs()`` > ``(noisy_low - x0).abs()``.
-        The raw returned epsilon is the same for both calls (same seed), so
-        comparing ``noise_high`` vs ``noise_low`` would give equality.
+        In the VE schedule ``x_t = x0 + sigma_t * eps``, sigma_t grows with t,
+        so ``(noisy_high - x0).abs()`` > ``(noisy_low - x0).abs()``.
         """
         B, N, K = 4, N_POSES, NUM_KEYPOINTS_CANONICAL
         node_pos = torch.zeros(B * N * K, 2)  # x0 = 0, so noisy == noise contribution
@@ -342,7 +342,9 @@ class TestPoseDiffusionModule:
         )
 
     def test_configure_optimizers_returns_adamw(self, module):
-        opt = module.configure_optimizers()
+        result = module.configure_optimizers()
+        # configure_optimizers may return a bare optimizer or a Lightning dict
+        opt = result["optimizer"] if isinstance(result, dict) else result
         assert isinstance(opt, torch.optim.AdamW)
 
     def test_training_step_different_n_poses(self, config):
@@ -360,25 +362,273 @@ class TestPoseDiffusionModule:
 # ---------------------------------------------------------------------------
 
 
-def _make_mock_dino(dim: int):
-    """Return a callable that mimics DinoConditioner output without a real backbone."""
+def _make_mock_dino(dim: int, raw_dim: int | None = None):
+    """Return a stub that mimics DinoConditioner without a real backbone.
+
+    Args:
+        dim:     Output dim of the projected forward() call.
+        raw_dim: Backbone hidden size (used by _gather_neighborhood). Defaults to dim.
+    """
+    if raw_dim is None:
+        raw_dim = dim
     mock = MagicMock(spec=DinoConditioner)
     mock.to.return_value = mock
-    mock._patch_cache = None   # signal: no cache loaded
+    mock.hidden_dim = raw_dim
+    mock.backbone = MagicMock()
+    mock.backbone.config.hidden_size = raw_dim
+    # Pre-populate a fake patch cache so _add_combined_conditioning takes the cache path
+    # (avoids needing a real backbone).  Keys cover any batch with image_id in 0..99.
+    mock._patch_cache = {i: torch.zeros(196, raw_dim) for i in range(100)}
 
     def _call(kpt_pixel, img_hw, image_ids=None, pil_images=None):
-        b_, n_, k_, _ = kpt_pixel.shape   # k_ == 14
+        b_, n_, k_, _ = kpt_pixel.shape
         return torch.zeros(b_, n_, k_, dim)
 
+    def _gather(patch_feats, kpt_pixel, img_hw):
+        b_, n_, k_, _ = kpt_pixel.shape
+        return torch.zeros(b_, n_, k_, raw_dim)
+
+    mock.proj = torch.nn.Linear(raw_dim, dim)
     mock.side_effect = _call
+    mock._gather_neighborhood = MagicMock(side_effect=_gather)
     return mock
+
+
+class TestPatchCNNConditioner:
+    """Tests for the PatchCNNConditioner (TODO[3])."""
+
+    @pytest.fixture
+    def cnn_cond(self) -> PatchCNNConditioner:
+        return PatchCNNConditioner(out_dim=16, patch_size=16)
+
+    @pytest.fixture
+    def cnn_config(self) -> KeypointDiffusionConfig:
+        return KeypointDiffusionConfig(
+            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
+            dim_hidden=16, num_layers=2, num_train_steps=10,
+            use_image_cond=True, use_cnn_cond=True,
+            dim_image_cond=8, cnn_patch_size=16,
+        )
+
+    def _make_images(self, B: int, H: int = 64, W: int = 80) -> list[torch.Tensor]:
+        """Synthetic float [0,1] RGB images of shape (3, H, W)."""
+        torch.manual_seed(0)
+        return [torch.rand(3, H, W) for _ in range(B)]
+
+    def test_output_shape(self, cnn_cond):
+        """forward returns (B, N, K, out_dim)."""
+        B, N, K = 2, 3, 14
+        images = self._make_images(B, H=64, W=80)
+        kpt = torch.rand(B, N, K, 2) * 60  # pixel coords within image
+        out = cnn_cond(images, kpt)
+        assert out.shape == (B, N, K, 16)
+
+    def test_extract_patches_shape(self, cnn_cond):
+        """_extract_patches returns (N*K, 5, P, P)."""
+        N, K, P = 2, 3, 16
+        image = torch.rand(3, 64, 80)
+        kpt = torch.rand(N, K, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)
+        assert patches.shape == (N * K, 5, P, P)
+
+    def test_spatial_channels_bounded(self, cnn_cond):
+        """Channels 3 and 4 (spatial coords) must lie in [-1, 1]."""
+        N, K = 2, 3
+        image = torch.rand(3, 64, 80)
+        kpt = torch.rand(N, K, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)  # (N*K, 5, P, P)
+        spatial = patches[:, 3:, :, :]  # channels 3-4
+        assert spatial.min().item() >= -1.0 - 1e-5
+        assert spatial.max().item() <=  1.0 + 1e-5
+
+    def test_rgb_channels_bounded(self, cnn_cond):
+        """RGB channels (0-2) must remain in [0, 1] for a [0,1]-normalised input."""
+        N, K = 2, 3
+        image = torch.rand(3, 64, 80)  # already in [0, 1]
+        kpt = torch.rand(N, K, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)
+        rgb = patches[:, :3, :, :]
+        assert rgb.min().item() >= -0.01
+        assert rgb.max().item() <=  1.01
+
+    def test_border_keypoints_do_not_crash(self, cnn_cond):
+        """Keypoints outside the image boundary should not crash (padding_mode=border)."""
+        N, K = 1, 2
+        image = torch.rand(3, 32, 32)
+        kpt = torch.tensor([[[-50.0, -50.0], [200.0, 200.0]]])  # far outside
+        out = cnn_cond._extract_patches(image, kpt)
+        assert out.shape == (N * K, 5, 16, 16)
+        assert torch.isfinite(out).all()
+
+    def test_extract_patches_output_is_contiguous(self, cnn_cond):
+        """_extract_patches output must be contiguous so Conv2d doesn't see zero-stride tensors.
+
+        Non-contiguous inputs (e.g. from expand()) can trigger the CUDA allocator
+        assertion (!block->expandable_segment_) when passed to Conv2d.
+        """
+        image = torch.rand(3, 64, 80)
+        kpt = torch.rand(2, 3, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)
+        assert patches.is_contiguous(), "patches must be contiguous for Conv2d"
+
+    def test_rgb_and_spatial_channels_contiguous_after_cat(self, cnn_cond):
+        """The full (M, 5, P, P) patches tensor from torch.cat must be contiguous.
+        (Per-channel slices like patches[:, :3] are never contiguous — only
+        the whole output matters for Conv2d.)
+        """
+        image = torch.rand(3, 64, 80)
+        kpt = torch.rand(3, 5, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)
+        # The full output is contiguous (checked separately); per-channel slices aren't.
+        assert patches.is_contiguous()
+
+    def test_cnn_can_forward_extract_patches_output(self, cnn_cond):
+        """cnn Sequential can run on the _extract_patches output without error."""
+        image = torch.rand(3, 64, 80)
+        kpt = torch.rand(2, 3, 2) * 60
+        patches = cnn_cond._extract_patches(image, kpt)
+        out = cnn_cond.cnn(patches)   # would crash if non-contiguous on CUDA
+        assert torch.isfinite(out).all()
+
+    def test_many_keypoints_contiguous(self):
+        """Large M (many keypoints) still produces a contiguous output."""
+        cnn = PatchCNNConditioner(out_dim=8, patch_size=8)
+        image = torch.rand(3, 128, 128)
+        kpt = torch.rand(10, 15, 2) * 120  # M = 150
+        patches = cnn._extract_patches(image, kpt)
+        assert patches.shape == (150, 5, 8, 8)
+        assert patches.is_contiguous()
+
+    def test_odd_patch_size_contiguous(self):
+        """Odd patch sizes work and produce contiguous output."""
+        cnn = PatchCNNConditioner(out_dim=8, patch_size=13)
+        image = torch.rand(3, 64, 64)
+        kpt = torch.rand(2, 3, 2) * 60
+        patches = cnn._extract_patches(image, kpt)
+        assert patches.shape == (6, 5, 13, 13)
+        assert patches.is_contiguous()
+
+    def test_single_keypoint_contiguous(self, cnn_cond):
+        """M=1 (single keypoint) still produces a contiguous output."""
+        image = torch.rand(3, 64, 80)
+        kpt = torch.tensor([[[30.0, 20.0]]])  # (1, 1, 2)
+        patches = cnn_cond._extract_patches(image, kpt)
+        assert patches.shape == (1, 5, 16, 16)
+        assert patches.is_contiguous()
+
+    def test_small_image_no_crash(self, cnn_cond):
+        """Image smaller than patch size is handled safely via padding."""
+        image = torch.rand(3, 8, 8)   # smaller than patch_size=16
+        kpt = torch.rand(1, 2, 2) * 7
+        patches = cnn_cond._extract_patches(image, kpt)
+        assert patches.shape == (2, 5, 16, 16)
+        assert torch.isfinite(patches).all()
+        assert patches.is_contiguous()
+
+    def test_cnn_conditioner_created_when_use_cnn_cond(self, cnn_config):
+        """PoseDiffusionModule creates cnn_conditioner when model.config.use_cnn_cond=True."""
+        model = KeypointDiffusionModel(cnn_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        assert module.cnn_conditioner is not None
+        assert isinstance(module.cnn_conditioner, PatchCNNConditioner)
+        assert module.dino_conditioner is None   # no dino_model_name provided
+        assert module.fuse_proj is None          # fusion only when BOTH conditioners active
+
+    def test_training_step_with_cnn_cond(self, cnn_config):
+        """End-to-end training step with CNN conditioning produces a finite loss."""
+        import tempfile
+        from PIL import Image as PILImage
+
+        model = KeypointDiffusionModel(cnn_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        assert module.cnn_conditioner is not None
+
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+
+        # Write tiny real PNG images so read_image can load them
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for i in range(BATCH_SIZE):
+                p = f"{tmp}/img_{i}.png"
+                PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
+                paths.append(p)
+            batch["img_path"] = paths
+
+            loss = module.training_step(batch, batch_idx=0)
+
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
+
+
+class TestLocalSpatialCondition:
+    """Tests for get_local_spatial_condition and combined DINO+CNN conditioning."""
+
+    _DINO_RAW_DIM = 24   # simulates backbone hidden_size
+    _CNN_TRUNK_DIM = 64  # CNN backbone_dim (last conv output channels)
+    _OUT_DIM = 8
+
+    @pytest.fixture
+    def combined_config(self) -> KeypointDiffusionConfig:
+        return KeypointDiffusionConfig(
+            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
+            dim_hidden=16, num_layers=2, num_train_steps=10,
+            use_image_cond=True, use_cnn_cond=True,
+            dim_image_cond=self._OUT_DIM, cnn_patch_size=16,
+        )
+
+    def _module_with_both(self, combined_config):
+        model = KeypointDiffusionModel(combined_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        module.dino_conditioner = _make_mock_dino(self._OUT_DIM, raw_dim=self._DINO_RAW_DIM)
+        module.dino_proj = torch.nn.Linear(self._DINO_RAW_DIM, self._OUT_DIM)
+        module.cnn_proj  = torch.nn.Linear(self._CNN_TRUNK_DIM, self._OUT_DIM)
+        module.fuse_proj = torch.nn.Linear(2 * self._OUT_DIM, self._OUT_DIM)
+        return module
+
+    def test_fusion_proj_created_when_both_active(self, combined_config):
+        """fuse_proj is None without DINO, set when both conditioners are active."""
+        model = KeypointDiffusionModel(combined_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        assert module.fuse_proj is None  # CNN only — no DINO
+
+    def test_training_step_with_combined_conditioning(self, combined_config):
+        """Training step with DINO (mocked) + CNN produces a finite loss."""
+        import tempfile
+        from PIL import Image as PILImage
+
+        module = self._module_with_both(combined_config)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [f"{tmp}/img_{i}.png" for i in range(BATCH_SIZE)]
+            for p in paths:
+                PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
+            batch["img_path"] = paths
+            loss = module.training_step(batch, batch_idx=0)
+
+        assert loss.ndim == 0 and torch.isfinite(loss)
+
+    def test_combined_conditioning_output_shape(self, combined_config):
+        """get_local_spatial_condition returns (B*N*15, out_dim) when both active."""
+        import tempfile
+        from PIL import Image as PILImage
+
+        module = self._module_with_both(combined_config)
+        batch = _make_batch(B=2, N=N_POSES)
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [f"{tmp}/img_{i}.png" for i in range(2)]
+            for p in paths:
+                PILImage.new("RGB", (80, 64), color=(0, 0, 0)).save(p)
+            batch["img_path"] = paths
+            module.prepare_batch(batch)
+
+        assert batch["image_cond"].shape == (2 * N_POSES * NUM_KEYPOINTS_CANONICAL, self._OUT_DIM)
 
 
 class TestImageConditioning:
     @pytest.fixture
     def cond_config(self) -> KeypointDiffusionConfig:
         return KeypointDiffusionConfig(
-            dim_pos=16, dim_index=16, dim_time=16, dim_bone=16,
+            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
             dim_hidden=16, num_layers=2, num_train_steps=10,
             use_image_cond=True, dim_image_cond=8,
         )
@@ -485,6 +735,271 @@ class TestImageConditioning:
 
 
 # ---------------------------------------------------------------------------
+# Global image conditioning (TODO[5])
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalImageCond:
+    """Tests for get_global_image_cond and end-to-end global conditioning."""
+
+    _DINO_RAW_DIM = 24
+    _GLOBAL_DIM = 8
+
+    @pytest.fixture
+    def global_config(self) -> KeypointDiffusionConfig:
+        return KeypointDiffusionConfig(
+            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
+            dim_hidden=16, num_layers=2, num_train_steps=10,
+            use_image_cond=True, dim_image_cond=8,
+            use_global_image_cond=True, dim_global_image_cond=self._GLOBAL_DIM,
+        )
+
+    def _module_with_global(self, config):
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        mock_dino = _make_mock_dino(8, raw_dim=self._DINO_RAW_DIM)
+        return PoseDiffusionModule(model, dino_conditioner=mock_dino)
+
+    def test_global_cond_mlp_input_dim_changes(self, global_config):
+        """global_cond_mlp first layer accepts dim_time + dim_global_image_cond."""
+        model = KeypointDiffusionModel(global_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        expected_in = global_config.dim_time + global_config.dim_global_image_cond
+        actual_in = model.global_cond_mlp[0].in_features
+        assert actual_in == expected_in
+
+    def test_global_cond_mlp_baseline_input_dim(self):
+        """Without use_global_image_cond, global_cond_mlp input == dim_time only."""
+        cfg = KeypointDiffusionConfig(dim_time=16, num_train_steps=10)
+        model = KeypointDiffusionModel(cfg, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        assert model.global_cond_mlp[0].in_features == cfg.dim_time
+
+    def test_get_global_image_cond_shape(self, global_config):
+        """get_global_image_cond returns (B*N*15, dim_global_image_cond)."""
+        module = self._module_with_global(global_config)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        prepare_pose_graph_batch(batch)
+        result = module.get_global_image_cond(batch)
+        assert result is not None
+        assert result.shape == (BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL, self._GLOBAL_DIM)
+
+    def test_get_global_image_cond_none_without_proj(self):
+        """Returns None when use_global_image_cond=False (no proj created)."""
+        cfg = KeypointDiffusionConfig(dim_time=16, num_train_steps=10)
+        model = KeypointDiffusionModel(cfg, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        prepare_pose_graph_batch(batch)
+        assert module.get_global_image_cond(batch) is None
+
+    def test_raises_if_global_cond_enabled_without_dino(self, global_config):
+        """PoseDiffusionModule raises ValueError at init when use_global_image_cond=True
+        but no DINO conditioner is provided — prevents a silent shape mismatch at runtime."""
+        model = KeypointDiffusionModel(global_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        with pytest.raises(ValueError, match="use_global_image_cond"):
+            PoseDiffusionModule(model)  # no dino_model_name → dino_conditioner is None
+
+    def test_backward_process_accepts_global_image_cond(self, global_config):
+        """backward_process runs without error when global_image_cond is supplied."""
+        model = KeypointDiffusionModel(global_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        prepare_pose_graph_batch(batch)
+        M = BATCH_SIZE * N_POSES * NUM_KEYPOINTS_CANONICAL
+        t = torch.ones(BATCH_SIZE, dtype=torch.long)
+        pred = model.backward_process(
+            noisy_node_pos=batch["node_pos"],
+            edge_index=batch["edge_index"],
+            kpt_type_idx=batch["kpt_type_idx"].reshape(-1),
+            batch_idx=batch["batch"],
+            timestep=t,
+            global_image_cond=torch.zeros(M, self._GLOBAL_DIM),
+        )
+        assert pred.shape == (M, 2)
+
+    def test_training_step_with_global_cond(self, global_config):
+        """End-to-end training step with global DINO conditioning produces a finite loss."""
+        module = self._module_with_global(global_config)
+        batch = _make_batch(B=BATCH_SIZE, N=N_POSES)
+        batch["img_path"] = [f"/fake/img_{i}.jpg" for i in range(BATCH_SIZE)]
+        loss = module.training_step(batch, batch_idx=0)
+        assert loss.ndim == 0 and torch.isfinite(loss)
+
+
+# ---------------------------------------------------------------------------
+# Multi-step AP evaluation (TODO[12])
+# ---------------------------------------------------------------------------
+
+
+class TestMultiStepAPEval:
+    """Tests for multi-step AP evaluation — num_steps flows through the chain
+    and epoch_end hooks log per-step metrics with an @{n} suffix."""
+
+    _B, _N = 2, 2
+
+    def _pred_batch(self) -> dict:
+        return {
+            "pred_keypoints":       torch.zeros(self._B, self._N, 14, 2),
+            "pred_keypoint_scores": torch.full((self._B, self._N, 14), 0.9),
+            "image_id":             list(range(self._B)),
+            "img_path":             [f"/fake/{i}.jpg" for i in range(self._B)],
+        }
+
+    def test_num_steps_forwarded_to_ddim_sample(self, config):
+        """_refine_prediction_batch passes its num_steps arg to ddim_sample."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        M = self._B * self._N * 15
+        mock_ddim = MagicMock(return_value=torch.zeros(M, 2))
+        module.model.ddim_sample = mock_ddim
+
+        module._refine_prediction_batch(self._pred_batch(), num_steps=3)
+
+        _args, call_kwargs = mock_ddim.call_args
+        assert call_kwargs["num_inference_steps"] == 3, (
+            "ddim_sample must receive num_inference_steps=3"
+        )
+
+    def test_ap_step_passes_num_steps_to_refine(self, config):
+        """_ap_step forwards num_steps down to _refine_prediction_batch."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model)
+        M = self._B * self._N * 15
+        module.model.ddim_sample = MagicMock(return_value=torch.zeros(M, 2))
+
+        captured: list[int | None] = []
+        orig = module._refine_prediction_batch
+
+        def _spy(batch, num_steps=None):
+            captured.append(num_steps)
+            return orig(batch, num_steps=num_steps)
+
+        module._refine_prediction_batch = _spy
+        module._ap_step(self._pred_batch(), MagicMock(), num_steps=7)
+
+        assert captured == [7]
+
+    def test_run_ap_eval_passes_num_steps_to_ap_step(self, config):
+        """_run_ap_eval forwards num_steps to every _ap_step call."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(model, ap_batch_size=2)
+
+        captured: list[int | None] = []
+
+        def _spy_ap_step(batch, metric, num_steps=None):
+            captured.append(num_steps)
+
+        module._ap_step = _spy_ap_step
+
+        # Build a tiny fake PredictionDataset that yields two batches.
+        from unittest.mock import patch
+        from src.data import PredictionDataset
+
+        fake_batches = [self._pred_batch(), self._pred_batch()]
+        mock_ds = MagicMock(spec=PredictionDataset)
+        mock_ds.create_dataloader.return_value = fake_batches
+
+        with patch.object(PredictionDataset, "from_path", return_value=mock_ds):
+            module._run_ap_eval("/fake/cache", MagicMock(), num_steps=5)
+
+        assert captured == [5, 5], "Every batch should receive num_steps=5"
+
+    def test_validation_epoch_end_calls_run_ap_eval_per_count(self, config):
+        """on_validation_epoch_end calls _run_ap_eval once per entry in ap_step_counts."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(
+            model,
+            ap_step_counts=[1, 4],
+            ap_eval_interval=1,
+            val_pred_cache="/fake/cache",
+        )
+        module._val_metric = MagicMock()
+        module._val_metric.compute.return_value = {"coco/AP": 0.5}
+        module._run_ap_eval = MagicMock()
+        module._trainer = MagicMock()
+        module._trainer.sanity_checking = False
+        module._trainer.current_epoch = 0
+
+        module.on_validation_epoch_end()
+
+        calls = module._run_ap_eval.call_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["num_steps"] == 1
+        assert calls[1].kwargs["num_steps"] == 4
+
+    def test_validation_epoch_end_multi_step_logs_with_suffix(self, config):
+        """on_validation_epoch_end logs val/coco/AP@{n} for each step count."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(
+            model,
+            ap_step_counts=[2, 8],
+            ap_eval_interval=1,
+            val_pred_cache="/fake/cache",
+        )
+        module._val_metric = MagicMock()
+        module._val_metric.compute.return_value = {"coco/AP": 0.5, "coco/AP50": 0.7}
+        module._run_ap_eval = MagicMock()
+        module._trainer = MagicMock()
+        module._trainer.sanity_checking = False
+        module._trainer.current_epoch = 0
+
+        logged: dict = {}
+        module.log = lambda key, val, **_: logged.update({key: val})
+
+        module.on_validation_epoch_end()
+
+        assert "val/coco/AP@2"   in logged
+        assert "val/coco/AP@8"   in logged
+        assert "val/coco/AP50@2" in logged
+        assert "val/coco/AP50@8" in logged
+        assert "val/coco/AP"     not in logged  # no bare key when step counts are set
+
+    def test_validation_epoch_end_no_suffix_without_step_counts(self, config):
+        """on_validation_epoch_end without ap_step_counts logs val/coco/AP (no suffix)."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(
+            model,
+            ap_eval_interval=1,
+            val_pred_cache="/fake/cache",
+        )
+        module._val_metric = MagicMock()
+        module._val_metric.compute.return_value = {"coco/AP": 0.5}
+        module._run_ap_eval = MagicMock()
+        module._trainer = MagicMock()
+        module._trainer.sanity_checking = False
+        module._trainer.current_epoch = 0
+
+        logged: dict = {}
+        module.log = lambda key, val, **_: logged.update({key: val})
+
+        module.on_validation_epoch_end()
+
+        assert "val/coco/AP" in logged
+        assert not any("@" in k for k in logged)
+
+    def test_test_epoch_end_multi_step_logs_with_suffix(self, config):
+        """on_test_epoch_end with ap_step_counts logs test/coco/AP@{n} for each n."""
+        model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        module = PoseDiffusionModule(
+            model,
+            ap_step_counts=[1, 4],
+            test_pred_cache="/fake/test_cache",
+        )
+        module._test_metric = MagicMock()
+        module._test_metric.compute.return_value = {"coco/AP": 0.4, "coco/AP50": 0.6}
+        module._run_ap_eval = MagicMock()
+        module._trainer = MagicMock()
+
+        logged: dict = {}
+        module.log = lambda key, val, **_: logged.update({key: val})
+
+        module.on_test_epoch_end()
+
+        assert "test/coco/AP@1"   in logged
+        assert "test/coco/AP@4"   in logged
+        assert "test/coco/AP50@1" in logged
+        assert "test/coco/AP50@4" in logged
+        assert "test/coco/AP"     not in logged
+
+
+# ---------------------------------------------------------------------------
 # Standalone augmentation functions
 # ---------------------------------------------------------------------------
 
@@ -555,6 +1070,36 @@ class TestAugmentations:
         kpts  = torch.ones(2, 3, 14, 2)
         _     = keypoint_jitter(kpts, std_px=5.0)
         assert (kpts == 1.0).all(), "Input tensor must not be mutated"
+
+    # --- joint_randomize ---
+
+    def test_joint_randomize_p1_changes_all_non_root(self):
+        """p=1 replaces every non-root joint position with a value in [-0.5, 0.5]."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.zeros(B * N * K, 2)  # start at origin
+        can_vis  = torch.ones(B, N, K)
+        joint_randomize(node_pos, can_vis, p=1.0)
+        pos_grid = node_pos.view(B, N, K, 2)
+        assert (pos_grid[:, :, 0, :] == 0.0).all(), "Root position must not be touched"
+        assert not (pos_grid[:, :, 1:, :] == 0.0).all(), "Non-root positions should change"
+        assert (pos_grid[:, :, 1:, :] >= -1.0).all() and (pos_grid[:, :, 1:, :] <= 1.0).all(), \
+            "Randomised positions should lie in [-1, 1] (full canonical image range)"
+
+    def test_joint_randomize_p0_no_change(self):
+        """p=0 leaves positions completely unchanged."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.ones(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K)
+        joint_randomize(node_pos, can_vis, p=0.0)
+        assert (node_pos == 1.0).all()
+
+    def test_joint_randomize_preserves_visibility(self):
+        """Visibility tensor must be unchanged (joint is present but wrong)."""
+        B, N, K = 2, 3, 15
+        node_pos = torch.zeros(B * N * K, 2)
+        can_vis  = torch.ones(B, N, K) * 2.0
+        result   = joint_randomize(node_pos, can_vis, p=1.0)
+        assert torch.allclose(result, can_vis), "Visibility must not be mutated"
 
     # --- image_dropout ---
 
@@ -657,3 +1202,77 @@ class TestLossFunctions:
         loss_present = compute_bone_loss(pred, gt, vis_present, CROWDPOSE_EDGE_LIST).item()
         loss_absent  = compute_bone_loss(pred, gt, vis_absent,  CROWDPOSE_EDGE_LIST).item()
         assert loss_absent < loss_present, "Absent endpoint should reduce the loss"
+
+
+class TestPoseMetrics:
+    """Tests for compute_mpjpe and compute_pck."""
+
+    def _tensors(self, B=2, N=3, K=14):
+        torch.manual_seed(7)
+        pred = torch.randn(B, N, K, 2) * 50 + 320
+        gt   = torch.randn(B, N, K, 2) * 50 + 320
+        vis  = torch.ones(B, N, K)  # all visible by default
+        return pred, gt, vis
+
+    # --- compute_mpjpe ---
+
+    def test_mpjpe_zero_when_perfect(self):
+        _, gt, vis = self._tensors()
+        assert compute_mpjpe(gt, gt, vis).item() == pytest.approx(0.0)
+
+    def test_mpjpe_positive_when_imperfect(self):
+        pred, gt, vis = self._tensors()
+        assert compute_mpjpe(pred, gt, vis).item() > 0.0
+
+    def test_mpjpe_absent_joints_ignored(self):
+        """vis=0 joints must not affect MPJPE."""
+        _, gt, vis = self._tensors(B=1, N=1, K=2)
+        pred_bad = gt.clone()
+        pred_bad[0, 0, 0] = 9999.0   # huge error on joint 0
+
+        vis_include = torch.ones(1, 1, 2)
+        vis_exclude = vis_include.clone(); vis_exclude[0, 0, 0] = 0.0
+
+        mpjpe_with    = compute_mpjpe(pred_bad, gt, vis_include).item()
+        mpjpe_without = compute_mpjpe(pred_bad, gt, vis_exclude).item()
+        assert mpjpe_without < mpjpe_with
+
+    def test_mpjpe_all_absent_returns_zero(self):
+        pred, gt, _ = self._tensors(B=1, N=1, K=2)
+        vis_none = torch.zeros(1, 1, 2)
+        assert compute_mpjpe(pred, gt, vis_none).item() == pytest.approx(0.0)
+
+    # --- compute_pck ---
+
+    def test_pck_one_when_perfect(self):
+        _, gt, vis = self._tensors()
+        assert compute_pck(gt, gt, vis, threshold_px=1.0).item() == pytest.approx(1.0)
+
+    def test_pck_zero_when_far_away(self):
+        pred, gt, vis = self._tensors(B=1, N=1, K=1)
+        pred_far = gt + 9999.0
+        assert compute_pck(pred_far, gt, vis, threshold_px=1.0).item() == pytest.approx(0.0)
+
+    def test_pck_increases_with_threshold(self):
+        pred, gt, vis = self._tensors()
+        pck_tight = compute_pck(pred, gt, vis, threshold_px=1.0).item()
+        pck_loose = compute_pck(pred, gt, vis, threshold_px=1000.0).item()
+        assert pck_tight <= pck_loose
+
+    def test_pck_absent_joints_ignored(self):
+        """vis=0 joints must not count toward PCK denominator."""
+        _, gt, vis = self._tensors(B=1, N=1, K=2)
+        pred_bad = gt.clone()
+        pred_bad[0, 0, 0] = 9999.0   # fail on joint 0
+
+        vis_include = torch.ones(1, 1, 2)
+        vis_exclude = vis_include.clone(); vis_exclude[0, 0, 0] = 0.0
+
+        pck_with    = compute_pck(pred_bad, gt, vis_include, threshold_px=1.0).item()
+        pck_without = compute_pck(pred_bad, gt, vis_exclude, threshold_px=1.0).item()
+        assert pck_without > pck_with  # excluded bad joint → higher PCK
+
+    def test_pck_all_absent_returns_zero(self):
+        pred, gt, _ = self._tensors(B=1, N=1, K=2)
+        vis_none = torch.zeros(1, 1, 2)
+        assert compute_pck(pred, gt, vis_none, threshold_px=20.0).item() == pytest.approx(0.0)

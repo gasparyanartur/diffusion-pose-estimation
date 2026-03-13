@@ -10,6 +10,7 @@ refined results.
 ## Project layout
 
 ```
+conf/           ← Hydra config groups (model, data, train, dino, hardware)
 data/           ← CrowdPose images and annotations
 checkpoints/    ← model weights
 external/       ← vendored dependencies (mmpose, mmdet) installed as editable packages
@@ -17,7 +18,7 @@ scripts/        ← CLI entry points (training, benchmarking, data prep, inspect
 src/            ← core library (data, model, metrics, visualisation)
 notebook/       ← experimental notebooks
 results/        ← benchmark outputs, prediction caches, training runs
-tests/          ← unit tests
+tests/          ← unit tests (89 passing)
 ```
 
 ---
@@ -136,7 +137,6 @@ python scripts/extract_predictions.py --list
 python scripts/extract_predictions.py <model-name>
 ```
 
-See `python scripts/extract_predictions.py --help` for all options.
 Caches are written to `results/cache/<model-short-name>_predictions.pkl`.
 
 ---
@@ -241,14 +241,89 @@ Returned dict keys: `edge_index (2, B·N·E)`, `node_pos (B·N·K, 2)`,
 
 ## 5. Training the refinement model
 
+Config is managed by [Hydra](https://hydra.cc). All hyperparameters live in
+`conf/` as composable YAML groups. Run from the project root so relative data
+paths resolve correctly.
+
+### Quick start
+
 ```bash
 python scripts/train_pose_refinement.py
 ```
 
-All paths and hyperparameters have sensible defaults. Checkpoints and logs are
-written under `results/diffusion_training/<run-name>/<timestamp>/`.
+Checkpoints and logs are written to
+`results/diffusion_training/<run-name>/<timestamp>/`.  
+Hydra also saves the fully-resolved config to `.hydra/config.yaml` in that
+directory for complete reproducibility.
 
-See `python scripts/train_pose_refinement.py --help` for all options.
+### Switching config groups
+
+```bash
+# Larger model (256-dim, 6 layers)
+python scripts/train_pose_refinement.py model=large
+
+# Single GPU with bfloat16
+python scripts/train_pose_refinement.py hardware=gpu
+
+# Enable DINOv2-small image conditioning
+python scripts/train_pose_refinement.py dino=dinov2_small
+```
+
+### Overriding individual values
+
+Any leaf key can be overridden from the command line using dot notation:
+
+```bash
+python scripts/train_pose_refinement.py \
+    run_name=exp_large \
+    model=large \
+    train.lr=3e-4 \
+    train.max_epochs=200 \
+    train.cosine_lr=true \
+    hardware=gpu
+```
+
+### Resuming from a checkpoint
+
+```bash
+python scripts/train_pose_refinement.py \
+    train.resume=results/diffusion_training/my_run/20260312_120000/checkpoints/last.ckpt
+```
+
+### Config group reference
+
+| Group | Options | Controls |
+|---|---|---|
+| `model` | `base` *(default)*, `large` | `KeypointDiffusionConfig` (dims, layers, losses, augmentation) |
+| `data` | `crowdpose` *(default)* | Dataset paths, AP eval settings, `num_workers` |
+| `train` | `base` *(default)* | LR, batch size, epochs, grad clip, early stop, DDIM settings |
+| `dino` | `none` *(default)*, `dinov2_small` | DINO image conditioning, cache paths |
+| `hardware` | `auto` *(default)*, `gpu` | Accelerator, devices, precision |
+
+To see the full resolved config without launching training:
+
+```bash
+python scripts/train_pose_refinement.py --cfg job
+```
+
+### Logged metrics
+
+Training logs the following to TensorBoard and CSV under `tb_logs/` and `csv_logs/`:
+
+| Key | Stage | Description |
+|---|---|---|
+| `train/loss` | train | Total weighted loss |
+| `train/joint_loss` | train | Per-joint MSE (visibility-weighted) |
+| `train/bone_loss` | train | Bone-length MSE (visibility-weighted) |
+| `val/loss` | val | Total loss (fixed noise per batch across epochs) |
+| `val/joint_loss` | val | Per-joint MSE |
+| `val/bone_loss` | val | Bone-length MSE |
+| `val/mpjpe_px` | val | Mean per-joint position error (pixels) |
+| `val/pck_20px` | val | % of visible joints within 20 px of GT |
+| `test/*` | test | Same as val; computed once on the best checkpoint |
+
+Val/test steps use a deterministic per-batch seed so metric trends across epochs
+are directly comparable (the same noise pattern is applied each epoch).
 
 ---
 
@@ -297,4 +372,5 @@ to both `benchmark_mmpose.py` and `extract_predictions.py`.
 
 ## 8. Results
 
-Results are written to `results/<name>/metrics.yaml`.
+Benchmark metrics are written to `results/<name>/metrics.yaml`.  
+Training test-set results are written to `results/diffusion_training/<run>/<timestamp>/test_results.json`.

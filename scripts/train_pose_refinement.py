@@ -2,279 +2,54 @@
 """
 Train the pose-refinement diffusion model on CrowdPose.
 
-Data paths default to the project layout defined in src/defaults.py and can be
-overridden with the flags below.  Model and training hyperparameters all have
-sensible defaults; only pass what you want to change.
+Config is managed by Hydra (conf/config.yaml + config groups under conf/).
+Run from the project root so that relative data paths resolve correctly.
 
 Quick start (all defaults):
     python scripts/train_pose_refinement.py
 
-Custom experiment:
-    python scripts/train_pose_refinement.py \\
-        --run-name exp_large \\
-        --batch-size 32 \\
-        --lr 3e-4 \\
-        --max-epochs 200 \\
-        --dim-hidden 256 --num-layers 6 \\
-        --devices 1
+Switch config groups:
+    python scripts/train_pose_refinement.py model=large
+    python scripts/train_pose_refinement.py hardware=gpu
+    python scripts/train_pose_refinement.py dino=dinov3_vits16
+
+Override individual values:
+    python scripts/train_pose_refinement.py run_name=exp_large train.lr=3e-4 train.max_epochs=200
+    python scripts/train_pose_refinement.py model.dim_hidden=256 model.num_layers=6
 
 Resume from a checkpoint:
-    python scripts/train_pose_refinement.py \\
-        --resume checkpoints/my_run/last.ckpt
+    python scripts/train_pose_refinement.py train.resume=results/diffusion_training/run/ts/checkpoints/last.ckpt
 """
 
 from __future__ import annotations
 
-import argparse
+# Must be set before any CUDA context is created (i.e. before torch.cuda.init).
+# expandable_segments conflicts with mixed large/small allocations (e.g.
+# DINO backbone + CNN patch crops) and triggers an internal allocator assert
+# (!block->expandable_segment_) in PyTorch ≥ 2.1.
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
+
 import json
 import logging
 import sys
-from datetime import datetime
 from pathlib import Path
 
-import yaml
+import hydra
+from hydra.core.hydra_config import HydraConfig
+from hydra.utils import to_absolute_path
+from omegaconf import DictConfig, OmegaConf
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import pytorch_lightning as pl
-import torch
-from pytorch_lightning.callbacks import (
-    EarlyStopping,
-    LearningRateMonitor,
-    ModelCheckpoint,
-)
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
-from src import defaults
 from src.data import PoseDataset
 from src.model import KeypointDiffusionConfig, KeypointDiffusionModel, PoseDiffusionModule
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    # --- Data ---
-    data = p.add_argument_group("data")
-    data.add_argument(
-        "--data-root",
-        type=Path,
-        default=defaults.DATA_ROOT,
-        help="Root directory for all dataset files (default: %(default)s).",
-    )
-    data.add_argument(
-        "--train-ann",
-        default="crowdpose/annotations/crowdpose_train.json",
-        help="Train annotation file, relative to --data-root (default: %(default)s).",
-    )
-    data.add_argument(
-        "--val-ann",
-        default="crowdpose/annotations/crowdpose_val.json",
-        help="Validation annotation file, relative to --data-root (default: %(default)s).",
-    )
-    data.add_argument(
-        "--test-ann",
-        default="crowdpose/annotations/crowdpose_test.json",
-        help="Test annotation file, relative to --data-root (default: %(default)s).",
-    )
-    data.add_argument(
-        "--val-pred-cache",
-        type=Path,
-        default=None,
-        metavar="PKL",
-        help=(
-            "Prediction cache pickle for the validation split, produced by "
-            "scripts/extract_predictions.py.  When set together with --val-ann, "
-            "OKS-AP of refined predictions is logged at every validation epoch end."
-        ),
-    )
-    data.add_argument(
-        "--test-pred-cache",
-        type=Path,
-        default=None,
-        metavar="PKL",
-        help="Same as --val-pred-cache but for the test split.",
-    )
-    data.add_argument(
-        "--ap-batch-size",
-        type=int,
-        default=256,
-        metavar="N",
-        help="Batch size when iterating the prediction cache for AP evaluation (default: %(default)s).",
-    )
-    data.add_argument(
-        "--ap-eval-interval",
-        type=int,
-        default=0,
-        metavar="N",
-        help=(
-            "Run val AP evaluation every N epochs.  "
-            "0 disables val AP (AP is still computed once on the test set after training).  "
-            "Default: %(default)s."
-        ),
-    )
-    data.add_argument(
-        "--img-dir",
-        default="crowdpose/images",
-        help="Image directory, relative to --data-root (default: %(default)s).",
-    )
-    data.add_argument(
-        "--num-workers",
-        type=int,
-        default=4,
-        help="DataLoader worker processes (default: %(default)s).",
-    )
-
-    # --- Model architecture ---
-    arch = p.add_argument_group("model architecture")
-    arch.add_argument("--dim-pos",    type=int, default=128, help="Position embedding dim (default: %(default)s).")
-    arch.add_argument("--dim-index",  type=int, default=128, help="Keypoint-index embedding dim (default: %(default)s).")
-    arch.add_argument("--dim-time",   type=int, default=128, help="Timestep embedding dim (default: %(default)s).")
-    arch.add_argument("--dim-bone",   type=int, default=128, help="Bone-vector embedding dim (default: %(default)s).")
-    arch.add_argument("--dim-hidden", type=int, default=128, help="GNN hidden dim (default: %(default)s).")
-    arch.add_argument("--num-layers", type=int, default=4,   help="GNN depth (default: %(default)s).")
-    arch.add_argument(
-        "--num-train-steps",
-        type=int,
-        default=100,
-        help="Number of diffusion timesteps (default: %(default)s).",
-    )
-
-    # --- Optimiser / schedule ---
-    opt = p.add_argument_group("optimiser")
-    opt.add_argument("--lr",           type=float, default=1e-3,  help="Peak learning rate (default: %(default)s).")
-    opt.add_argument("--weight-decay", type=float, default=0.0,   help="AdamW weight decay (default: %(default)s).")
-    opt.add_argument(
-        "--cosine-lr",
-        action="store_true",
-        help="Apply cosine annealing LR schedule over --max-epochs.",
-    )
-    opt.add_argument(
-        "--num-inference-steps",
-        type=int,
-        default=None,
-        metavar="S",
-        help=(
-            "DDIM denoising steps used during AP evaluation.  "
-            "Defaults to round(--inference-noise-frac × --num-train-steps) when not set."
-        ),
-    )
-    opt.add_argument(
-        "--inference-noise-frac",
-        type=float,
-        default=0.1,
-        metavar="F",
-        help=(
-            "Fraction of diffusion timesteps to use as the DDIM starting point "
-            "during AP evaluation.  Noise at level F×T is added to the canonical "
-            "detector predictions before DDIM; this keeps the model in-distribution "
-            "while staying close to the detector output.  "
-            "0 = no noise (model never called), 1 = full noise (AP=0 for untrained model).  "
-            "Default: %(default)s."
-        ),
-    )
-
-    # --- Training ---
-    train = p.add_argument_group("training")
-    train.add_argument("--batch-size",   type=int, default=256,  help="Images per batch (default: %(default)s).")
-    train.add_argument("--max-epochs",   type=int, default=100, help="Maximum training epochs (default: %(default)s).")
-    train.add_argument("--seed",         type=int, default=42,  help="Global random seed (default: %(default)s).")
-    train.add_argument("--grad-clip",    type=float, default=1.0, help="Gradient clipping norm (default: %(default)s; 0 = disabled).")
-    train.add_argument(
-        "--early-stop-patience",
-        type=int,
-        default=0,
-        metavar="N",
-        help="Stop training when val_loss does not improve for N epochs.  0 = disabled (default).",
-    )
-
-    # --- DINO image conditioning ---
-    dino = p.add_argument_group("DINO image conditioning")
-    dino.add_argument(
-        "--dino-model-name",
-        default=None,
-        metavar="MODEL",
-        help=(
-            "HuggingFace model ID for the DINO backbone, e.g. "
-            "'facebook/dinov3-vits16-pretrain-lvd1689m'.  "
-            "When set, enables image conditioning (use_image_cond=True)."
-        ),
-    )
-    dino.add_argument(
-        "--dino-cache-train",
-        type=Path,
-        default=None,
-        metavar="PT",
-        help=(
-            "Precomputed DINO patch-feature cache for the training split, "
-            "produced by scripts/precompute_dino.py.  "
-            "When omitted, the backbone is run live (slow)."
-        ),
-    )
-    dino.add_argument(
-        "--dino-cache-val",
-        type=Path,
-        default=None,
-        metavar="PT",
-        help="Same as --dino-cache-train but for the validation / test split.",
-    )
-    dino.add_argument(
-        "--dim-image-cond",
-        type=int,
-        default=128,
-        help="Projected DINO feature dim per node when conditioning is enabled (default: %(default)s).",
-    )
-    dino.add_argument(
-        "--dino-neighborhood-radius",
-        type=int,
-        default=1,
-        metavar="R",
-        help="Half-width of the patch neighbourhood (r=1 → 3×3 = 9 patches; default: %(default)s).",
-    )
-
-    # --- Hardware ---
-    hw = p.add_argument_group("hardware")
-    hw.add_argument("--accelerator", default="auto",    help="Lightning accelerator: auto|gpu|cpu (default: %(default)s).")
-    hw.add_argument("--devices",     default="auto",    help="Devices to use, e.g. '1', '0,1', or 'auto' (default: %(default)s).")
-    hw.add_argument(
-        "--precision",
-        default="32-true",
-        choices=["32-true", "16-mixed", "bf16-mixed"],
-        help="Training precision (default: %(default)s).",
-    )
-
-    # --- Output ---
-    out = p.add_argument_group("output")
-    out.add_argument("--run-name", default=None, help="Sub-directory name under --out-dir (default: model config name).")
-    out.add_argument(
-        "--out-dir",
-        type=Path,
-        default=defaults.RESULTS_DIR / "diffusion_training",
-        help="Root directory for checkpoints and logs (default: %(default)s).",
-    )
-    out.add_argument(
-        "--resume",
-        type=Path,
-        default=None,
-        help="Resume training from a .ckpt file.",
-    )
-    out.add_argument(
-        "--log-every-n-steps",
-        type=int,
-        default=50,
-        help="Log metrics every N training steps (default: %(default)s).",
-    )
-
-    return p.parse_args()
 
 
 # ---------------------------------------------------------------------------
@@ -282,17 +57,17 @@ def parse_args() -> argparse.Namespace:
 # ---------------------------------------------------------------------------
 
 
-def _devices_arg(raw: str) -> int | str | list[int]:
-    """Convert the --devices string to the type Lightning expects."""
+def _devices_arg(raw) -> int | str | list[int]:
+    """Convert the hardware.devices config value to the type Lightning expects."""
     if raw == "auto":
         return "auto"
-    if "," in raw:
-        return [int(d) for d in raw.split(",")]
-    return int(raw)
+    s = str(raw)
+    if "," in s:
+        return [int(d) for d in s.split(",")]
+    return int(s)
 
 
 def _setup_logging(log_file: Path) -> logging.Logger:
-    """Return a logger that writes INFO+ to stdout *and* to *log_file*."""
     fmt = logging.Formatter(
         fmt="%(asctime)s  %(levelname)-8s  %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -300,7 +75,7 @@ def _setup_logging(log_file: Path) -> logging.Logger:
     logger = logging.getLogger("train")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    if not logger.handlers:  # avoid duplicate handlers on re-use
+    if not logger.handlers:
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(fmt)
         logger.addHandler(ch)
@@ -310,137 +85,106 @@ def _setup_logging(log_file: Path) -> logging.Logger:
     return logger
 
 
-def _build_hparams(args: argparse.Namespace, run_name: str, timestamp: str) -> dict:
-    """Serialise all CLI args plus derived identifiers into a flat dict."""
-    hparams = {"run_name": run_name, "timestamp": timestamp}
-    for key, val in vars(args).items():
-        hparams[key] = str(val) if isinstance(val, Path) else val
-    return hparams
-
-
-def _save_hparams(hparams: dict, path: Path) -> None:
-    """Write *hparams* to *path* as YAML."""
-    with open(path, "w") as fh:
-        yaml.dump(hparams, fh, default_flow_style=False, sort_keys=True)
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    args = parse_args()
-
-    pl.seed_everything(args.seed, workers=True)
+@hydra.main(version_base="1.3", config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    pl.seed_everything(cfg.train.seed, workers=True)
 
     # ------------------------------------------------------------------
-    # Paths & logging  (out_dir created first so the log file has a home)
+    # Output directory (Hydra creates it; its location is set by hydra.run.dir
+    # in conf/config.yaml, defaulting to out_dir/run_name/timestamp)
     # ------------------------------------------------------------------
-    run_name  = args.run_name or f"diffusion_d{args.dim_hidden}_l{args.num_layers}"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir   = args.out_dir / run_name / timestamp
-    ckpt_dir  = out_dir / "checkpoints"
+    out_dir = Path(HydraConfig.get().runtime.output_dir)
+    ckpt_dir = out_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     log = _setup_logging(out_dir / "train.log")
-    log.info("Run name  : %s", run_name)
+    log.info("Run name  : %s", cfg.run_name)
     log.info("Output dir: %s", out_dir)
+    log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
     # ------------------------------------------------------------------
-    # Validate data paths
+    # Data paths  (to_absolute_path resolves relative to the launch cwd)
     # ------------------------------------------------------------------
-    data_root = args.data_root
-    train_ann = data_root / args.train_ann
-    val_ann   = data_root / args.val_ann
-    test_ann  = data_root / args.test_ann
-    img_dir   = data_root / args.img_dir
+    data_root = Path(to_absolute_path(cfg.data.root))
+    train_ann = data_root / cfg.data.train_ann
+    val_ann   = data_root / cfg.data.val_ann
+    test_ann  = data_root / cfg.data.test_ann
+    img_dir   = data_root / cfg.data.img_dir
 
     for path, label in [
-        (train_ann, "--train-ann"), (val_ann, "--val-ann"),
-        (test_ann, "--test-ann"),   (img_dir, "--img-dir"),
+        (train_ann, "data.train_ann"),
+        (val_ann,   "data.val_ann"),
+        (test_ann,  "data.test_ann"),
+        (img_dir,   "data.img_dir"),
     ]:
         if not path.exists():
             log.error("%s path does not exist: %s", label, path)
             sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Hyperparameters  (saved to YAML before anything else runs)
+    # Datasets
     # ------------------------------------------------------------------
-    hparams = _build_hparams(args, run_name, timestamp)
-    hparams_path = out_dir / "hparams.yaml"
-    _save_hparams(hparams, hparams_path)
-    log.info("Hyperparameters saved to %s", hparams_path)
-    for key, val in hparams.items():
-        log.info("  %-24s %s", key, val)
-
-    # ------------------------------------------------------------------
-    # Data
-    # ------------------------------------------------------------------
-    log.info("Loading train annotations from %s", train_ann)
-    train_dataset = PoseDataset.from_path(train_ann, img_root=img_dir)
-    log.info("Loading val annotations   from %s", val_ann)
-    val_dataset   = PoseDataset.from_path(val_ann,   img_root=img_dir)
-    log.info("Loading test annotations  from %s", test_ann)
-    test_dataset  = PoseDataset.from_path(test_ann,  img_root=img_dir)
+    log.info("Loading datasets from %s ...", data_root)
+    train_ds = PoseDataset.from_path(train_ann, img_root=img_dir)
+    val_ds   = PoseDataset.from_path(val_ann,   img_root=img_dir)
+    test_ds  = PoseDataset.from_path(test_ann,  img_root=img_dir)
     log.info(
         "Dataset sizes — Train: %s  Val: %s  Test: %s",
-        f"{len(train_dataset):,}", f"{len(val_dataset):,}", f"{len(test_dataset):,}",
+        f"{len(train_ds):,}", f"{len(val_ds):,}", f"{len(test_ds):,}",
     )
 
-    train_loader = train_dataset.create_dataloader(
-        batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=args.num_workers
-    )
-    val_loader = val_dataset.create_dataloader(
-        batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers
-    )
-    test_loader = test_dataset.create_dataloader(
-        batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.num_workers
-    )
+    loader_kwargs = dict(batch_size=cfg.train.batch_size, num_workers=cfg.data.num_workers)
+    train_loader = train_ds.create_dataloader(**loader_kwargs, shuffle=True,  drop_last=True)
+    val_loader   = val_ds.create_dataloader(**loader_kwargs,   shuffle=False, drop_last=False)
+    test_loader  = test_ds.create_dataloader(**loader_kwargs,  shuffle=False, drop_last=False)
 
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
-    use_image_cond = args.dino_model_name is not None
+    use_image_cond = cfg.dino.model_name is not None or cfg.model.use_cnn_cond
     model_config = KeypointDiffusionConfig(
-        name=run_name,
-        dim_pos=args.dim_pos,
-        dim_index=args.dim_index,
-        dim_time=args.dim_time,
-        dim_bone=args.dim_bone,
-        dim_hidden=args.dim_hidden,
-        num_layers=args.num_layers,
-        num_train_steps=args.num_train_steps,
-        use_image_cond=use_image_cond,
-        dim_image_cond=args.dim_image_cond,
+        name=cfg.run_name,
+        **OmegaConf.to_container(cfg.model, resolve=True),
     )
     model = KeypointDiffusionModel(config=model_config, num_keypoints=15)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info("%s  —  %s trainable parameters", type(model).__name__, f"{n_params:,}")
     if use_image_cond:
-        log.info("Image conditioning: DINO model=%s  dim=%d  radius=%d",
-                 args.dino_model_name, args.dim_image_cond, args.dino_neighborhood_radius)
-        log.info("  train cache: %s", args.dino_cache_train or "(live backbone)")
-        log.info("  val/test cache: %s", args.dino_cache_val or "(live backbone)")
+        log.info(
+            "DINO: model=%s  radius=%d  train_cache=%s  val_cache=%s  test_cache=%s",
+            cfg.dino.model_name, cfg.dino.neighborhood_radius,
+            cfg.dino.cache_train or "(live)", cfg.dino.cache_val or "(live)",
+            cfg.dino.cache_test or "(live)",
+        )
 
     module = PoseDiffusionModule(
         model=model,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        lr_T_max=args.max_epochs if args.cosine_lr else None,
-        val_ann_file=str(data_root / args.val_ann),
-        test_ann_file=str(data_root / args.test_ann),
-        val_pred_cache=str(args.val_pred_cache)  if args.val_pred_cache  else None,
-        test_pred_cache=str(args.test_pred_cache) if args.test_pred_cache else None,
-        num_inference_steps=args.num_inference_steps,
-        inference_noise_frac=args.inference_noise_frac,
-        ap_batch_size=args.ap_batch_size,
-        ap_eval_interval=args.ap_eval_interval,
-        dino_model_name=args.dino_model_name,
-        dino_neighborhood_radius=args.dino_neighborhood_radius,
-        dino_cache_train=str(args.dino_cache_train)  if args.dino_cache_train  else None,
-        dino_cache_val=str(args.dino_cache_val)    if args.dino_cache_val    else None,
+        lr=cfg.train.lr,
+        weight_decay=cfg.train.weight_decay,
+        lr_T_max=cfg.train.max_epochs if cfg.train.cosine_lr else None,
+        lr_warmup_epochs=cfg.train.lr_warmup_epochs,
+        lr_min_frac=cfg.train.lr_min_frac,
+        cfg_guidance_scale=cfg.train.cfg_guidance_scale,
+        val_ann_file=str(val_ann),
+        test_ann_file=str(test_ann),
+        val_pred_cache=str(cfg.data.val_pred_cache)   if cfg.data.val_pred_cache  else None,
+        test_pred_cache=str(cfg.data.test_pred_cache) if cfg.data.test_pred_cache else None,
+        num_inference_steps=cfg.train.num_inference_steps,
+        inference_noise_frac=cfg.train.inference_noise_frac,
+        ap_batch_size=cfg.data.ap_batch_size,
+        ap_eval_interval=cfg.data.ap_eval_interval,
+        ap_step_counts=list(cfg.train.ap_step_counts) if cfg.train.ap_step_counts else None,
+        dino_model_name=cfg.dino.model_name,
+        dino_neighborhood_radius=cfg.dino.neighborhood_radius,
+        dino_cache_train=str(cfg.dino.cache_train) if cfg.dino.cache_train else None,
+        dino_cache_val=str(cfg.dino.cache_val)     if cfg.dino.cache_val   else None,
+        dino_cache_test=str(cfg.dino.cache_test)   if cfg.dino.cache_test  else None,
     )
 
     # ------------------------------------------------------------------
@@ -449,8 +193,8 @@ def main() -> None:
     callbacks: list[pl.Callback] = [
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="epoch{epoch:03d}-val_loss{val_loss:.4f}",
-            monitor="val_loss",
+            filename="epoch{epoch:03d}-val_loss{val/loss:.4f}",
+            monitor="val/loss",
             mode="min",
             save_top_k=3,
             save_last=True,
@@ -458,59 +202,54 @@ def main() -> None:
         ),
         LearningRateMonitor(logging_interval="epoch"),
     ]
-
-    if args.early_stop_patience > 0:
-        callbacks.append(
-            EarlyStopping(
-                monitor="val_loss",
-                patience=args.early_stop_patience,
-                mode="min",
-                verbose=True,
-            )
-        )
+    if cfg.train.early_stop_patience > 0:
+        callbacks.append(EarlyStopping(
+            monitor="val/loss",
+            patience=cfg.train.early_stop_patience,
+            mode="min",
+            verbose=True,
+        ))
 
     # ------------------------------------------------------------------
     # Loggers
     # ------------------------------------------------------------------
     loggers = [
         TensorBoardLogger(save_dir=str(out_dir), name="tb_logs", version=""),
-        CSVLogger(save_dir=str(out_dir), name="csv_logs", version=""),
+        CSVLogger(save_dir=str(out_dir),          name="csv_logs", version=""),
     ]
 
     # ------------------------------------------------------------------
     # Trainer
     # ------------------------------------------------------------------
-    grad_clip = args.grad_clip if args.grad_clip > 0 else None
-
+    grad_clip = cfg.train.grad_clip if cfg.train.grad_clip > 0 else None
     trainer = pl.Trainer(
-        accelerator=args.accelerator,
-        devices=_devices_arg(args.devices),
-        precision=args.precision,
-        max_epochs=args.max_epochs,
+        accelerator=cfg.hardware.accelerator,
+        devices=_devices_arg(cfg.hardware.devices),
+        precision=cfg.hardware.precision,
+        max_epochs=cfg.train.max_epochs,
         gradient_clip_val=grad_clip,
         callbacks=callbacks,
         logger=loggers,
-        log_every_n_steps=args.log_every_n_steps,
-        deterministic=False,  # deterministic=True is slower; flip if needed
+        log_every_n_steps=cfg.train.log_every_n_steps,
+        deterministic=False,
     )
 
-    log.info("Epochs    : %d", args.max_epochs)
-    log.info("Batch size: %d  |  LR: %g", args.batch_size, args.lr)
-    if args.cosine_lr:
-        log.info("LR schedule: cosine annealing over %d epochs", args.max_epochs)
-    if args.early_stop_patience > 0:
-        log.info("Early stop patience: %d", args.early_stop_patience)
-    if args.resume:
-        log.info("Resuming from: %s", args.resume)
+    log.info(
+        "Training: epochs=%d  batch=%d  lr=%g  cosine_lr=%s",
+        cfg.train.max_epochs, cfg.train.batch_size, cfg.train.lr, cfg.train.cosine_lr,
+    )
+    resume = str(cfg.train.resume) if cfg.train.resume else None
+    if resume:
+        log.info("Resuming from: %s", resume)
 
-    trainer.fit(module, train_loader, val_loader, ckpt_path=str(args.resume) if args.resume else None)
+    trainer.fit(module, train_loader, val_loader, ckpt_path=resume)
 
     # ------------------------------------------------------------------
-    # Post-training summary
+    # Test on best checkpoint
     # ------------------------------------------------------------------
     best_ckpt  = trainer.checkpoint_callback.best_model_path   # type: ignore[union-attr]
     best_score = trainer.checkpoint_callback.best_model_score  # type: ignore[union-attr]
-    log.info("Best val_loss : %.6f", best_score)
+    log.info("Best val/loss  : %.6f", best_score)
     log.info("Best checkpoint: %s", best_ckpt)
 
     if best_ckpt:

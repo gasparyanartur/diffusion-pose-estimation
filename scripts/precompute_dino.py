@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ann-path",   required=True, help="COCO-style annotation JSON")
     p.add_argument("--img-root",   required=True, help="Root directory for images")
     p.add_argument("--split",      required=True, help="Split name, e.g. train / val / test")
-    p.add_argument("--model-name", default="facebook/dinov2-small",
+    p.add_argument("--model-name", default="facebook/dinov3-vits16-pretrain-lvd1689m",
                    help="HuggingFace model ID for the DINO backbone")
     p.add_argument("--image-size", type=int, default=224,
                    help="Resolution to which images are resized before feeding DINO")
@@ -69,8 +69,10 @@ def extract_features(
     pil_imgs = [Image.open(p).convert("RGB") for p in paths]
     inputs = processor(images=pil_imgs, return_tensors="pt").to(device)
     outputs = model(**inputs)
-    # Drop CLS token → (B, G*G, D)
-    patch_feats = outputs.last_hidden_state[:, 1:].cpu()
+    # Drop CLS token and register tokens (e.g. 4 for DINOv3) → (B, G*G, D)
+    n_registers = getattr(model.config, "num_register_tokens", 0)
+    n_skip = 1 + n_registers
+    patch_feats = outputs.last_hidden_state[:, n_skip:].cpu()
     return {iid: patch_feats[i] for i, iid in enumerate(image_ids)}
 
 

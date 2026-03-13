@@ -232,3 +232,35 @@ class KeypointAPMetric:
         if self._n_images == 0:
             return {}
         return self._metric.evaluate(self._n_images)
+
+
+# ---------------------------------------------------------------------------
+# Per-batch pose metrics (cheap — no annotation file required)
+# ---------------------------------------------------------------------------
+
+
+def compute_mpjpe(
+    pred_pixel: Tensor,  # (B, N, K, 2)
+    gt_pixel: Tensor,    # (B, N, K, 2)
+    visibility: Tensor,  # (B, N, K)  0=absent 1=occluded 2=visible
+) -> Tensor:
+    """Mean per-joint position error in pixels, averaged over visible joints."""
+    visible = visibility > 0
+    per_joint_err = (pred_pixel - gt_pixel).norm(dim=-1)  # (B, N, K)
+    if not visible.any():
+        return pred_pixel.new_zeros(())
+    return per_joint_err[visible].mean()
+
+
+def compute_pck(
+    pred_pixel: Tensor,  # (B, N, K, 2)
+    gt_pixel: Tensor,    # (B, N, K, 2)
+    visibility: Tensor,  # (B, N, K)  0=absent 1=occluded 2=visible
+    threshold_px: float = 20.0,
+) -> Tensor:
+    """Fraction of visible joints predicted within threshold_px pixels of GT."""
+    visible = visibility > 0
+    per_joint_err = (pred_pixel - gt_pixel).norm(dim=-1)
+    if not visible.any():
+        return pred_pixel.new_zeros(())
+    return (per_joint_err[visible] < threshold_px).float().mean()

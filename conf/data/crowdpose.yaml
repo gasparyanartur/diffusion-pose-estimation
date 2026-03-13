@@ -1,0 +1,19 @@
+# CrowdPose dataset paths and data-loader settings.
+# Paths are relative to the working directory (project root).
+
+root: data
+train_ann: crowdpose/annotations/crowdpose_train.json
+val_ann: crowdpose/annotations/crowdpose_val.json
+test_ann: crowdpose/annotations/crowdpose_test.json
+img_dir: crowdpose/images
+
+# Prediction caches for OKS-AP evaluation (produced by scripts/extract_predictions.py)
+val_pred_cache: null
+test_pred_cache: null
+
+# AP evaluation settings
+ap_batch_size: 256
+ap_eval_interval: 0   # 0 = disable periodic val AP; AP still runs once after training
+
+# DataLoader
+num_workers: 4
