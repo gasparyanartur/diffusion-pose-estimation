@@ -1,0 +1,4 @@
+# Single GPU with bfloat16 mixed precision.
+accelerator: gpu
+devices: 1
+precision: bf16-mixed

@@ -1,0 +1,24 @@
+# Root Hydra config.  Override any value from the command line:
+#
+#   python scripts/train_pose_refinement.py run_name=exp_large model=large
+#   python scripts/train_pose_refinement.py train.lr=3e-4 train.max_epochs=200
+#   python scripts/train_pose_refinement.py hardware=gpu dino=dinov2_small
+#   python scripts/train_pose_refinement.py train.resume=checkpoints/run/last.ckpt
+
+defaults:
+  - model: base
+  - data: crowdpose
+  - train: base
+  - dino: dinov3_vits16
+  - hardware: auto
+  - _self_
+
+# Top-level identifiers — override with run_name=my_experiment
+run_name: diffusion
+out_dir: results/diffusion_training
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

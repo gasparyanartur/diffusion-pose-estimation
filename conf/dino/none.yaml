@@ -1,0 +1,6 @@
+# No DINO image conditioning (default).
+model_name: null
+cache_train: null
+cache_val: null
+cache_test: null
+neighborhood_radius: 1

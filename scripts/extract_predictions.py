@@ -96,11 +96,29 @@ def _get_cache_name(model_name: str) -> str:
         return model_name.replace('_', '-')[:40]
 
 
+# Map split name -> (ann_file, bbox_file_or_None) relative to data_root
+# bbox_file is model-type-dependent so we use a sentinel and resolve below.
+_SPLIT_ANN_FILES: dict[str, str] = {
+    "train": "crowdpose/annotations/crowdpose_train.json",
+    "val":   "crowdpose/annotations/crowdpose_val.json",
+    "test":  "crowdpose/annotations/crowdpose_test.json",
+}
+# RTMPose (top-down) needs a bbox file per split; bottom-up ignores this.
+# Only the test split bbox file is distributed with CrowdPose; val/train
+# fall back to GT bounding boxes (oracle mode).
+_SPLIT_BBOX_FILES: dict[str, str | None] = {
+    "train": None,  # not publicly released
+    "val":   None,  # not publicly released
+    "test":  "crowdpose/annotations/det_for_crowd_test_0.1_0.5.json",
+}
+
+
 def extract_predictions(
     model_name: str,
     cache_path: Path,
     force: bool = False,
     include_features: bool = False,
+    split: str = "test",
 ) -> None:
     """Run base model and cache predictions."""
     if cache_path.exists() and not force:
@@ -109,6 +127,19 @@ def extract_predictions(
         return
 
     cfg = dict(REGISTRY[model_name])
+
+    # Override annotation / bbox file for the requested split
+    if split not in _SPLIT_ANN_FILES:
+        sys.exit(f"[error] Unknown split '{split}'. Choose from: {list(_SPLIT_ANN_FILES)}")
+    cfg["ann_file"] = _SPLIT_ANN_FILES[split]
+    # Only override bbox_file for top-down models (bottom-up has bbox_file=None).
+    # If the split has no bbox file (val/train), set to None → GT oracle boxes.
+    if cfg.get("bbox_file") is not None:
+        bbox_override = _SPLIT_BBOX_FILES[split]
+        cfg["bbox_file"] = bbox_override
+        if bbox_override is None:
+            print(f"[info] No detector bbox file available for split='{split}'; "
+                  f"using GT bounding boxes (oracle mode).")
     
     # Download checkpoint if needed
     if cfg.get("checkpoint_url"):
@@ -127,7 +158,7 @@ def extract_predictions(
     from mmengine.config import Config
     from mmengine.runner import Runner
     
-    print(f"[model] Loading: {model_name}")
+    print(f"[model] Loading: {model_name}  (split={split})")
     
     # Load config
     config = Config.fromfile(str(cfg["config_path"]))
@@ -297,9 +328,15 @@ def parse_args() -> argparse.Namespace:
         help="Extract intermediate features (experimental, not yet implemented)",
     )
     p.add_argument(
+        "--split",
+        default="test",
+        choices=["train", "val", "test"],
+        help="Dataset split to run inference on (default: %(default)s).",
+    )
+    p.add_argument(
         "--list",
         action="store_true",
-        help="List all available models and exit",
+        help="List all available models and exit.",
     )
     return p.parse_args()
 
@@ -321,9 +358,9 @@ def main() -> None:
         sys.exit(f"[error] Unknown model: {args.model}\nAvailable:\n  {names}")
     
     cache_name = _get_cache_name(args.model)
-    cache_path = args.cache or (defaults.CACHE_DIR / f"{cache_name}_predictions.pkl")
-    
-    extract_predictions(args.model, cache_path, args.force, args.features)
+    cache_path = args.cache or (defaults.CACHE_DIR / f"{cache_name}_{args.split}_predictions.pkl")
+
+    extract_predictions(args.model, cache_path, args.force, args.features, split=args.split)
 
 
 if __name__ == "__main__":

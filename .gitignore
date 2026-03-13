@@ -14,6 +14,9 @@ wheels/
 /results
 /checkpoints
 
+/logs
+/lightning_logs
+
 # Exclude cached predictions (can be regenerated)
 results/cache/*.pkl
 results/cache/work_dir/

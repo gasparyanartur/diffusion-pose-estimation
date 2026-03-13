@@ -1,0 +1,1 @@
+# TODO[7]: add sweep training (setup hydra sweep, add sweep configs with different hyperparameters, add sweep script)

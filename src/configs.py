@@ -20,23 +20,7 @@ bbox_file        : str | None – detector-box file, relative to data_root;
 
 from src import defaults
 
-# ---------------------------------------------------------------------------
-# RTMPose-M  ×  CrowdPose  (210 epochs)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# DEKR  ×  HRNet-w32  ×  CrowdPose  (300 epochs)
-# ---------------------------------------------------------------------------
-#
-# DEKR is a *bottom-up* method: it detects and estimates all poses in a single
-# pass without a separate person detector, so bbox_file is not applicable.
-# The evaluator expects the MMPose-converted annotation file
-# (mmpose_crowdpose_test.json), which is included in the OpenMMLab annotations
-# tar downloaded by scripts/prepare_crowdpose.py.
-#
-# Reported numbers (no multi-scale test):
-#   AP 0.663 | AP50 0.857 | AP75 0.714 | APe 0.740 | APm 0.671 | APh 0.576
-
+# DEKR  ×  HRNet-w32  ×  CrowdPose
 DEKR_W32_CROWDPOSE_300: dict = {
     "name": "dekr-hrnet-w32_8xb10-300e_crowdpose-512x512",
     "mmpose_dir": defaults.MMPOSE_DIR,
@@ -57,10 +41,7 @@ DEKR_W32_CROWDPOSE_300: dict = {
     "bbox_file": None,  # bottom-up: no person detector needed
 }
 
-# ---------------------------------------------------------------------------
-# RTMPose-M  ×  CrowdPose  (210 epochs)
-# ---------------------------------------------------------------------------
-
+# RTMPose-M  ×  CrowdPose
 RTMPOSE_M_CROWDPOSE_210: dict = {
     "name": "rtmpose-m_8xb64-210e_crowdpose-256x192",
     "mmpose_dir": defaults.MMPOSE_DIR,
@@ -81,9 +62,6 @@ RTMPOSE_M_CROWDPOSE_210: dict = {
     "bbox_file": "crowdpose/annotations/det_for_crowd_test_0.1_0.5.json",
 }
 
-# ---------------------------------------------------------------------------
-# Registry  –  maps name → config dict
-# ---------------------------------------------------------------------------
 ALL_CONFIGS = [DEKR_W32_CROWDPOSE_300, RTMPOSE_M_CROWDPOSE_210]
 REGISTRY: dict[str, dict] = {
     cfg["name"]: cfg
