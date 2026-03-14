@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 import hydra
+import torch
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
@@ -185,7 +186,7 @@ def main(cfg: DictConfig) -> None:
         start_inference_noise_frac=cfg.train.start_inference_noise_frac,
         raw_refiner=cfg.train.raw_refiner,
         ap_batch_size=cfg.data.ap_batch_size,
-        ap_eval_interval=cfg.data.ap_eval_interval,
+        ap_eval_interval=cfg.train.ap_eval_interval,
         ap_step_counts=list(cfg.train.ap_step_counts) if cfg.train.ap_step_counts else None,
         dino_model_name=cfg.dino.model_name,
         dino_neighborhood_radius=cfg.dino.neighborhood_radius,
@@ -248,6 +249,12 @@ def main(cfg: DictConfig) -> None:
     resume = str(cfg.train.resume) if cfg.train.resume else None
     if resume:
         log.info("Resuming from: %s", resume)
+
+    if cfg.train.compile:
+        log.info("torch.compile: compiling model.backward_process (dynamic=True)...")
+        module.model.backward_process = torch.compile(
+            module.model.backward_process, dynamic=True
+        )
 
     trainer.fit(module, train_loader, val_loader, ckpt_path=resume)
 

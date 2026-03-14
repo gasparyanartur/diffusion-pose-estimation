@@ -126,7 +126,7 @@ class KeypointAPMetric:
             # pred_kpts: (B, N, 14, 2) pixel space
             # pred_scores: (B, N, 14)
             metric.update(pred_kpts, pred_scores, batch["image_id"])
-        results = metric.compute()   # {"coco/AP": ..., "coco/AP .5": ..., ...}
+        results = metric.compute()   # {"crowdpose/AP": ..., "crowdpose/AP .5": ..., ...}
         metric.reset()
     """
 
@@ -141,9 +141,8 @@ class KeypointAPMetric:
         m = CocoMetric(
             ann_file=self._ann_file,
             use_area=False,
-            iou_type="keypoints",
-            score_mode="keypoint",
-            nms_mode="none",
+            iou_type="keypoints_crowd",
+            prefix="crowdpose",
         )
         m.dataset_meta = CROWDPOSE_DATASET_META
         return m
@@ -157,9 +156,10 @@ class KeypointAPMetric:
     @staticmethod
     def build_samples_for_image(
         img_id: int,
-        kpts: np.ndarray,    # (N, 14, 2)
-        scores: np.ndarray,  # (N, 14)
+        kpts: np.ndarray,          # (N, 14, 2)
+        scores: np.ndarray,        # (N, 14)
         ann_ids: list,
+        bbox_scores: np.ndarray | None = None,  # (N,) detector bbox confidence
     ) -> list:
         """Format predictions for one image into one CocoMetric sample per person.
 
@@ -170,11 +170,16 @@ class KeypointAPMetric:
         each with a distinct id.
 
         Args:
-            img_id:  COCO image id.
-            kpts:    Float array (N, 14, 2) – pixel keypoints for the image.
-            scores:  Float array (N, 14)    – per-keypoint confidence scores.
-            ann_ids: List of GT annotation ids for this image.  Used as
-                     sample ids when available; synthetic fallback otherwise.
+            img_id:      COCO image id.
+            kpts:        Float array (N, 14, 2) – pixel keypoints for the image.
+            scores:      Float array (N, 14)    – per-keypoint confidence scores.
+            ann_ids:     List of GT annotation ids for this image.  Used as
+                         sample ids when available; synthetic fallback otherwise.
+            bbox_scores: Float array (N,) – detector bbox confidence scores.
+                         When provided they are written to ``pred_instances`` so
+                         CocoMetric's ``score_mode='bbox_keypoint'`` uses real
+                         detector confidence.  When None, CocoMetric falls back
+                         to the ones stored in ``gt_instances``.
 
         Returns:
             List of N data-sample dicts ready for ``CocoMetric.process``.
@@ -185,14 +190,19 @@ class KeypointAPMetric:
             # Re-use the GT annotation id when available; fall back to a
             # deterministic unique id derived from (img_id, n).
             sample_id = int(ann_ids[n]) if n < len(ann_ids) else img_id * 10000 + n
+            pred_instances: dict = {
+                "keypoints":       kpts[n : n + 1],    # (1, 14, 2)
+                "keypoint_scores": scores[n : n + 1],  # (1, 14)
+            }
+            if bbox_scores is not None:
+                pred_instances["bbox_scores"] = np.array(
+                    [bbox_scores[n]], dtype=np.float32
+                )  # (1,)
             samples.append({
                 "id":          sample_id,
                 "img_id":      img_id,
                 "category_id": 1,
-                "pred_instances": {
-                    "keypoints":       kpts[n : n + 1],    # (1, 14, 2)
-                    "keypoint_scores": scores[n : n + 1],  # (1, 14)
-                },
+                "pred_instances": pred_instances,
                 "gt_instances": {
                     "bbox_scores": np.ones(1, dtype=np.float32),
                 },
@@ -204,14 +214,19 @@ class KeypointAPMetric:
         pred_kpts: Tensor,    # (B, N, 14, 2) pixel space
         pred_scores: Tensor,  # (B, N, 14)
         image_ids: Tensor,    # (B,)
+        bbox_scores: Tensor | None = None,  # (B, N) detector bbox confidence
     ) -> None:
         """Accumulate one batch of predictions.
 
         All tensors may still be on GPU; they are moved to CPU here.
         """
-        kpts_np   = pred_kpts.detach().cpu().numpy()    # (B, N, 14, 2)
-        scores_np = pred_scores.detach().cpu().numpy()  # (B, N, 14)
-        ids_list  = image_ids.tolist()
+        kpts_np        = pred_kpts.detach().cpu().numpy()     # (B, N, 14, 2)
+        scores_np      = pred_scores.detach().cpu().numpy()   # (B, N, 14)
+        bbox_scores_np = (
+            bbox_scores.detach().cpu().numpy()                # (B, N)
+            if bbox_scores is not None else None
+        )
+        ids_list = image_ids.tolist()
 
         B = kpts_np.shape[0]
         data_samples = []
@@ -220,8 +235,11 @@ class KeypointAPMetric:
             if img_id not in self._valid_img_ids:
                 continue  # prediction belongs to a different split – skip
             ann_ids = list(self._metric.coco.getAnnIds(imgIds=[img_id]))
+            b_bbox_scores = bbox_scores_np[b] if bbox_scores_np is not None else None
             data_samples.extend(
-                self.build_samples_for_image(img_id, kpts_np[b], scores_np[b], ann_ids)
+                self.build_samples_for_image(
+                    img_id, kpts_np[b], scores_np[b], ann_ids, b_bbox_scores
+                )
             )
 
         self._metric.process({}, data_samples)

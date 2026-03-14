@@ -68,7 +68,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SWEEP_NAME="$(basename "$SWEEP_FILE" .sweep)"
-SWEEP_DIR="${PROJECT_ROOT}/results/sweeps/${SWEEP_NAME}/${RUN_DATETIME}/task_${TASK_ID}"
+SWEEP_DIR="${PROJECT_ROOT}/results/sweeps/${SWEEP_NAME}/task_${TASK_ID}/${RUN_DATETIME}"
 
 mkdir -p "$SWEEP_DIR"
 

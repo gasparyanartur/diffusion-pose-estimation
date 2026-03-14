@@ -78,6 +78,11 @@ class KeypointDiffusionConfig:
 
     # Architecture ablations
     use_message_passing: bool = True  # if False, use per-node MLP (no graph aggregation or bone embedding)
+    zero_delta: bool = False          # if True, always return delta=0 (identity refinement; for sanity checks)
+
+    # Regularisation
+    dropout_rate: float = 0.1       # dropout probability in MLPs
+    attn_dropout_rate: float = 0.1  # dropout probability on attention weights
 
     # Loss terms
     use_joint_loss: bool = True
@@ -374,6 +379,8 @@ class PoseGraphLayer(MessagePassing):
         dim_global: int,
         num_heads: int = 4,
         use_message_passing: bool = True,
+        dropout_rate: float = 0.1,
+        attn_dropout_rate: float = 0.1,
     ) -> None:
         super().__init__(aggr="add")  # weighted sum handled inside message()
         self.dim = dim
@@ -381,6 +388,7 @@ class PoseGraphLayer(MessagePassing):
         self.head_dim = dim // num_heads
         assert dim % num_heads == 0, f"dim ({dim}) must be divisible by num_heads ({num_heads})"
         self.use_message_passing = use_message_passing
+        self.attn_dropout = attn_dropout_rate
 
         if use_message_passing:
             # Step 1: projections for query / key / value-state
@@ -394,6 +402,7 @@ class PoseGraphLayer(MessagePassing):
                 torch.nn.LayerNorm(msg_in),
                 torch.nn.Linear(msg_in, dim * 2),
                 torch.nn.GELU(),
+                torch.nn.Dropout(dropout_rate),
                 torch.nn.Linear(dim * 2, dim),
             )
 
@@ -405,6 +414,7 @@ class PoseGraphLayer(MessagePassing):
             torch.nn.LayerNorm(update_in),
             torch.nn.Linear(update_in, dim * 2),
             torch.nn.GELU(),
+            torch.nn.Dropout(dropout_rate),
             torch.nn.Linear(dim * 2, dim),
         )
 
@@ -412,23 +422,24 @@ class PoseGraphLayer(MessagePassing):
 
     def message(
         self,
-        q_i: Tensor,       # (E, dim) — destination query
-        k_j: Tensor,       # (E, dim) — source key
-        v_state_j: Tensor, # (E, dim) — source value-state
-    ) -> Tensor:           # (E, dim) attention-weighted messages
+        q_i: Tensor,        # (E, dim)      — destination query
+        k_j: Tensor,        # (E, dim)      — source key
+        v_state_j: Tensor,  # (E, dim)      — source value-state
+        edge_feat: Tensor,  # (E, dim_edge) — per-edge relative-position features
+        vis_j: Tensor,      # (E, dim_vis)  — source visual features (sliced by PyG)
+        edge_dst: Tensor,   # (E,)          — destination node index for softmax
+    ) -> Tensor:            # (E, dim) attention-weighted messages
         E = q_i.shape[0]
         H, D = self.num_heads, self.head_dim
 
-        e_ij  = self._edge_feats  # (E, dim_edge)
-        vis_j = self._vis_j       # (E, dim_vis)
-
-        msg = self.msg_mlp(torch.cat([v_state_j, e_ij, vis_j], dim=-1))  # (E, dim)
+        msg = self.msg_mlp(torch.cat([v_state_j, edge_feat, vis_j], dim=-1))  # (E, dim)
 
         q_h = q_i.view(E, H, D)
         k_h = k_j.view(E, H, D)
-        dot   = (q_h * k_h).sum(-1) / math.sqrt(D)  # (E, H)
-        score = dot + self.edge_bias(e_ij)            # (E, H)
-        alpha = softmax(score, index=self._edge_dst, num_nodes=self._num_nodes)  # (E, H)
+        dot   = (q_h * k_h).sum(-1) / math.sqrt(D)       # (E, H)
+        score = dot + self.edge_bias(edge_feat)            # (E, H)
+        alpha = softmax(score, index=edge_dst, num_nodes=self._num_nodes)  # (E, H)
+        alpha = F.dropout(alpha, p=self.attn_dropout, training=self.training)  # (E, H)
 
         msg_h    = msg.view(E, H, D)
         weighted = (msg_h * alpha.unsqueeze(-1)).view(E, self.dim)  # (E, dim)
@@ -449,15 +460,19 @@ class PoseGraphLayer(MessagePassing):
             k       = self.W_k(h)
             v_state = self.W_v(h)
 
-            src, dst = edge_index[0], edge_index[1]
-            # Stash per-edge tensors for message() — PyG's propagate only auto-splits
-            # node features, not arbitrary edge tensors.
-            self._edge_feats = e          # (E, dim_edge)
-            self._vis_j      = v[src]     # (E, dim_vis)
-            self._edge_dst   = dst        # (E,)  for softmax normalisation
-            self._num_nodes  = h.shape[0]
-
-            agg = self.propagate(edge_index, q=q, k=k, v_state=v_state)  # (M, dim)
+            _, dst = edge_index[0], edge_index[1]
+            # Pass per-edge and per-node tensors through propagate kwargs.
+            # Avoids stashing activations as module attributes, which confuses
+            # torch.compile (dynamo captures stashed dtype and produces stale kernels
+            # when bf16-mixed autocast changes activation dtypes).
+            self._num_nodes = int(h.shape[0])  # plain Python int — safe for compile
+            agg = self.propagate(
+                edge_index,
+                q=q, k=k, v_state=v_state,
+                edge_feat=e,   # (E, dim_edge) — per-edge, passed as-is to message()
+                vis=v,         # (M, dim_vis)  — PyG slices vis_j = v[src] automatically
+                edge_dst=dst,  # (E,)          — destination indices for softmax
+            )  # (M, dim)
             h = h + self.update_mlp(torch.cat([h, agg, v], dim=-1))
         else:
             h = h + self.update_mlp(torch.cat([h, v], dim=-1))
@@ -478,6 +493,8 @@ class PoseGraphDecoder(torch.nn.Module):
         num_heads: int = 4,
         out_dim: int = 2,
         use_message_passing: bool = True,
+        dropout_rate: float = 0.1,
+        attn_dropout_rate: float = 0.1,
     ) -> None:
         super().__init__()
         self.layers = torch.nn.ModuleList([
@@ -488,6 +505,8 @@ class PoseGraphDecoder(torch.nn.Module):
                 dim_global=dim_global,
                 num_heads=num_heads,
                 use_message_passing=use_message_passing,
+                dropout_rate=dropout_rate,
+                attn_dropout_rate=attn_dropout_rate,
             )
             for _ in range(num_layers)
         ])
@@ -524,6 +543,7 @@ class KeypointDiffusionModel(torch.nn.Module):
         self.position_embedding = torch.nn.Sequential(
             torch.nn.Linear(2, config.dim_pos),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_pos, config.dim_hidden),
         )
         self.node_idx_embedding = torch.nn.Embedding(num_keypoints, config.dim_hidden)
@@ -536,12 +556,14 @@ class KeypointDiffusionModel(torch.nn.Module):
         self.global_cond_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_in, config.dim_time),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_time, config.dim_time),
         )
 
         self.edge_encoder = torch.nn.Sequential(
             torch.nn.Linear(2, config.dim_edge),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_edge, config.dim_edge),
         )
 
@@ -556,6 +578,8 @@ class KeypointDiffusionModel(torch.nn.Module):
             num_layers=config.num_layers,
             num_heads=config.num_heads,
             use_message_passing=config.use_message_passing,
+            dropout_rate=config.dropout_rate,
+            attn_dropout_rate=config.attn_dropout_rate,
         )
 
         # VE noise schedule (EDM-style): sigmas[0]=0 (clean sentinel used at the end
@@ -592,6 +616,9 @@ class KeypointDiffusionModel(torch.nn.Module):
         **kwargs,
     ) -> Tensor:
         M = noisy_node_pos.shape[0]  # B*N*K
+
+        if self.config.zero_delta:
+            return torch.zeros_like(noisy_node_pos)
 
         pos_emb = self.position_embedding(noisy_node_pos)  # (M, dim_hidden)
         idx_emb = self.node_idx_embedding(kpt_type_idx)    # (M, dim_hidden)
@@ -650,8 +677,9 @@ class KeypointDiffusionModel(torch.nn.Module):
         prev_timestep_list = torch.cat(
             [timesteps[1:], timesteps.new_zeros(1)]
         )  # trailing 0 = clean
+        B = batch_idx.max().item() + 1  # computed once to avoid per-step CPU-GPU sync
         for timestep, prev_timestep in zip(timesteps, prev_timestep_list):
-            timestep_batch = timestep.expand(batch_idx.max().item() + 1)  # (B,)
+            timestep_batch = timestep.expand(B)  # (B,)
 
             bp_kwargs = dict(
                 noisy_node_pos=x,
@@ -769,13 +797,13 @@ def _run_and_log_ap_eval(
             module._run_ap_eval(pred_cache, metric, desc=desc, num_steps=n)
             results = metric.compute()
             for key, val in results.items():
-                module.log(f"{prefix}/{key}@{n}", val, prog_bar=(log_prog_bar and key == "coco/AP"), sync_dist=True)
+                module.log(f"{prefix}/{key}@{n}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
     else:
         desc = f"{prefix} AP" + (f" [epoch {epoch}]" if epoch is not None else "")
         module._run_ap_eval(pred_cache, metric, desc=desc)
         results = metric.compute()
         for key, val in results.items():
-            module.log(f"{prefix}/{key}", val, prog_bar=(log_prog_bar and key == "coco/AP"), sync_dist=True)
+            module.log(f"{prefix}/{key}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
 
 
 def joint_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
@@ -872,6 +900,7 @@ class PoseDiffusionModule(pl.LightningModule):
         ap_step_counts: list[int] | None = None,
         start_inference_noise_frac: float = 0.4,
         raw_refiner: bool = False,
+        disable_noise: bool = False,
         # DINO conditioning
         dino_model_name: str | None = None,
         dino_neighborhood_radius: int = 1,
@@ -895,6 +924,7 @@ class PoseDiffusionModule(pl.LightningModule):
         self._ap_step_counts = ap_step_counts
         self._start_inference_noise_frac = start_inference_noise_frac
         self._raw_refiner = raw_refiner
+        self._disable_noise = disable_noise
         self._val_pred_cache = val_pred_cache
         self._test_pred_cache = test_pred_cache
 
@@ -946,6 +976,12 @@ class PoseDiffusionModule(pl.LightningModule):
             self.global_dino_proj = torch.nn.Linear(
                 dino_hidden, model.config.dim_global_image_cond
             )
+
+        # Compile the hot inner loop of DDIM sampling for faster training and inference.
+        # fullgraph=False allows graceful fallback on graph breaks (e.g. PyG scatter ops).
+        #self.model.backward_process = torch.compile(
+        #    self.model.backward_process, fullgraph=False
+        #)
 
     def transfer_batch_to_device(self, batch: dict, device: torch.device, dataloader_idx: int) -> dict:
         # Images must stay on CPU for patch extraction; pop them out before Lightning's transfer.
@@ -1092,8 +1128,11 @@ class PoseDiffusionModule(pl.LightningModule):
     ) -> None:
         n_passes = num_steps if num_steps is not None else 1
         pred_pixel, pred_scores, image_ids = self._iterative_refine_batch(batch, n_passes=n_passes)
-        metric.update(pred_pixel, pred_scores, image_ids)
+        bbox_scores = batch.get("bbox_scores")  # (B, N) or None
+        metric.update(pred_pixel, pred_scores, image_ids, bbox_scores=bbox_scores)
 
+    @torch.no_grad()
+    @torch.no_grad()
     def _iterative_refine_batch(
         self,
         batch: dict,
@@ -1115,6 +1154,7 @@ class PoseDiffusionModule(pl.LightningModule):
                 current_batch = {**batch, "pred_keypoints": pred_pixel.detach()}
         return pred_pixel, pred_scores, image_ids
 
+    @torch.no_grad()
     def _refine_prediction_batch(
         self,
         batch: dict,
@@ -1141,16 +1181,20 @@ class PoseDiffusionModule(pl.LightningModule):
             x_init_noisy = graph.node_pos
             n_steps = 1
         else:
-            # Add a small amount of noise so the model sees in-distribution inputs
-            # while keeping predictions close to the detector output.
-            noise_timestep = torch.full(
-                (graph.B,), t_start, dtype=torch.long, device=pred_kpts.device
-            )
-            x_init_noisy, _ = self.model.add_noise(
-                node_pos=graph.node_pos,
-                timestep=noise_timestep,
-                batch_idx=graph.node_batch,
-            )  # (B*N*K, 2)
+            if self._disable_noise:
+                # Skip noise injection — start DDIM from clean detector output.
+                x_init_noisy = graph.node_pos
+            else:
+                # Add a small amount of noise so the model sees in-distribution inputs
+                # while keeping predictions close to the detector output.
+                noise_timestep = torch.full(
+                    (graph.B,), t_start, dtype=torch.long, device=pred_kpts.device
+                )
+                x_init_noisy, _ = self.model.add_noise(
+                    node_pos=graph.node_pos,
+                    timestep=noise_timestep,
+                    batch_idx=graph.node_batch,
+                )  # (B*N*K, 2)
 
             default_steps = (
                 self.num_inference_steps

@@ -196,9 +196,9 @@ def extract_predictions(
     load_checkpoint(model, str(cfg["checkpoint"]), map_location="cpu")
 
     model.eval()
-    
-    is_bottom_up = bbox_file is None
-    arch_type = "bottom-up" if is_bottom_up else "top-down"
+
+    arch_type = cfg.get("architecture_type", "top-down" if bbox_file is not None else "bottom-up")
+    is_bottom_up = arch_type == "bottom-up"
     print(f"[model] Architecture: {arch_type}")
     print(f"[extracting] Running inference on {len(runner.test_dataloader)} batches...")
     

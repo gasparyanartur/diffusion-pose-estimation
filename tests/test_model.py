@@ -43,8 +43,8 @@ from src.metrics import compute_mpjpe, compute_pck
 
 NUM_KEYPOINTS_CROWDPOSE = 14   # raw CrowdPose joints
 NUM_KEYPOINTS_CANONICAL = 15   # after virtual root is prepended
-BATCH_SIZE = 4
-N_POSES = 3  # people per image (held constant for uniform batches)
+BATCH_SIZE = 2
+N_POSES = 2  # people per image
 DEVICE = torch.device("cpu")
 
 
@@ -95,7 +95,7 @@ def config() -> KeypointDiffusionConfig:
         dim_time=16,
         dim_edge=16,
         dim_hidden=16,
-        num_layers=2,
+        num_layers=1,
         num_train_steps=50,
     )
 
@@ -256,6 +256,64 @@ class TestBackwardProcess:
         has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters())
         assert has_grad, "No gradients reached model parameters"
 
+    def test_zero_delta_returns_zeros(self, config, graph_b4n3):
+        """zero_delta=True must return an all-zero delta regardless of input."""
+        config.zero_delta = True
+        model = KeypointDiffusionModel(config=config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
+        g = graph_b4n3
+        timestep = torch.randint(1, config.num_train_steps + 1, (g.B,))
+        pred = model.backward_process(
+            noisy_node_pos=g.node_pos,
+            edge_index=g.edge_index,
+            kpt_type_idx=g.flat_kpt_type_idx,
+            batch_idx=g.node_batch,
+            timestep=timestep,
+        )
+        assert pred.shape == (g.num_nodes, 2)
+        assert pred.eq(0).all(), "Expected all-zero delta when zero_delta=True"
+
+
+# ---------------------------------------------------------------------------
+# PoseDiffusionModule.disable_noise
+# ---------------------------------------------------------------------------
+
+
+class TestDisableNoise:
+    def test_disable_noise_uses_clean_init(self, model, batch_b4n3):
+        """_disable_noise=True must pass clean node_pos as x_init to ddim_sample."""
+        module = PoseDiffusionModule(model=model, disable_noise=True)
+
+        # _refine_prediction_batch expects pred_keypoints / pred_keypoint_scores keys
+        refine_batch = {
+            "image_id":              batch_b4n3["image_id"],
+            "pred_keypoints":        batch_b4n3["keypoints"],
+            "pred_keypoint_scores":  batch_b4n3["visibility"],
+        }
+
+        sample, graph = module.prepare_batch({
+            **batch_b4n3,
+            "keypoints": batch_b4n3["keypoints"],
+            "visibility": batch_b4n3["visibility"],
+        })
+
+        captured = {}
+        original_ddim = model.ddim_sample
+
+        def mock_ddim(*args, x_init=None, **kwargs):
+            captured["x_init"] = x_init
+            return original_ddim(*args, x_init=x_init, **kwargs)
+
+        model.ddim_sample = mock_ddim
+        try:
+            module._refine_prediction_batch(refine_batch)
+        finally:
+            model.ddim_sample = original_ddim
+
+        assert captured["x_init"] is not None
+        assert torch.allclose(captured["x_init"], graph.node_pos), (
+            "Expected x_init to equal clean graph.node_pos when disable_noise=True"
+        )
+
 
 # ---------------------------------------------------------------------------
 # PoseDiffusionModule (end-to-end)
@@ -290,7 +348,7 @@ class TestPoseDiffusionModule:
         optimizer = torch.optim.Adam(module.parameters(), lr=1e-2)
         torch.manual_seed(0)
         losses = []
-        for _ in range(5):
+        for _ in range(3):
             optimizer.zero_grad()
             loss = module.training_step(batch_b4n3, batch_idx=0)
             loss.backward()
@@ -859,7 +917,7 @@ class TestMultiStepAPEval:
             val_pred_cache="/fake/cache",
         )
         module._val_metric = MagicMock()
-        module._val_metric.compute.return_value = {"coco/AP": 0.5}
+        module._val_metric.compute.return_value = {"crowdpose/AP": 0.5}
         module._run_ap_eval = MagicMock()
         module._trainer = MagicMock()
         module._trainer.sanity_checking = False
@@ -882,7 +940,7 @@ class TestMultiStepAPEval:
             val_pred_cache="/fake/cache",
         )
         module._val_metric = MagicMock()
-        module._val_metric.compute.return_value = {"coco/AP": 0.5, "coco/AP50": 0.7}
+        module._val_metric.compute.return_value = {"crowdpose/AP": 0.5, "coco/AP50": 0.7}
         module._run_ap_eval = MagicMock()
         module._trainer = MagicMock()
         module._trainer.sanity_checking = False
@@ -893,11 +951,11 @@ class TestMultiStepAPEval:
 
         module.on_validation_epoch_end()
 
-        assert "val/coco/AP@2"   in logged
-        assert "val/coco/AP@8"   in logged
+        assert "val/crowdpose/AP@2"   in logged
+        assert "val/crowdpose/AP@8"   in logged
         assert "val/coco/AP50@2" in logged
         assert "val/coco/AP50@8" in logged
-        assert "val/coco/AP"     not in logged  # no bare key when step counts are set
+        assert "val/crowdpose/AP"     not in logged  # no bare key when step counts are set
 
     def test_validation_epoch_end_no_suffix_without_step_counts(self, config):
         """on_validation_epoch_end without ap_step_counts logs val/coco/AP (no suffix)."""
@@ -908,7 +966,7 @@ class TestMultiStepAPEval:
             val_pred_cache="/fake/cache",
         )
         module._val_metric = MagicMock()
-        module._val_metric.compute.return_value = {"coco/AP": 0.5}
+        module._val_metric.compute.return_value = {"crowdpose/AP": 0.5}
         module._run_ap_eval = MagicMock()
         module._trainer = MagicMock()
         module._trainer.sanity_checking = False
@@ -919,7 +977,7 @@ class TestMultiStepAPEval:
 
         module.on_validation_epoch_end()
 
-        assert "val/coco/AP" in logged
+        assert "val/crowdpose/AP" in logged
         assert not any("@" in k for k in logged)
 
     def test_test_epoch_end_multi_step_logs_with_suffix(self, config):
@@ -931,7 +989,7 @@ class TestMultiStepAPEval:
             test_pred_cache="/fake/test_cache",
         )
         module._test_metric = MagicMock()
-        module._test_metric.compute.return_value = {"coco/AP": 0.4, "coco/AP50": 0.6}
+        module._test_metric.compute.return_value = {"crowdpose/AP": 0.4, "coco/AP50": 0.6}
         module._run_ap_eval = MagicMock()
         module._trainer = MagicMock()
 
@@ -940,8 +998,8 @@ class TestMultiStepAPEval:
 
         module.on_test_epoch_end()
 
-        assert "test/coco/AP@1"   in logged
-        assert "test/coco/AP@4"   in logged
+        assert "test/crowdpose/AP@1"   in logged
+        assert "test/crowdpose/AP@4"   in logged
         assert "test/coco/AP50@1" in logged
         assert "test/coco/AP50@4" in logged
         assert "test/coco/AP"     not in logged

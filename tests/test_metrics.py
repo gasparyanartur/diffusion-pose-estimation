@@ -402,7 +402,7 @@ class TestKeypointAPMetricIntegration:
 
         results = m.compute()
         assert results, "compute() returned empty dict — no predictions accumulated"
-        ap = results.get("coco/AP", 0.0)
+        ap = results.get("crowdpose/AP", 0.0)
         # With only 10 images predicted out of ~2000 in the val set, pycocotools
         # divides credit over all GT instances, so AP is low (~0.01) even with
         # exact GT predictions.  The important invariant is AP > 0: the old
@@ -457,7 +457,7 @@ class TestKeypointAPMetricIntegration:
             m.update(batch["pred_keypoints"], batch["pred_keypoint_scores"], batch["image_id"])
 
         results = m.compute()
-        ap = results.get("coco/AP", 0.0)
+        ap = results.get("crowdpose/AP", 0.0)
         # RTMPose-M on CrowdPose val in the bottom-up / oracle-box mode gives ~0.24
         assert ap > 0.15, (
             f"Raw detector AP={ap:.4f} is unexpectedly low. "
@@ -501,8 +501,8 @@ class TestKeypointAPMetricIntegration:
             recovered = canonical_to_pixel(canonical, g.root_pos, scale=g.scale)
             m_roundtrip.update(recovered, pred_scores, batch["image_id"])
 
-        ap_raw       = m_raw.compute().get("coco/AP", -1.0)
-        ap_roundtrip = m_roundtrip.compute().get("coco/AP", -1.0)
+        ap_raw       = m_raw.compute().get("crowdpose/AP", -1.0)
+        ap_roundtrip = m_roundtrip.compute().get("crowdpose/AP", -1.0)
 
         assert abs(ap_roundtrip - ap_raw) < 1e-4, (
             f"Canonical roundtrip changed AP: raw={ap_raw:.6f}, "
@@ -546,7 +546,7 @@ class TestKeypointAPMetricIntegration:
         for batch in loader:
             m_raw.update(batch["pred_keypoints"], batch["pred_keypoint_scores"],
                          batch["image_id"])
-        ap_baseline = m_raw.compute().get("coco/AP", -1.0)
+        ap_baseline = m_raw.compute().get("crowdpose/AP", -1.0)
 
         # Identity DDIM: patch add_noise → no-op AND ddim_sample → return x_init.
         # Together these make _refine_batch a pure canonical ↔ pixel roundtrip,
@@ -563,7 +563,7 @@ class TestKeypointAPMetricIntegration:
             for batch in loader:
                 pred_pixel, pred_scores, image_ids = module._refine_prediction_batch(batch)
                 m_id.update(pred_pixel, pred_scores, image_ids)
-        ap_identity = m_id.compute().get("coco/AP", -1.0)
+        ap_identity = m_id.compute().get("crowdpose/AP", -1.0)
 
         assert abs(ap_identity - ap_baseline) < 1e-3, (
             f"Identity DDIM AP={ap_identity:.6f} differs from "

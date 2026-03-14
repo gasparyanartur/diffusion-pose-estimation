@@ -13,7 +13,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data import (
+    CANONICAL_EDGE_INDEX,
     CROWDPOSE_EDGE_LIST,
+    CANONICAL_POSE_GRAPH_EDGE_LIST,
     PoseSample,
     PoseGraphBatch,
     SceneGraphSampler,
@@ -290,6 +292,34 @@ def test_make_edge_index_shape_and_reverse_edges():
     assert ei.shape == (2, 2 * len(CROWDPOSE_EDGE_LIST))
     edges = set(zip(ei[0].tolist(), ei[1].tolist()))
     assert all((v, u) in edges for u, v in CROWDPOSE_EDGE_LIST)
+
+
+def test_make_edge_index_self_loops():
+    """add_self_loops appends exactly num_nodes self-loop edges (i, i) after undirected expansion."""
+    num_nodes = 5
+    ei = make_edge_index(CROWDPOSE_EDGE_LIST, make_undirected=True, add_self_loops=True, num_nodes=num_nodes)
+    expected_total = 2 * len(CROWDPOSE_EDGE_LIST) + num_nodes
+    assert ei.shape == (2, expected_total)
+
+    # Every self-loop (i, i) is present exactly once
+    self_loop_edges = [(ei[0, j].item(), ei[1, j].item()) for j in range(ei.shape[1]) if ei[0, j] == ei[1, j]]
+    assert sorted(self_loop_edges) == [(i, i) for i in range(num_nodes)]
+
+
+def test_make_edge_index_self_loops_requires_num_nodes():
+    """add_self_loops=True without num_nodes raises ValueError."""
+    with pytest.raises(ValueError, match="num_nodes"):
+        make_edge_index(CROWDPOSE_EDGE_LIST, add_self_loops=True)
+
+
+def test_canonical_edge_index_has_self_loops():
+    """CANONICAL_EDGE_INDEX contains exactly 15 self-loops (one per canonical node)."""
+    ei = CANONICAL_EDGE_INDEX
+    self_loops = [(ei[0, j].item(), ei[1, j].item()) for j in range(ei.shape[1]) if ei[0, j] == ei[1, j]]
+    assert sorted(self_loops) == [(i, i) for i in range(15)]
+
+    expected_total = 2 * len(CANONICAL_POSE_GRAPH_EDGE_LIST) + 15
+    assert ei.shape == (2, expected_total)
 
 
 def test_create_graph_from_keypoints():

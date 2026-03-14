@@ -404,11 +404,30 @@ def add_canonical_root_node(keypoints: Tensor) -> Tensor:
 def make_edge_index(
     edge_list: list[tuple[int, int]],
     make_undirected: bool = True,
+    add_self_loops: bool = False,
+    num_nodes: int | None = None,
 ) -> Tensor:
-    """Convert [(src, dst), ...] to LongTensor[2, E]. Doubles edges if make_undirected=True."""
+    """Convert [(src, dst), ...] to LongTensor[2, E].
+
+    make_undirected: duplicate each edge in both directions.
+    add_self_loops:  append (i, i) for i in range(num_nodes) after undirected expansion.
+    """
     if make_undirected:
         edge_list = edge_list + [(dst, src) for src, dst in edge_list]
+    if add_self_loops:
+        if num_nodes is None:
+            raise ValueError("num_nodes must be provided when add_self_loops=True")
+        edge_list = edge_list + [(i, i) for i in range(num_nodes)]
     return torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+
+
+# Pre-built tensor version of CANONICAL_POSE_GRAPH_EDGE_LIST — avoids calling
+# torch.tensor() on a Python list on every forward pass.
+# Self-loops (i→i) are included so each node can learn to balance its own
+# features against aggregated neighbour messages.
+CANONICAL_EDGE_INDEX: Tensor = make_edge_index(
+    CANONICAL_POSE_GRAPH_EDGE_LIST, add_self_loops=True, num_nodes=15
+)
 
 
 def create_graph_from_keypoints(
@@ -575,7 +594,7 @@ def prepare_pose_graph_batch(
     keypoints  = sample.keypoints
     visibility = sample.visibility
     if edge_index is None:
-        edge_index = make_edge_index(CANONICAL_POSE_GRAPH_EDGE_LIST)
+        edge_index = CANONICAL_EDGE_INDEX
     ei = edge_index.to(keypoints.device)
 
     j = CROWDPOSE_JOINT_NAMES

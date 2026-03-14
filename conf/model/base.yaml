@@ -29,17 +29,21 @@ cnn_patch_size: 32
 # Architecture ablations
 use_message_passing: true
 
+# Regularisation
+dropout_rate: 0.1
+attn_dropout_rate: 0.1
+
 # Augmentations
 aug_joint_drop: true
-p_joint_drop: 0.1
+p_joint_drop: 0.2
 aug_pose_drop: true
-p_pose_drop: 0.1
+p_pose_drop: 0.2
 aug_joint_rand: true
-p_joint_rand: 0.1
+p_joint_rand: 0.2
 aug_jitter: true
-p_jitter_px: 4.0
+p_jitter_px: 8.0
 aug_img_drop: true
-p_img_drop: 0.1
+p_img_drop: 0.2
 
 # Loss terms
 use_joint_loss: true
