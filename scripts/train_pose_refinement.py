@@ -54,6 +54,38 @@ from src.model import KeypointDiffusionConfig, KeypointDiffusionModel, PoseDiffu
 
 
 # ---------------------------------------------------------------------------
+# Custom callbacks
+# ---------------------------------------------------------------------------
+
+
+class RunningLossLogger(pl.Callback):
+    """Log a rolling mean of val/loss over the last ``window`` epochs.
+
+    The averaged value is logged as ``running_loss_{window}`` and is suitable
+    for use as a ModelCheckpoint monitor so that one-off noisy validation
+    epochs do not trigger spurious best-checkpoint saves.
+    """
+
+    def __init__(self, window: int = 5, source: str = "val/loss") -> None:
+        super().__init__()
+        self.window = window
+        self.source = source
+        self._history: list[float] = []
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if trainer.sanity_checking:
+            return
+        val = trainer.callback_metrics.get(self.source)
+        if val is None:
+            return
+        self._history.append(float(val))
+        if len(self._history) > self.window:
+            self._history.pop(0)
+        smooth = sum(self._history) / len(self._history)
+        pl_module.log(f"running_loss_{self.window}", smooth, prog_bar=False)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -143,7 +175,7 @@ def main(cfg: DictConfig) -> None:
     loader_kwargs = dict(
         batch_size=cfg.train.batch_size,
         num_workers=cfg.data.num_workers,
-        load_images=cfg.model.use_cnn_cond,  # pre-load images in workers only when CNN is active
+        load_images=False,
         pin_memory=use_gpu,
     )
     train_loader = train_ds.create_dataloader(**loader_kwargs, shuffle=True,  drop_last=True)
@@ -153,7 +185,7 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Model
     # ------------------------------------------------------------------
-    use_image_cond = cfg.dino.model_name is not None or cfg.model.use_cnn_cond
+    use_image_cond = cfg.dino.model_name is not None
     model_config = KeypointDiffusionConfig(
         name=cfg.run_name,
         **OmegaConf.to_container(cfg.model, resolve=True),
@@ -198,13 +230,16 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
+    running_loss_window = cfg.train.running_loss_window
+    monitor_key = f"running_loss_{running_loss_window}"
     callbacks: list[pl.Callback] = [
+        RunningLossLogger(window=running_loss_window),
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="epoch{epoch:03d}-val_loss{val/loss:.4f}",
-            monitor="val/loss",
+            filename=f"epoch{{epoch:03d}}-{monitor_key}{{{monitor_key}:.4f}}",
+            monitor=monitor_key,
             mode="min",
-            save_top_k=3,
+            save_top_k=1,
             save_last=True,
             auto_insert_metric_name=False,
         ),

@@ -7,7 +7,6 @@ The tar contains:
     crowdpose_annotations/det_for_crowd_test_0.1_0.5.json   ← detector boxes
     crowdpose_annotations/mmpose_crowdpose_train.json
     crowdpose_annotations/mmpose_crowdpose_val.json
-    crowdpose_annotations/mmpose_crowdpose_trainval.json
     crowdpose_annotations/mmpose_crowdpose_test.json
 
 All files are extracted to data/crowdpose/annotations/, skipping any that

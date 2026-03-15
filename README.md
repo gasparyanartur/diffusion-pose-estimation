@@ -18,7 +18,7 @@ scripts/        ← CLI entry points (training, benchmarking, data prep, inspect
 src/            ← core library (data, model, metrics, visualisation)
 notebook/       ← experimental notebooks
 results/        ← benchmark outputs, prediction caches, training runs
-tests/          ← unit tests (89 passing)
+tests/          ← unit tests
 ```
 
 ---
@@ -141,105 +141,64 @@ Caches are written to `results/cache/<model-short-name>_predictions.pkl`.
 
 ---
 
-## 4. Data API — `src/data.py`
+## 4. Precomputing DINO features
 
-### `PoseDataset`
+The refinement model uses precomputed [DINOv3 ConvNeXt-Small](https://huggingface.co/facebook/dinov3-convnext-small-pretrain-lvd1689m)
+features for image conditioning. Features are extracted once and cached to disk
+as `.pt` files — no GPU is needed at training time.
 
-GT-only dataset; one sample per image.  Images where every annotation has no
-labeled keypoints are excluded.
+Three feature levels are saved per image:
 
-```python
-from src.data import PoseDataset
+| Key | Shape | Description |
+|---|---|---|
+| `spatial` | `(96, 56, 56)` | Stage-1 high-res spatial texture |
+| `semantic` | `(768, 7, 7)` | Stage-4 semantic bottleneck |
+| `global` | `(768,)` | Pooler output — per-image summary vector |
 
-ds = PoseDataset.from_path("data/crowdpose/annotations/crowdpose_train.json")
-sample = ds[0]
-# sample["image_id"]   → int
-# sample["img_path"]   → str
-# sample["keypoints"]  → Tensor[N, 14, 2]   raw (x, y)
-# sample["visibility"] → Tensor[N, 14]      0=absent 1=occluded 2=visible
+```bash
+# Train split (required)
+python scripts/precompute_dino.py \
+    --ann-path  data/crowdpose/annotations/crowdpose_train.json \
+    --img-root  data/crowdpose/images \
+    --split     train \
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \
+    --backbone-type convnext
 
-loader = ds.create_dataloader(batch_size=32, shuffle=True, drop_last=True)
+# Val split (used during validation steps)
+python scripts/precompute_dino.py \
+    --ann-path  data/crowdpose/annotations/crowdpose_val.json \
+    --img-root  data/crowdpose/images \
+    --split     val \
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \
+    --backbone-type convnext
+
+# Test split (used for final evaluation)
+python scripts/precompute_dino.py \
+    --ann-path  data/crowdpose/annotations/crowdpose_test.json \
+    --img-root  data/crowdpose/images \
+    --split     test \
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \
+    --backbone-type convnext
 ```
 
-### `PredictionDataset`
+Caches land in
+`results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/<split>.pt`.
+The paths are already wired into `conf/dino/dinov3_convnext_small.yaml`; no
+config changes are needed after running the commands above.
 
-Extends `PoseDataset` with model predictions loaded from a `.pkl` cache.
-GT annotations (which have a ragged number of people per image) are deliberately
-**not** returned by `__getitem__`; use `get_gt(image_id)` instead so
-`default_collate` can stack predictions uniformly.
-
-```python
-from src.data import PredictionDataset
-
-ds = PredictionDataset.from_path(
-    "results/cache/rtmpose-m_crowdpose_predictions.pkl",
-    ann_path="data/crowdpose/annotations/crowdpose_test.json",  # optional GT
-)
-sample = ds[0]
-# sample["image_id"]             → int
-# sample["img_path"]             → str
-# sample["pred_keypoints"]       → Tensor[N, K, 2]
-# sample["pred_keypoint_scores"] → Tensor[N, K]
-# sample["bboxes"]               → Tensor[N, 4]   (top-down only)
-# sample["bbox_scores"]          → Tensor[N]       (top-down only)
-
-gt = ds.get_gt(sample["image_id"])
-# gt["keypoints"]  → Tensor[N_gt, K, 2]
-# gt["visibility"] → Tensor[N_gt, K]
-# Returns None if no GT was loaded.
-
-loader = ds.create_dataloader(batch_size=32, shuffle=False)
-```
-
-### `SceneGraphSampler`
-
-Batch sampler used internally by both `create_dataloader` methods.  Groups
-images by the **number of people** they contain so every batch has a uniform
-`N`, enabling `default_collate` to stack tensors without padding.
-
-- Shuffled mode interleaves batches from different group sizes globally.
-- `drop_last=True` drops the final partial batch within each group.
-
-### Graph utilities
-
-`prepare_pose_graph_batch` is the main entry point for the model.  It takes
-raw CrowdPose keypoints and returns a block-diagonal PyG graph ready for GNN
-processing.
-
-```python
-from src.data import PoseDataset, prepare_pose_graph_batch
-
-ds = PoseDataset.from_path("data/crowdpose/annotations/crowdpose_train.json", "data/crowdpose/images")
-loader = ds.create_dataloader(batch_size=4)
-batch = next(iter(loader))
-
-# batch["keypoints"]  → FloatTensor[B, N, 14, 2]
-# batch["visibility"] → FloatTensor[B, N, 14]   (0/1/2)
-# Mutates batch in-place and also returns it.
-prepare_pose_graph_batch(batch)  # optional: img_size=FloatTensor[B, 2]
-```
-
-What it does internally:
-
-1. **Root node** — computes a virtual root as the mean of visible `left_hip`,
-   `right_hip`, and `neck` anchors per person (falls back to centroid of all
-   visible joints when none of those are visible).
-2. **Canonical skeleton** — prepends the root as node 0, shifting original
-   CrowdPose indices by +1 (`14 → 15` keypoints per person).
-3. **Root-relative coordinates** — subtracts the root position so the root
-   node is at `(0, 0)`.
-4. **Normalisation** — divides all coordinates by `max(W, H)` per image
-   (or 800 if `img_size` is not provided).
-5. **Block-diagonal graph** — calls `create_graph_from_keypoints` to pack
-   the `B` scene graphs into a single PyG-compatible structure.
-
-Returned dict keys: `edge_index (2, B·N·E)`, `node_pos (B·N·K, 2)`,
-`batch (B·N·K,)`, `batch_idx`, `pose_idx`, `kpt_type_idx`, `node_idx`,
-`visibility (B, N, 15)`, `root_pos (B, N, 2)`, `scale (B,)`.
+> If a split cache is missing at training time, `DinoConditioner` logs a warning
+> and continues — conditioning will be zero for images from that split.
 
 ---
 
-## 5. Training the refinement model
+## 5. Data API
+
+See [`src/data.py`](src/data.py) for full documentation of `PoseDataset`,
+`PredictionDataset`, `SceneGraphSampler`, and `prepare_pose_graph_batch`.
+
+---
+
+## 6. Training the refinement model
 
 Config is managed by [Hydra](https://hydra.cc). All hyperparameters live in
 `conf/` as composable YAML groups. Run from the project root so relative data
@@ -265,8 +224,8 @@ python scripts/train_pose_refinement.py model=large
 # Single GPU with bfloat16
 python scripts/train_pose_refinement.py hardware=gpu
 
-# Enable DINOv2-small image conditioning
-python scripts/train_pose_refinement.py dino=dinov2_small
+# Enable DINOv3 ConvNeXt-Small image conditioning
+python scripts/train_pose_refinement.py dino=dinov3_convnext_small
 ```
 
 ### Overriding individual values
@@ -290,44 +249,23 @@ python scripts/train_pose_refinement.py \
     train.resume=results/diffusion_training/my_run/20260312_120000/checkpoints/last.ckpt
 ```
 
-### Config group reference
-
-| Group | Options | Controls |
-|---|---|---|
-| `model` | `base` *(default)*, `large` | `KeypointDiffusionConfig` (dims, layers, losses, augmentation) |
-| `data` | `crowdpose` *(default)* | Dataset paths, AP eval settings, `num_workers` |
-| `train` | `base` *(default)* | LR, batch size, epochs, grad clip, early stop, DDIM settings |
-| `dino` | `none` *(default)*, `dinov2_small` | DINO image conditioning, cache paths |
-| `hardware` | `auto` *(default)*, `gpu` | Accelerator, devices, precision |
-
-To see the full resolved config without launching training:
+Config groups (`model`, `data`, `train`, `dino`, `hardware`) live in `conf/`.
+To inspect the full resolved config without launching training:
 
 ```bash
 python scripts/train_pose_refinement.py --cfg job
 ```
 
-### Logged metrics
+### Losses and metrics
 
-Training logs the following to TensorBoard and CSV under `tb_logs/` and `csv_logs/`:
-
-| Key | Stage | Description |
-|---|---|---|
-| `train/loss` | train | Total weighted loss |
-| `train/joint_loss` | train | Per-joint MSE (visibility-weighted) |
-| `train/bone_loss` | train | Bone-length MSE (visibility-weighted) |
-| `val/loss` | val | Total loss (fixed noise per batch across epochs) |
-| `val/joint_loss` | val | Per-joint MSE |
-| `val/bone_loss` | val | Bone-length MSE |
-| `val/mpjpe_px` | val | Mean per-joint position error (pixels) |
-| `val/pck_20px` | val | % of visible joints within 20 px of GT |
-| `test/*` | test | Same as val; computed once on the best checkpoint |
-
-Val/test steps use a deterministic per-batch seed so metric trends across epochs
-are directly comparable (the same noise pattern is applied each epoch).
+The model is trained with a visibility-weighted per-joint MSE loss and a
+visibility-weighted bone-length MSE loss. Evaluation reports
+**MPJPE** (mean per-joint position error in pixels) and **PCK@20px**
+(fraction of visible joints within 20 px of ground truth).
 
 ---
 
-## 6. Sweep training
+## 7. Sweep training
 
 A sweep runs multiple training jobs sequentially, each with a different set of
 hyperparameters. Results for every task land in their own isolated directory
@@ -370,7 +308,7 @@ done
 
 ---
 
-## 7. Running a benchmark
+## 8. Running a benchmark
 
 ```bash
 # List available configurations
@@ -385,7 +323,7 @@ See `python scripts/benchmark_mmpose.py --help` for all options.
 
 ---
 
-## 8. Adding a new benchmark configuration
+## 9. Adding a new benchmark configuration
 
 Open `src/configs.py` and add a new dict following the existing pattern, then
 append it to `ALL_CONFIGS`:
@@ -413,7 +351,7 @@ to both `benchmark_mmpose.py` and `extract_predictions.py`.
 
 ---
 
-## 9. Results
+## 10. Results
 
 Benchmark metrics are written to `results/<name>/metrics.yaml`.  
 Training test-set results are written to `results/diffusion_training/<run>/<timestamp>/test_results.json`.  

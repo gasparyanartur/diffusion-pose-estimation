@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import softmax
-from PIL import Image
 from torch import Tensor
 
 from src.data import (
@@ -22,7 +21,6 @@ from src.data import (
     PoseGraphBatch,
     prepare_sample,
     prepare_pose_graph_batch,
-    read_image,
     read_image_size,
 )
 from src.metrics import KeypointAPMetric, canonical_to_pixel, compute_mpjpe, compute_pck
@@ -57,10 +55,6 @@ class KeypointDiffusionConfig:
     # Global image conditioning: pooled DINO per-image signal combined with timestep
     use_global_image_cond: bool = False
     dim_global_image_cond: int = 128  # projected pooled-DINO dim
-
-    # CNN patch conditioning — alternative local visual source to DINO
-    use_cnn_cond: bool = False
-    cnn_patch_size: int = 64  # height and width of the crop fed to the CNN
 
     # Training augmentations
     aug_joint_drop: bool = True
@@ -112,243 +106,183 @@ class TimestepSinusoidalEmbedding(torch.nn.Module):
         return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)  # (B, dim)
 
 
+def pixel_to_grid_sample_coords(
+    kpt_pixel: Tensor,  # (..., 2)  pixel-space (x, y)
+    img_hw: Tensor,     # (..., 2)  original image (H, W) — broadcastable to kpt_pixel
+) -> Tensor:            # (..., 2)  grid_sample coords in [-1, 1]
+    # With resize-only preprocessing (do_center_crop=False,
+    # size={"shortest_edge": S}), a scale s = S/min(H,W) maps pixel coords
+    # to feature-map coords and also scales the feature-map size by the same
+    # factor, so s cancels in the normalisation:
+    #   x_feat = x * s / stride
+    #   x_norm = 2 * x_feat / (W_orig * s / stride) - 1
+    #          = 2 * x / W_orig - 1
+    # Normalising against the original image dimensions is therefore exact.
+    img_h = img_hw[..., 0].float()
+    img_w = img_hw[..., 1].float()
+    x_norm = (kpt_pixel[..., 0].float() / img_w) * 2 - 1
+    y_norm = (kpt_pixel[..., 1].float() / img_h) * 2 - 1
+    return torch.stack([x_norm, y_norm], dim=-1)
+
+
 class DinoConditioner(torch.nn.Module):
-    """Per-keypoint DINO patch features. Backbone is frozen; only the projection is trained."""
+    """Per-keypoint ConvNeXt DINO features, sampled from precomputed caches.
+
+    Two feature levels are sampled at each keypoint location and concatenated:
+      spatial:  stage1 (96ch @ 56×56) — fine-grained spatial texture
+      semantic: stage4 (768ch @ 7×7)  — high-level semantics
+    The 864-d vector is linearly projected to out_dim.
+
+    A pre-pooled global image vector (768-d) is also available via
+    fetch_global_feats() for use as a per-image global conditioning signal.
+
+    Caches must be precomputed with scripts/precompute_dino.py --backbone-type convnext.
+    """
+
+    # Architectural constants for facebook/dinov3-convnext-small-pretrain-lvd1689m.
+    SPATIAL_DIM: int = 96   # stage1 channels
+    HIDDEN_DIM: int  = 768  # stage4 / pooler channels
 
     def __init__(
         self,
-        model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
+        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
         out_dim: int = 128,
-        patch_size: int = 16,
-        image_size: int = 224,
-        neighborhood_radius: int = 1,
         cache_paths: list[str | Path] | None = None,
     ) -> None:
         super().__init__()
-        from transformers import AutoConfig, AutoImageProcessor, AutoModel
+        self.model_name = model_name
+        self.spatial_dim: int = self.SPATIAL_DIM
+        self.hidden_dim: int  = self.HIDDEN_DIM
+        self.proj = torch.nn.Linear(self.spatial_dim + self.hidden_dim, out_dim)
 
-        self.patch_size = patch_size
-        self.image_size = image_size
-        self.neighborhood_radius = neighborhood_radius
-        self.grid_size = image_size // patch_size  # e.g. 14 for ViT-S/16 @ 224
-
-        _cfg = AutoConfig.from_pretrained(model_name)
-        n_registers = getattr(_cfg, "num_register_tokens", 0)
-        self.n_prefix_tokens: int = 1 + n_registers
-        self.hidden_dim: int = _cfg.hidden_size
-
-        # Only load the full backbone when no caches are provided (live-inference mode).
-        # Training always uses precomputed caches, so backbone weights are never needed.
-        if cache_paths:
-            self.backbone = None
-            self.processor = None
-        else:
-            self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-            self.backbone = AutoModel.from_pretrained(model_name)
-            # Freeze the backbone – only the projection is trained
-            for param in self.backbone.parameters():
-                param.requires_grad_(False)
-
-        self.proj = torch.nn.Linear(self.hidden_dim, out_dim)
-
-        # Precomputed patch cache: {image_id: Tensor(G*G, hidden_dim)}
-        # Populated by load_cache(); when set, the backbone is never called.
-        self._patch_cache: dict[int, Tensor] | None = None
+        # In-memory cache: {image_id: {'spatial': ..., 'semantic': ..., 'global': ...}}
+        # Populated lazily on first access via _load_image().
+        self._cache: dict[int, dict] = {}
+        # Directories to search for {image_id}.pt files.
+        self._cache_dirs: list[Path] = []
         if cache_paths:
             self.load_cache(*cache_paths)
 
     def load_cache(self, *paths: str | Path) -> None:
-        merged: dict = {} if self._patch_cache is None else dict(self._patch_cache)
+        """Register one or more cache directories to load images from on demand."""
         for path in paths:
-            data = torch.load(Path(path), map_location="cpu", weights_only=False)
-            merged.update(data)
-        self._patch_cache = merged
-        print(
-            f"DinoConditioner: patch cache has {len(merged)} images ({len(paths)} file(s) loaded)"
-        )
+            p = Path(path)
+            if not p.exists():
+                # Backward-compat: old checkpoints store 'split.pt' paths; the new
+                # per-image format lives in the same-named directory without the suffix.
+                if p.suffix == ".pt":
+                    candidate = p.with_suffix("")
+                    if candidate.is_dir():
+                        print(
+                            f"DinoConditioner: '{p}' not found; "
+                            f"using per-image directory '{candidate}' instead."
+                        )
+                        p = candidate
+                    else:
+                        print(f"DinoConditioner: cache path not found, skipping: {p}")
+                        continue
+                else:
+                    print(f"DinoConditioner: cache directory not found, skipping: {p}")
+                    continue
+            if not p.is_dir():
+                raise RuntimeError(
+                    f"Cache path {p} is a file, not a directory. "
+                    "Re-run scripts/precompute_dino.py to generate per-image .pt files."
+                )
+            self._cache_dirs.append(p)
+        print(f"DinoConditioner: registered {len(self._cache_dirs)} cache dir(s)")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    @torch.no_grad()
-    def _extract_patch_features(self, pil_images: list[Image.Image]) -> Tensor:
-        """Run DINO backbone; return patch features (B, G*G, hidden_dim) with CLS and register tokens dropped."""
-        if self.backbone is None:
-            raise RuntimeError(
-                "DinoConditioner was created in cache-only mode (backbone not loaded). "
-                "Cannot run live inference without a backbone."
-            )
-        inputs = self.processor(images=pil_images, return_tensors="pt")
-        inputs = {
-            k: v.to(next(self.backbone.parameters()).device) for k, v in inputs.items()
-        }
-        outputs = self.backbone(**inputs)
-        return outputs.last_hidden_state[:, self.n_prefix_tokens:]  # drop CLS + registers  (B, G*G, D)
-
-    def _gather_neighborhood(
-        self,
-        patch_feats: Tensor,  # (B, G*G, D)
-        kpt_pixel: Tensor,    # (B, N, K, 2)  pixel-space (x, y)
-        img_hw: Tensor,       # (B, 2)  original (H, W)
-    ) -> Tensor:              # (B, N, K, D)
-        B, N, K, _ = kpt_pixel.shape
-        G, D = self.grid_size, patch_feats.shape[-1]
-        device = patch_feats.device
-
-        # Scale pixel coords → DINO input space, then find the containing patch
-        img_h = img_hw[:, 0].float().view(B, 1, 1)
-        img_w = img_hw[:, 1].float().view(B, 1, 1)
-        x_scaled = kpt_pixel[..., 0].to(device) * (self.image_size / img_w)
-        y_scaled = kpt_pixel[..., 1].to(device) * (self.image_size / img_h)
-        cx = (x_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) col
-        cy = (y_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) row
-
-        # Index of the single containing patch for every keypoint: (B, N*K)
-        patch_idx = (cy * G + cx).reshape(B, N * K)
-        gathered = patch_feats.gather(1, patch_idx.unsqueeze(-1).expand(-1, -1, D))
-        return gathered.view(B, N, K, D)
-
-    def fetch_patch_feats(self, image_ids: list[int], device: torch.device) -> Tensor:
-        """Load patch features for a batch of image IDs from the cache → (B, G*G, D)."""
-        if self._patch_cache is None:
-            raise RuntimeError(
-                "DINO patch cache is not loaded. "
-                "Run scripts/precompute_dino.py and set dino.cache_train / dino.cache_val "
-                "in your config, or disable use_image_cond / use_global_image_cond."
-            )
-        try:
-            return torch.stack([self._patch_cache[iid] for iid in image_ids]).to(device)
-        except KeyError as e:
-            raise RuntimeError(
-                f"Image id {e} not found in DINO patch cache. "
-                f"Re-run scripts/precompute_dino.py for the correct split and update "
-                f"dino.cache_train / dino.cache_val in your config."
-            ) from e
-
-    def forward(
-        self,
-        kpt_pixel: Tensor,  # (B, N, K, 2) pixel-space (x, y)
-        img_hw: Tensor,  # (B, 2) original image (H, W)
-        image_ids: list[int] | None = None,
-        pil_images: list[Image.Image] | None = None,
-    ) -> Tensor:  # (B, N, K, out_dim)
-        if self._patch_cache is not None:
-            if image_ids is None:
-                raise ValueError(
-                    "image_ids must be provided when using a precomputed cache"
+    def _load_dino_feature(self, iid: int) -> dict:
+        """Return the cached feature dict for one image, loading from disk if needed."""
+        if iid not in self._cache:
+            if not self._cache_dirs:
+                raise RuntimeError(
+                    "Feature cache not loaded. "
+                    "Call load_cache() with the directory produced by "
+                    "scripts/precompute_dino.py --backbone-type convnext."
                 )
-            patch_feats = torch.stack([self._patch_cache[iid] for iid in image_ids]).to(
-                kpt_pixel.device
-            )
-        else:
-            if pil_images is None:
-                raise ValueError("pil_images must be provided when no cache is loaded")
-            patch_feats = self._extract_patch_features(pil_images)
+            for cache_dir in self._cache_dirs:
+                pt_path = cache_dir / f"{iid}.pt"
+                if pt_path.exists():
+                    self._cache[iid] = torch.load(pt_path, map_location="cpu", weights_only=False)
+                    break
+            else:
+                raise RuntimeError(
+                    f"Image id {iid} not found in any cache directory: "
+                    + ", ".join(str(d) for d in self._cache_dirs)
+                )
+        return self._cache[iid]
 
-        return self.proj(self._gather_neighborhood(patch_feats, kpt_pixel, img_hw))
+    def _load_maps(
+        self, image_ids: list[int], device: torch.device
+    ) -> tuple[list[Tensor], list[Tensor]]:
+        """Load spatial and semantic feature maps from the cache for a batch.
 
+        Returns lists (not stacked) because images may have different spatial
+        dimensions when preprocessed with aspect-ratio-preserving resize.
 
-class PatchCNNConditioner(torch.nn.Module):
-    """Per-keypoint patch CNN conditioner.
+            spatial_maps:  list of B tensors, each (96, H_i/4, W_i/4)
+            semantic_maps: list of B tensors, each (768, H_i/32, W_i/32)
+        """
+        spatial  = [self._load_dino_feature(iid)["spatial"].to(device)  for iid in image_ids]
+        semantic = [self._load_dino_feature(iid)["semantic"].to(device) for iid in image_ids]
+        return spatial, semantic
 
-    Extracts a patch_size×patch_size crop centred on each joint, appends two
-    relative-coordinate channels (RGB + coord_x + coord_y = 5 channels total),
-    and encodes it with a small CNN.
-    """
-
-    def __init__(self, out_dim: int = 128, patch_size: int = 64) -> None:
-        super().__init__()
-        self.patch_size = patch_size
-
-        d = 64
-        self.backbone_dim: int = d  # output channels of the CNN backbone (before head)
-        self.cnn = torch.nn.Sequential(
-            # 5 × P × P  →  32 × (P/2) × (P/2)
-            torch.nn.Conv2d(5, d//4, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d//4),
-            torch.nn.SiLU(),
-            # 32 × (P/2) × (P/2)  →  64 × (P/4) × (P/4)
-            torch.nn.Conv2d(d//4, d//2, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d//2),
-            torch.nn.SiLU(),
-            # 64 × (P/4) × (P/4)  →  128 × (P/8) × (P/8)
-            torch.nn.Conv2d(d//2, d, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d),
-            torch.nn.SiLU(),
-            # → 128 × 1 × 1
-            torch.nn.AdaptiveAvgPool2d(1),
-        )
-        self.head = torch.nn.Sequential(
-            torch.nn.Linear(d, out_dim),
-            torch.nn.LayerNorm(out_dim),
-        )
-
-        # Fixed (2, P, P) spatial coordinate grid in [-1, 1]: channel 0 = x, channel 1 = y.
-        # These are appended as channels 4-5 of every extracted patch so the CNN
-        # knows where each pixel sits relative to the joint centre.
-        P = patch_size
-        coords_1d = torch.linspace(-1.0, 1.0, P)
-        grid_y, grid_x = torch.meshgrid(coords_1d, coords_1d, indexing="ij")  # (P, P) each
-        self.register_buffer("_spatial_grid", torch.stack([grid_x, grid_y], dim=0))  # (2, P, P)
-
-    def _extract_patches(
+    def _sample_at_keypoints(
         self,
-        image: Tensor,     # (3, H, W) float in [0, 1]
-        kpt_pixel: Tensor, # (N, K, 2) pixel-space (x, y)
-    ) -> Tensor:           # (N*K, 5, P, P)
-        # Uses F.pad + integer indexing (not expand + grid_sample) to avoid zero-stride
-        # tensors that trigger a CUDA allocator assertion in PyTorch ≥ 2.1.
-        N, K = kpt_pixel.shape[:2]
-        P = self.patch_size
-        half = P // 2
-        M = N * K
-        _, H, W = image.shape
-        device = image.device
+        feat_maps: list[Tensor],  # B tensors, each (C, H_i, W_i)
+        kpt_pixel: Tensor,        # (B, N, K, 2)  pixel-space (x, y)
+        img_hw: Tensor,           # (B, 2)  original image (H, W)
+    ) -> Tensor:                  # (B, N, K, C)
+        """Bilinearly sample a feature map at each keypoint's pixel location.
 
-        # Pad image by half on every side so any crop stays in bounds.
-        # Use replicate (not reflect) — reflect requires padding < dimension,
-        # which fails for images smaller than patch_size.
-        padded = F.pad(image.unsqueeze(0), (half, half, half, half), mode="replicate").squeeze(0)
-        # (3, H + 2*half, W + 2*half)
+        Processes one image at a time so that variable spatial dimensions
+        (from aspect-ratio-preserving resize) are handled without padding.
+        Keypoints outside the image boundary return zero features.
+        """
+        B = len(feat_maps)
+        N, K = kpt_pixel.shape[1], kpt_pixel.shape[2]
+        device = kpt_pixel.device
+        results = []
+        for i in range(B):
+            feat = feat_maps[i].to(device)              # (C, H_i, W_i)
+            C = feat.shape[0]
+            coords = pixel_to_grid_sample_coords(
+                kpt_pixel[i].unsqueeze(0),              # (1, N, K, 2)
+                img_hw[i].to(device).view(1, 1, 1, 2),
+            )  # (1, N, K, 2)
+            grid = coords.reshape(1, N * K, 1, 2)
+            sampled = F.grid_sample(
+                feat.unsqueeze(0).contiguous(), grid,
+                mode="bilinear", align_corners=False, padding_mode="zeros",
+            )  # (1, C, N*K, 1)
+            results.append(sampled.squeeze(0).squeeze(-1).permute(1, 0).view(N, K, C))
+        return torch.stack(results)  # (B, N, K, C)
 
-        # Integer keypoint coords clamped to original image bounds.
-        # These are the top-left corners of the crops in padded space.
-        px = kpt_pixel[..., 0].long().clamp(0, W - 1).reshape(M)  # (M,)
-        py = kpt_pixel[..., 1].long().clamp(0, H - 1).reshape(M)  # (M,)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        # Build index arrays: row_idxs[m, i] = py[m] + i  (M, P)
-        offsets = torch.arange(P, device=device)                    # (P,)
-        row_idxs = py.unsqueeze(1) + offsets.unsqueeze(0)           # (M, P)
-        col_idxs = px.unsqueeze(1) + offsets.unsqueeze(0)           # (M, P)
-
-        # Gather all patches in one advanced-index call.
-        # padded[:, row_idxs[m, i, :], col_idxs[m, :, j]]
-        #   row shape (M, P, 1), col shape (M, 1, P) → broadcast (M, P, P)
-        #   result shape: (3, M, P, P)
-        patches_rgb = padded[:, row_idxs.unsqueeze(2), col_idxs.unsqueeze(1)]
-        patches_rgb = patches_rgb.permute(1, 0, 2, 3).contiguous()  # (M, 3, P, P)
-
-        # Pre-allocate output and fill in-place to avoid any torch.cat or repeat
-        # allocation — those allocations can hit the CUDA expandable-segment
-        # assertion (!block->expandable_segment_) in PyTorch ≥ 2.1.
-        out = torch.empty(M, 5, P, P, device=device)
-        out[:, :3] = patches_rgb
-        out[:, 3:] = self._spatial_grid  # (2, P, P) broadcasts to (M, 2, P, P)
-        return out
+    def fetch_global_feats(self, image_ids: list[int], device: torch.device) -> Tensor:
+        """Load the pre-pooled global image vector from the cache → (B, hidden_dim)."""
+        return torch.stack(
+            [self._load_dino_feature(iid)["global"] for iid in image_ids]
+        ).to(device)
 
     def forward(
         self,
-        images: list[Tensor],  # B tensors, each (3, H_i, W_i) float in [0, 1]
-        kpt_pixel: Tensor,     # (B, N, K, 2) pixel-space (x, y)
-    ) -> Tensor:               # (B, N, K, out_dim)
-        B, N, K = kpt_pixel.shape[:3]
-        outputs = []
-        for b in range(B):
-            patches = self._extract_patches(images[b], kpt_pixel[b])  # (N*K, 5, P, P)
-            feats = self.cnn(patches).mean(dim=(-2, -1))               # (N*K, 128) global avg pool
-            outputs.append(self.head(feats).view(N, K, -1))            # (N, K, out_dim)
-        return torch.stack(outputs, dim=0)  # (B, N, K, out_dim)
+        kpt_pixel: Tensor,    # (B, N, K, 2) pixel-space (x, y)
+        img_hw: Tensor,       # (B, 2) original image (H, W)
+        image_ids: list[int], # image IDs to look up in the cache
+    ) -> Tensor:              # (B, N, K, out_dim)
+        spatial_maps, semantic_maps = self._load_maps(image_ids, kpt_pixel.device)
+        spatial_feats  = self._sample_at_keypoints(spatial_maps,  kpt_pixel, img_hw)  # (B, N, K, 96)
+        semantic_feats = self._sample_at_keypoints(semantic_maps, kpt_pixel, img_hw)  # (B, N, K, 768)
+        return self.proj(torch.cat([spatial_feats, semantic_feats], dim=-1))           # (B, N, K, out_dim)
 
 
 class FiLMLayer(torch.nn.Module):
@@ -964,27 +898,8 @@ class PoseDiffusionModule(pl.LightningModule):
             self.dino_conditioner = DinoConditioner(
                 model_name=dino_model_name,
                 out_dim=model.config.dim_image_cond,
-                neighborhood_radius=dino_neighborhood_radius,
                 cache_paths=cache_files or None,
             )
-
-        self.cnn_conditioner: PatchCNNConditioner | None = None
-        if model.config.use_cnn_cond:
-            self.cnn_conditioner = PatchCNNConditioner(
-                out_dim=model.config.dim_image_cond,
-                patch_size=model.config.cnn_patch_size,
-            )
-
-        # When both conditioners are active, features are fused via these three linears.
-        self.dino_proj: torch.nn.Linear | None = None
-        self.cnn_proj: torch.nn.Linear | None = None
-        self.fuse_proj: torch.nn.Linear | None = None
-        if self.dino_conditioner is not None and self.cnn_conditioner is not None:
-            dino_raw_dim = self.dino_conditioner.hidden_dim
-            dim_cond = model.config.dim_image_cond
-            self.dino_proj = torch.nn.Linear(dino_raw_dim, dim_cond)
-            self.cnn_proj = torch.nn.Linear(self.cnn_conditioner.backbone_dim, dim_cond)
-            self.fuse_proj = torch.nn.Linear(2 * dim_cond, dim_cond)
 
         self.global_dino_proj: torch.nn.Linear | None = None
         if model.config.use_global_image_cond:
@@ -1004,14 +919,6 @@ class PoseDiffusionModule(pl.LightningModule):
         #self.model.backward_process = torch.compile(
         #    self.model.backward_process, fullgraph=False
         #)
-
-    def transfer_batch_to_device(self, batch: dict, device: torch.device, dataloader_idx: int) -> dict:
-        # Images must stay on CPU for patch extraction; pop them out before Lightning's transfer.
-        images = batch.pop("image", None)
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        if images is not None:
-            batch["image"] = images  # keep as CPU tensors
-        return batch
 
     def prepare_batch(self, batch: dict, augment: bool = False) -> tuple[PoseSample, PoseGraphBatch]:
         sample = prepare_sample(batch)
@@ -1081,41 +988,9 @@ class PoseDiffusionModule(pl.LightningModule):
     def get_global_image_cond(self, sample: PoseSample, graph: PoseGraphBatch) -> Tensor | None:  # (B*N*K, dim_global_image_cond)
         if self.global_dino_proj is None:
             return None
-
-        patch_feats = self.dino_conditioner.fetch_patch_feats(sample.image_id, self.device)  # (B, G*G, D)
-        pooled = patch_feats.mean(dim=1)                # (B, D)
-        projected = self.global_dino_proj(pooled)       # (B, dim_global_image_cond)
-        return projected[graph.node_batch]              # (B*N*K, dim_global_image_cond)
-
-    def _get_dino_node_features(
-        self,
-        kpt: Tensor,          # (B, N, K, 2) pixel-space keypoints
-        image_ids: list[int],
-        img_paths: list[str],
-    ) -> Tensor:              # (B, N, K, D_dino)
-        patch_feats = self.dino_conditioner.fetch_patch_feats(image_ids, self.device)  # (B, G*G, D)
-        image_sizes = [read_image_size(p) for p in img_paths]
-        img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)  # (B, 2)
-        return self.dino_conditioner._gather_neighborhood(patch_feats, kpt, img_hw)
-
-    def _get_cnn_node_features(
-        self,
-        sample: PoseSample,
-        graph: PoseGraphBatch,
-        kpt: Tensor,  # (B, N, K, 2) pixel-space keypoints on self.device
-    ) -> Tensor:      # (B, N, K, cnn.backbone_dim)
-        cnn = self.cnn_conditioner
-        # Use images pre-loaded by DataLoader workers if available;
-        # otherwise fall back to reading from disk on the training process.
-        images_cpu: list[Tensor] = sample.image or [
-            read_image(p).float().div(255.0) for p in sample.img_path
-        ]
-        return torch.stack([
-            cnn.cnn(
-                cnn._extract_patches(images_cpu[b], kpt[b].cpu()).to(self.device)
-            ).mean(dim=(-2, -1)).view(graph.N, kpt.shape[2], -1)
-            for b in range(graph.B)
-        ])  # (B, N, K, cnn.backbone_dim)
+        pooled = self.dino_conditioner.fetch_global_feats(sample.image_id, self.device)  # (B, hidden_dim)
+        projected = self.global_dino_proj(pooled)   # (B, dim_global_image_cond)
+        return projected[graph.node_batch]          # (B*N*K, dim_global_image_cond)
 
     def get_local_spatial_condition(
         self,
@@ -1123,27 +998,13 @@ class PoseDiffusionModule(pl.LightningModule):
         graph: PoseGraphBatch,
         kpt_pixel: Tensor | None = None,  # (B, N, 14, 2) pixel-space; defaults to sample.keypoints
     ) -> Tensor | None:  # (B*N*14, dim_image_cond)
-        if self.dino_conditioner is None and self.cnn_conditioner is None:
+        if self.dino_conditioner is None:
             return None
-
+        image_sizes = [read_image_size(p) for p in sample.img_path]
+        img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)
         kpt = kpt_pixel.to(self.device) if kpt_pixel is not None else sample.keypoints.to(self.device)
-
-        if self.dino_conditioner is not None:
-            dino_feat = self._get_dino_node_features(kpt, sample.image_id, sample.img_path)  # (B, N, K, D)
-
-        if self.cnn_conditioner is not None:
-            cnn_feat = self._get_cnn_node_features(sample, graph, kpt)  # (B, N, K, D)
-
-        if self.dino_conditioner is not None and self.cnn_conditioner is not None:
-            keypoint_emb = self.fuse_proj(
-                torch.cat([self.dino_proj(dino_feat), self.cnn_proj(cnn_feat)], dim=-1)
-            )
-        elif self.dino_conditioner is not None:
-            keypoint_emb = self.dino_conditioner.proj(dino_feat)
-        else:
-            keypoint_emb = self.cnn_conditioner.head(cnn_feat)
-
-        return keypoint_emb.reshape(graph.B * graph.N * graph.K, -1)
+        feats = self.dino_conditioner(kpt, img_hw, image_ids=sample.image_id)  # (B, N, K, out_dim)
+        return feats.reshape(graph.B * graph.N * graph.K, -1)
 
     def _ap_step(
         self,

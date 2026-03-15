@@ -22,10 +22,6 @@ dim_image_cond: 128
 use_global_image_cond: true   # requires dino_model_name; changes global_cond_mlp input size
 dim_global_image_cond: 128
 
-# CNN patch conditioning — local pixel-level evidence per joint
-use_cnn_cond: false
-cnn_patch_size: 32
-
 # Architecture ablations
 use_message_passing: true
 
@@ -35,15 +31,15 @@ attn_dropout_rate: 0.1
 
 # Augmentations
 aug_joint_drop: true
-p_joint_drop: 0.2
+p_joint_drop: 0.4
 aug_pose_drop: true
-p_pose_drop: 0.2
+p_pose_drop: 0.4
 aug_joint_rand: true
-p_joint_rand: 0.2
+p_joint_rand: 0.3
 aug_jitter: true
-p_jitter_px: 8.0
+p_jitter_px: 16
 aug_img_drop: true
-p_img_drop: 0.2
+p_img_drop: 0.25
 
 # Loss terms
 use_joint_loss: true

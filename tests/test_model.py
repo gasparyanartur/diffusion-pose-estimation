@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -23,12 +24,12 @@ from src.model import (
     DinoConditioner,
     KeypointDiffusionConfig,
     KeypointDiffusionModel,
-    PatchCNNConditioner,
     PoseDiffusionModule,
     TimestepSinusoidalEmbedding,
     compute_bone_loss,
     compute_joint_loss,
     image_dropout,
+    pixel_to_grid_sample_coords,
     joint_dropout,
     joint_randomize,
     keypoint_jitter,
@@ -377,253 +378,192 @@ class TestPoseDiffusionModule:
 
 
 def _make_mock_dino(dim: int, raw_dim: int | None = None):
-    """Return a stub that mimics DinoConditioner without a real backbone.
+    """Return a stub that mimics DinoConditioner without a real backbone or cache.
 
     Args:
         dim:     Output dim of the projected forward() call.
-        raw_dim: Backbone hidden size (used by _gather_neighborhood). Defaults to dim.
+        raw_dim: hidden_dim (pooler / stage4 channels). Defaults to dim.
     """
     if raw_dim is None:
         raw_dim = dim
     mock = MagicMock(spec=DinoConditioner)
     mock.to.return_value = mock
-    mock.hidden_dim = raw_dim
-    mock.backbone = MagicMock()
-    mock.backbone.config.hidden_size = raw_dim
-    # Pre-populate a fake patch cache so _add_combined_conditioning takes the cache path
-    # (avoids needing a real backbone).  Keys cover any batch with image_id in 0..99.
-    mock._patch_cache = {i: torch.zeros(196, raw_dim) for i in range(100)}
+    mock.hidden_dim = raw_dim  # used when constructing global_dino_proj
 
-    def _call(kpt_pixel, img_hw, image_ids=None, pil_images=None):
+    def _forward(kpt_pixel, img_hw, image_ids=None):
         b_, n_, k_, _ = kpt_pixel.shape
         return torch.zeros(b_, n_, k_, dim)
 
-    def _gather(patch_feats, kpt_pixel, img_hw):
-        b_, n_, k_, _ = kpt_pixel.shape
-        return torch.zeros(b_, n_, k_, raw_dim)
+    def _fetch_global(image_ids, device=None):
+        return torch.zeros(len(image_ids), raw_dim)
 
-    def _fetch(image_ids, device=None):
-        return torch.zeros(len(image_ids), 196, raw_dim)
-
-    mock.proj = torch.nn.Linear(raw_dim, dim)
-    mock.side_effect = _call
-    mock._gather_neighborhood = MagicMock(side_effect=_gather)
-    mock.fetch_patch_feats = MagicMock(side_effect=_fetch)
+    mock.side_effect = _forward
+    mock.fetch_global_feats = MagicMock(side_effect=_fetch_global)
     return mock
 
 
-class TestPatchCNNConditioner:
-    """Tests for the PatchCNNConditioner (TODO[3])."""
 
-    @pytest.fixture
-    def cnn_cond(self) -> PatchCNNConditioner:
-        return PatchCNNConditioner(out_dim=16, patch_size=16)
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# pixel_to_grid_sample_coords
+# ---------------------------------------------------------------------------
 
-    @pytest.fixture
-    def cnn_config(self) -> KeypointDiffusionConfig:
-        return KeypointDiffusionConfig(
-            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
-            dim_hidden=16, num_layers=2, num_train_steps=10,
-            use_image_cond=True, use_cnn_cond=True,
-            dim_image_cond=8, cnn_patch_size=16,
-        )
 
-    def _make_images(self, B: int, H: int = 64, W: int = 80) -> list[torch.Tensor]:
-        """Synthetic float [0,1] RGB images of shape (3, H, W)."""
-        torch.manual_seed(0)
-        return [torch.rand(3, H, W) for _ in range(B)]
+def test_pixel_to_grid_sample_coords_round_trip():
+    # Image 640×426 (landscape), short side 426, resize to shortest_edge=224.
+    # Scale s = 224/426.  Stride for stage1 = 4.
+    # Feature map size after resize: H_feat = 224/4 = 56, W_feat = ceil(640*s/4).
+    # For each feature cell (i, j), its centre in original pixel space is:
+    #   x = (j + 0.5) * stride / s = (j + 0.5) * 4 * 426 / 224
+    #   y = (i + 0.5) * stride / s = (i + 0.5) * 4 * 426 / 224
+    # pixel_to_grid_sample_coords should map that pixel back to exactly
+    # the grid_sample coord that samples cell (i, j).
+    W_orig, H_orig = 640, 426
+    shortest_edge = 224
+    stride = 4
+    s = shortest_edge / min(H_orig, W_orig)  # 224/426
+    H_feat = int(H_orig * s / stride)  # 26
+    W_feat = int(W_orig * s / stride)  # 37
 
-    def test_output_shape(self, cnn_cond):
-        """forward returns (B, N, K, out_dim)."""
-        B, N, K = 2, 3, 14
-        images = self._make_images(B, H=64, W=80)
-        kpt = torch.rand(B, N, K, 2) * 60  # pixel coords within image
-        out = cnn_cond(images, kpt)
-        assert out.shape == (B, N, K, 16)
+    # Feature map where each cell holds its own flattened index.
+    feat = torch.arange(H_feat * W_feat, dtype=torch.float32).view(1, 1, H_feat, W_feat)
 
-    def test_extract_patches_shape(self, cnn_cond):
-        """_extract_patches returns (N*K, 5, P, P)."""
-        N, K, P = 2, 3, 16
-        image = torch.rand(3, 64, 80)
-        kpt = torch.rand(N, K, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)
-        assert patches.shape == (N * K, 5, P, P)
+    img_hw = torch.tensor([[float(H_orig), float(W_orig)]])
 
-    def test_spatial_channels_bounded(self, cnn_cond):
-        """Channels 3 and 4 (spatial coords) must lie in [-1, 1]."""
-        N, K = 2, 3
-        image = torch.rand(3, 64, 80)
-        kpt = torch.rand(N, K, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)  # (N*K, 5, P, P)
-        spatial = patches[:, 3:, :, :]  # channels 3-4
-        assert spatial.min().item() >= -1.0 - 1e-5
-        assert spatial.max().item() <=  1.0 + 1e-5
+    # Sample a grid of 5×5 cells spread across the map.
+    sample_rows = torch.linspace(0, H_feat - 1, 5).long()
+    sample_cols = torch.linspace(0, W_feat - 1, 5).long()
 
-    def test_rgb_channels_bounded(self, cnn_cond):
-        """RGB channels (0-2) must remain in [0, 1] for a [0,1]-normalised input."""
-        N, K = 2, 3
-        image = torch.rand(3, 64, 80)  # already in [0, 1]
-        kpt = torch.rand(N, K, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)
-        rgb = patches[:, :3, :, :]
-        assert rgb.min().item() >= -0.01
-        assert rgb.max().item() <=  1.01
+    for i in sample_rows.tolist():
+        for j in sample_cols.tolist():
+            expected_val = float(i * W_feat + j)
 
-    def test_border_keypoints_do_not_crash(self, cnn_cond):
-        """Keypoints outside the image boundary should not crash (padding_mode=border)."""
-        N, K = 1, 2
-        image = torch.rand(3, 32, 32)
-        kpt = torch.tensor([[[-50.0, -50.0], [200.0, 200.0]]])  # far outside
-        out = cnn_cond._extract_patches(image, kpt)
-        assert out.shape == (N * K, 5, 16, 16)
+            # Centre of cell (i, j) in original pixel coordinates.
+            x_px = (j + 0.5) * stride / s
+            y_px = (i + 0.5) * stride / s
+            kpt = torch.tensor([[[[x_px, y_px]]]])  # (1, 1, 1, 2)
+
+            grid_coord = pixel_to_grid_sample_coords(kpt, img_hw.view(1, 1, 1, 2))  # (1,1,1,2)
+            grid = grid_coord.unsqueeze(0).view(1, 1, 1, 2)  # already (1,1,1,2)
+
+            sampled = torch.nn.functional.grid_sample(
+                feat, grid, mode="nearest", align_corners=False, padding_mode="zeros"
+            )  # (1, 1, 1, 1)
+            assert abs(sampled.item() - expected_val) < 1e-3, (
+                f"cell ({i},{j}): expected {expected_val}, got {sampled.item()}"
+            )
+
+
+# Real DinoConditioner unit tests (no backbone, synthetic cache)
+# ---------------------------------------------------------------------------
+
+
+def _make_synthetic_cache(image_ids: list[int]) -> dict:
+    """Build a minimal {image_id: dict} cache matching ConvNeXt-Small shapes."""
+    return {
+        iid: {
+            "spatial":  torch.zeros(96, 56, 56),
+            "semantic": torch.zeros(768, 7, 7),
+            "global":   torch.zeros(768),
+        }
+        for iid in image_ids
+    }
+
+
+def _make_variable_size_cache(specs: list[tuple[int, int, int]]) -> dict:
+    """Build a cache where each image has a different spatial size.
+
+    specs: [(image_id, H_orig, W_orig), ...]
+    Spatial dim = H//4 x W//4 (stride-4 stage1), semantic = H//32 x W//32.
+    """
+    cache = {}
+    for iid, h, w in specs:
+        cache[iid] = {
+            "spatial":  torch.zeros(96,  h // 4,  w // 4),
+            "semantic": torch.zeros(768, h // 32, w // 32),
+            "global":   torch.zeros(768),
+        }
+    return cache
+
+
+class TestDinoConditionerReal:
+    """Tests that exercise the actual DinoConditioner code (no mocking)."""
+
+    def _make_conditioner(
+        self,
+        image_ids: list[int],
+        out_dim: int = 16,
+        cache_dir: Path | None = None,
+    ) -> DinoConditioner:
+        cond = DinoConditioner(out_dim=out_dim)
+        cond._cache = _make_synthetic_cache(image_ids)
+        # Register a (possibly empty) cache dir so _load_image can reach the
+        # 'not found' branch when an unknown id is requested.
+        if cache_dir is not None:
+            cond._cache_dirs = [cache_dir]
+        return cond
+
+    def test_forward_output_shape(self):
+        B, N, K, out_dim = 2, 3, 14, 16
+        cond = self._make_conditioner(list(range(B)), out_dim=out_dim)
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)))
+        assert out.shape == (B, N, K, out_dim)
+
+    def test_forward_variable_image_sizes(self):
+        # Two images with different aspect ratios → different spatial map sizes.
+        N, K, out_dim = 2, 14, 16
+        specs = [(0, 224, 224), (1, 224, 336)]  # square and landscape
+        cond = DinoConditioner(out_dim=out_dim)
+        cond._cache = _make_variable_size_cache(specs)
+        img_hw = torch.tensor([[224.0, 224.0], [224.0, 336.0]])
+        kpt_pixel = torch.rand(2, N, K, 2) * 224
+        out = cond(kpt_pixel, img_hw, image_ids=[0, 1])
+        assert out.shape == (2, N, K, out_dim)
+
+    def test_forward_output_is_finite(self):
+        B, N, K = 2, 2, 14
+        cond = self._make_conditioner(list(range(B)))
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)))
         assert torch.isfinite(out).all()
 
-    def test_extract_patches_output_is_contiguous(self, cnn_cond):
-        """_extract_patches output must be contiguous so Conv2d doesn't see zero-stride tensors.
+    def test_fetch_global_feats_shape(self):
+        B = 3
+        cond = self._make_conditioner(list(range(B)))
+        out = cond.fetch_global_feats(list(range(B)), device=torch.device("cpu"))
+        assert out.shape == (B, 768)
 
-        Non-contiguous inputs (e.g. from expand()) can trigger the CUDA allocator
-        assertion (!block->expandable_segment_) when passed to Conv2d.
-        Note: per-channel slices like patches[:, :3] are never contiguous; only
-        the full (M, 5, P, P) output is required to be contiguous.
-        """
-        image = torch.rand(3, 64, 80)
-        kpt = torch.rand(2, 3, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)
-        assert patches.is_contiguous(), "patches must be contiguous for Conv2d"
+    def test_missing_image_id_raises(self, tmp_path):
+        cond = self._make_conditioner([0, 1], cache_dir=tmp_path)
+        kpt_pixel = torch.rand(1, 2, 14, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]])
+        with pytest.raises(RuntimeError, match="not found"):
+            cond(kpt_pixel, img_hw, image_ids=[999])
 
-    def test_cnn_can_forward_extract_patches_output(self, cnn_cond):
-        """cnn Sequential can run on the _extract_patches output without error."""
-        image = torch.rand(3, 64, 80)
-        kpt = torch.rand(2, 3, 2) * 60
-        patches = cnn_cond._extract_patches(image, kpt)
-        out = cnn_cond.cnn(patches)   # would crash if non-contiguous on CUDA
-        assert torch.isfinite(out).all()
+    def test_no_cache_raises(self):
+        cond = DinoConditioner(out_dim=16)
+        kpt_pixel = torch.rand(1, 2, 14, 2)
+        img_hw = torch.tensor([[480.0, 640.0]])
+        with pytest.raises(RuntimeError, match="cache not loaded|Call load_cache"):
+            cond(kpt_pixel, img_hw, image_ids=[0])
 
-    def test_many_keypoints_contiguous(self):
-        """Large M (many keypoints) still produces a contiguous output."""
-        cnn = PatchCNNConditioner(out_dim=8, patch_size=8)
-        image = torch.rand(3, 128, 128)
-        kpt = torch.rand(10, 15, 2) * 120  # M = 150
-        patches = cnn._extract_patches(image, kpt)
-        assert patches.shape == (150, 5, 8, 8)
-        assert patches.is_contiguous()
+    def test_load_cache_wrong_format_raises(self, tmp_path):
+        # load_cache now expects a directory; a plain file should raise
+        bad_file = tmp_path / "vit.pt"
+        bad_file.write_bytes(b"dummy")
+        cond = DinoConditioner(out_dim=16)
+        with pytest.raises(RuntimeError, match="not a directory"):
+            cond.load_cache(bad_file)
 
-    def test_odd_patch_size_contiguous(self):
-        """Odd patch sizes work and produce contiguous output."""
-        cnn = PatchCNNConditioner(out_dim=8, patch_size=13)
-        image = torch.rand(3, 64, 64)
-        kpt = torch.rand(2, 3, 2) * 60
-        patches = cnn._extract_patches(image, kpt)
-        assert patches.shape == (6, 5, 13, 13)
-        assert patches.is_contiguous()
-
-    def test_single_keypoint_contiguous(self, cnn_cond):
-        """M=1 (single keypoint) still produces a contiguous output."""
-        image = torch.rand(3, 64, 80)
-        kpt = torch.tensor([[[30.0, 20.0]]])  # (1, 1, 2)
-        patches = cnn_cond._extract_patches(image, kpt)
-        assert patches.shape == (1, 5, 16, 16)
-        assert patches.is_contiguous()
-
-    def test_small_image_no_crash(self, cnn_cond):
-        """Image smaller than patch size is handled safely via padding."""
-        image = torch.rand(3, 8, 8)   # smaller than patch_size=16
-        kpt = torch.rand(1, 2, 2) * 7
-        patches = cnn_cond._extract_patches(image, kpt)
-        assert patches.shape == (2, 5, 16, 16)
-        assert torch.isfinite(patches).all()
-        assert patches.is_contiguous()
-
-    def test_cnn_conditioner_created_when_use_cnn_cond(self, cnn_config):
-        """PoseDiffusionModule creates cnn_conditioner when model.config.use_cnn_cond=True."""
-        model = KeypointDiffusionModel(cnn_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        module = PoseDiffusionModule(model)
-        assert module.cnn_conditioner is not None
-        assert isinstance(module.cnn_conditioner, PatchCNNConditioner)
-        assert module.dino_conditioner is None   # no dino_model_name provided
-        assert module.fuse_proj is None          # fusion only when BOTH conditioners active
-
-    def test_training_step_with_cnn_cond(self, cnn_config, batch_b4n3):
-        """End-to-end training step with CNN conditioning produces a finite loss."""
-        import tempfile
-        from PIL import Image as PILImage
-
-        model = KeypointDiffusionModel(cnn_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        module = PoseDiffusionModule(model)
-        assert module.cnn_conditioner is not None
-
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = [f"{tmp}/img_{i}.png" for i in range(BATCH_SIZE)]
-            for p in paths:
-                PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
-            batch = {**batch_b4n3, "img_path": paths}
-            loss = module.training_step(batch, batch_idx=0)
-
-        assert loss.ndim == 0 and torch.isfinite(loss)
-
-
-class TestLocalSpatialCondition:
-    """Tests for get_local_spatial_condition and combined DINO+CNN conditioning."""
-
-    _DINO_RAW_DIM = 24   # simulates backbone hidden_size
-    _CNN_TRUNK_DIM = 64  # CNN backbone_dim (last conv output channels)
-    _OUT_DIM = 8
-
-    @pytest.fixture
-    def combined_config(self) -> KeypointDiffusionConfig:
-        return KeypointDiffusionConfig(
-            dim_pos=16, dim_index=16, dim_time=16, dim_edge=16,
-            dim_hidden=16, num_layers=2, num_train_steps=10,
-            use_image_cond=True, use_cnn_cond=True,
-            dim_image_cond=self._OUT_DIM, cnn_patch_size=16,
-        )
-
-    def _module_with_both(self, combined_config):
-        model = KeypointDiffusionModel(combined_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        module = PoseDiffusionModule(model)
-        module.dino_conditioner = _make_mock_dino(self._OUT_DIM, raw_dim=self._DINO_RAW_DIM)
-        module.dino_proj = torch.nn.Linear(self._DINO_RAW_DIM, self._OUT_DIM)
-        module.cnn_proj  = torch.nn.Linear(self._CNN_TRUNK_DIM, self._OUT_DIM)
-        module.fuse_proj = torch.nn.Linear(2 * self._OUT_DIM, self._OUT_DIM)
-        return module
-
-    def test_fusion_proj_created_when_both_active(self, combined_config):
-        """fuse_proj is None without DINO, set when both conditioners are active."""
-        model = KeypointDiffusionModel(combined_config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
-        module = PoseDiffusionModule(model)
-        assert module.fuse_proj is None  # CNN only — no DINO
-
-    def test_training_step_with_combined_conditioning(self, combined_config, batch_b4n3):
-        """Training step with DINO (mocked) + CNN produces a finite loss."""
-        import tempfile
-        from PIL import Image as PILImage
-
-        module = self._module_with_both(combined_config)
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = [f"{tmp}/img_{i}.png" for i in range(BATCH_SIZE)]
-            for p in paths:
-                PILImage.new("RGB", (80, 64), color=(128, 64, 32)).save(p)
-            batch = {**batch_b4n3, "img_path": paths}
-            loss = module.training_step(batch, batch_idx=0)
-
-        assert loss.ndim == 0 and torch.isfinite(loss)
-
-    def test_combined_conditioning_output_shape(self, combined_config):
-        """get_local_spatial_condition returns (B*N*15, out_dim) when both active."""
-        import tempfile
-        from PIL import Image as PILImage
-
-        module = self._module_with_both(combined_config)
-        batch = _make_batch(B=2, N=N_POSES)
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = [f"{tmp}/img_{i}.png" for i in range(2)]
-            for p in paths:
-                PILImage.new("RGB", (80, 64), color=(0, 0, 0)).save(p)
-            batch["img_path"] = paths
-            _, graph = module.prepare_batch(batch)
-
-        assert graph.image_cond is not None
-        assert graph.image_cond.shape == (2 * N_POSES * NUM_KEYPOINTS_CANONICAL, self._OUT_DIM)
+    def test_load_cache_skips_missing_dir(self, tmp_path, capsys):
+        cond = DinoConditioner(out_dim=16)
+        cond.load_cache(tmp_path / "nonexistent")
+        captured = capsys.readouterr()
+        assert "skipping" in captured.out
+        assert cond._cache_dirs == []
 
 
 class TestImageConditioning:
@@ -634,48 +574,6 @@ class TestImageConditioning:
             dim_hidden=16, num_layers=2, num_train_steps=10,
             use_image_cond=True, dim_image_cond=8,
         )
-
-    def test_gather_neighborhood_picks_correct_patch(self):
-        """Each keypoint should retrieve the patch whose grid cell the pixel falls in.
-
-        Setup: 64×64 image, patch_size=16 → 4×4 grid (G=4).
-        Give every patch a unique fingerprint vector (patch index embedded in dim 0).
-        Place keypoints exactly at patch centres and verify the returned embedding
-        matches that specific patch's fingerprint.
-        """
-        from unittest.mock import MagicMock
-
-        G, D, patch = 4, 16, 16
-        image_size = G * patch  # 64
-
-        # Build a DinoConditioner stub (no real backbone needed)
-        c = object.__new__(DinoConditioner)
-        torch.nn.Module.__init__(c)
-        c.patch_size = patch
-        c.image_size = image_size
-        c.neighborhood_radius = 0   # r=0: only the centre patch, no pooling
-        c.grid_size = G
-        c.proj = torch.nn.Linear(D, D)
-
-        # Patch features: patch p has a unique fingerprint (p+1) in slot p%D
-        patch_feats = torch.zeros(1, G * G, D)
-        for p in range(G * G):
-            patch_feats[0, p, p % D] = float(p + 1)
-
-        # Place one keypoint at the centre of each patch, in an image the same
-        # size as the DINO input (so no rescaling needed)
-        num_kp = G * G
-        centres_x = torch.tensor([(cx + 0.5) * patch for cy in range(G) for cx in range(G)])
-        centres_y = torch.tensor([(cy + 0.5) * patch for cy in range(G) for cx in range(G)])
-        kpt_pixel = torch.stack([centres_x, centres_y], dim=-1).view(1, 1, num_kp, 2)
-        img_hw = torch.tensor([[float(image_size), float(image_size)]])
-
-        result = c._gather_neighborhood(patch_feats, kpt_pixel, img_hw)  # (1,1,16,D)
-
-        for p in range(G * G):
-            expected = patch_feats[0, p]
-            assert torch.allclose(result[0, 0, p], expected), \
-                f"Keypoint {p} should retrieve patch {p}, got {result[0,0,p]} vs {expected}"
 
     def test_backward_process_accepts_image_cond(self, cond_config, graph_b4n3):
         """backward_process runs without error when image_cond is supplied."""

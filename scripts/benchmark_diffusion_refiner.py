@@ -147,6 +147,7 @@ def run_eval(
         "steps": ddim_steps,
         "noise_frac": noise_frac,
         "passes": passes,
+        "guidance_scale": module.cfg_guidance_scale,
         **{k: round(float(v), 4) for k, v in ap.items()},
     }
 
@@ -186,6 +187,9 @@ def parse_args() -> argparse.Namespace:
                    help="Force delta=0 at all times (identity refinement; sanity check).")
     p.add_argument("--disable-noise", action="store_true", default=False,
                    help="Skip noise injection; DDIM starts from clean detector output.")
+    p.add_argument("--cfg-guidance-scale", type=float, default=None,
+                   help="CFG guidance scale. Overrides the checkpoint value. "
+                        "1.0 = no guidance. Default: use checkpoint value.")
     p.add_argument("--device", default=None,
                    help="Device: cpu | cuda | cuda:N. Default: cuda if available, else cpu.")
     p.add_argument("--out-dir", type=Path, default=None,
@@ -233,6 +237,10 @@ def main() -> None:
     if args.disable_noise:
         module._disable_noise = True
         print("disable_noise=True: DDIM starts from clean detector output (no noise injected).")
+
+    if args.cfg_guidance_scale is not None:
+        module.cfg_guidance_scale = args.cfg_guidance_scale
+        print(f"cfg_guidance_scale overridden to {args.cfg_guidance_scale}")
 
     with torch.no_grad():
         result = run_eval(

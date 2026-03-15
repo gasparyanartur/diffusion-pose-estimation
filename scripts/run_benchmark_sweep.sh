@@ -52,20 +52,26 @@ for jf in json_files:
     with open(jf) as fh:
         rows.append({"task_id": jf.stem, **json.load(fh)})
 
+# Union of all keys across rows (preserves insertion order, Python 3.7+)
+all_keys: list[str] = list(dict.fromkeys(k for r in rows for k in r))
+# Fill any missing keys with empty string so DictWriter doesn't raise
+for r in rows:
+    for k in all_keys:
+        r.setdefault(k, "")
+
 out_path = results_dir / "results.csv"
 with open(out_path, "w", newline="") as fh:
-    writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+    writer = csv.DictWriter(fh, fieldnames=all_keys)
     writer.writeheader()
     writer.writerows(rows)
 
 # Print aligned table
-keys = list(rows[0].keys())
-widths = {k: max(len(k), max(len(str(r[k])) for r in rows)) for k in keys}
-fmt = "  ".join(f"{{:<{widths[k]}}}" for k in keys)
-print(fmt.format(*keys))
-print("  ".join("-" * widths[k] for k in keys))
+widths = {k: max(len(k), max(len(str(r[k])) for r in rows)) for k in all_keys}
+fmt = "  ".join(f"{{:<{widths[k]}}}" for k in all_keys)
+print(fmt.format(*all_keys))
+print("  ".join("-" * widths[k] for k in all_keys))
 for r in rows:
-    print(fmt.format(*[str(r[k]) for k in keys]))
+    print(fmt.format(*[str(r[k]) for k in all_keys]))
 print(f"\nSaved to {out_path}")
 PYEOF
     exit 0

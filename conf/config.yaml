@@ -9,7 +9,7 @@ defaults:
   - model: small
   - data: crowdpose
   - train: base
-  - dino: dinov3_vits16
+  - dino: dinov3_convnext_small
   - hardware: auto
   - _self_
 

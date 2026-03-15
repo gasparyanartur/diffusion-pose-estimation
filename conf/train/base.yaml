@@ -26,5 +26,8 @@ ap_step_counts: [1, 2, 3]  # null → single-pass AP; list → evaluate at each 
 log_every_n_steps: 50
 compile: false           # torch.compile backward_process — disabled by default; incompatible with bf16-mixed AMP
 
+# Checkpoint smoothing
+running_loss_window: 5  # window size for RunningLossLogger; monitor key = running_loss_{window}
+
 # Resume
 resume: null   # path to a .ckpt file to resume from

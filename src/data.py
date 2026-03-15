@@ -1,4 +1,79 @@
-"""Dataset, sampler, collation, and graph utilities for pose-estimation predictions."""
+"""Dataset, sampler, collation, and graph utilities for pose-estimation predictions.
+
+NOTE: UPDATE THIS WHEN UPDATING THE CODE.
+
+PoseDataset
+-----------
+GT-only dataset; one sample per image.  Images where every annotation has no
+labeled keypoints are excluded.
+
+    from src.data import PoseDataset
+
+    ds = PoseDataset.from_path("data/crowdpose/annotations/crowdpose_train.json")
+    sample = ds[0]
+    # sample["image_id"]   -> int
+    # sample["img_path"]   -> str
+    # sample["keypoints"]  -> Tensor[N, 14, 2]   raw (x, y)
+    # sample["visibility"] -> Tensor[N, 14]      0=absent 1=occluded 2=visible
+
+    loader = ds.create_dataloader(batch_size=32, shuffle=True, drop_last=True)
+
+PredictionDataset
+-----------------
+Extends PoseDataset with model predictions loaded from a .pkl cache.
+GT annotations (which have a ragged number of people per image) are deliberately
+not returned by __getitem__; use get_gt(image_id) instead so default_collate
+can stack predictions uniformly.
+
+    from src.data import PredictionDataset
+
+    ds = PredictionDataset.from_path(
+        "results/cache/rtmpose-m_crowdpose_predictions.pkl",
+        ann_path="data/crowdpose/annotations/crowdpose_test.json",  # optional GT
+    )
+    sample = ds[0]
+    # sample["image_id"]             -> int
+    # sample["img_path"]             -> str
+    # sample["pred_keypoints"]       -> Tensor[N, K, 2]
+    # sample["pred_keypoint_scores"] -> Tensor[N, K]
+    # sample["bboxes"]               -> Tensor[N, 4]   (top-down only)
+    # sample["bbox_scores"]          -> Tensor[N]       (top-down only)
+
+    gt = ds.get_gt(sample["image_id"])
+    # gt["keypoints"]  -> Tensor[N_gt, K, 2]
+    # gt["visibility"] -> Tensor[N_gt, K]
+    # Returns None if no GT was loaded.
+
+SceneGraphSampler
+-----------------
+Batch sampler used internally by both create_dataloader methods.  Groups
+images by the number of people they contain so every batch has a uniform N,
+enabling default_collate to stack tensors without padding.
+
+- Shuffled mode interleaves batches from different group sizes globally.
+- drop_last=True drops the final partial batch within each group.
+
+prepare_pose_graph_batch
+------------------------
+Main entry point for the model.  Takes raw CrowdPose keypoints and returns a
+block-diagonal PyG graph ready for GNN processing.
+
+    from src.data import PoseDataset, prepare_pose_graph_batch
+
+    ds = PoseDataset.from_path("data/crowdpose/annotations/crowdpose_train.json", "data/crowdpose/images")
+    loader = ds.create_dataloader(batch_size=4)
+    batch = next(iter(loader))
+    prepare_pose_graph_batch(batch)  # optional: img_size=FloatTensor[B, 2]
+
+Internally it:
+  1. Computes a virtual root as the mean of visible left_hip, right_hip, and
+     neck anchors per person (falls back to centroid of all visible joints).
+  2. Prepends the root as node 0, shifting CrowdPose indices by +1 (14 -> 15
+     keypoints per person).
+  3. Subtracts the root position so the root node is at (0, 0).
+  4. Divides all coordinates by max(W, H) per image (or 800 if not provided).
+  5. Packs the B scene graphs into a single block-diagonal PyG structure.
+"""
 
 from __future__ import annotations
 
