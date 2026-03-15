@@ -1,23 +1,22 @@
 """Keypoint AP metric wrapping MMPose's CocoMetric.
 
-Handles the two coordinate-space conversions that sit between the model's
-internal representation and what CocoMetric expects:
+Handles the coordinate-space conversion between the model's internal
+representation and what CocoMetric expects:
 
-  canonical (root-relative, normalised)  →  pixel space  →  CocoMetric
+  canonical (image-normalised)  →  pixel space  →  CocoMetric
 
 Canonical space
-    The model operates on root-relative, normalised poses produced by
+    The model operates on image-normalised poses produced by
     :func:`src.data.prepare_pose_graph_batch`:
 
-    * Root node (index 0) is at (0, 0).
-    * Remaining 14 joints are relative to the root.
-    * All coordinates are divided by ``scale`` (default 800 px).
+    * canonical = pixel / [W, H] * 2 - 1  (in-frame joints are in (-1, 1)).
+    * Inverse: pixel = (canonical + 1) / 2 * [W, H].
 
-    Shape: (B, N, 15, 2)
+    Shape: (B, N, 14, 2)
 
 Pixel space
     Absolute (x, y) image coordinates in pixels.
-    Shape: (B, N, 14, 2)  — virtual root node is dropped.
+    Shape: (B, N, 14, 2)
 """
 
 from __future__ import annotations
@@ -50,64 +49,22 @@ CROWDPOSE_DATASET_META: dict = {
 }
 
 
-def compute_gt_root_pos(keypoints: Tensor, visibility: Tensor) -> Tensor:
-    """Compute the root anchor per (batch, person) from CrowdPose keypoints.
-
-    Mirrors the root-computation logic in :func:`src.data.prepare_pose_graph_batch`
-    so that the inverse transform uses exactly the same anchor.
-
-    Args:
-        keypoints:  FloatTensor (B, N, 14, 2) – pixel-space GT keypoints.
-        visibility: FloatTensor (B, N, 14)    – 0=absent / 1=occluded / 2=visible.
-
-    Returns:
-        FloatTensor (B, N, 2) – root position per (batch, person) in pixel space.
-    """
-    j = CROWDPOSE_JOINT_NAMES
-    anchor_idx = torch.tensor(
-        [j["left_hip"], j["right_hip"], j["neck"]], device=keypoints.device
-    )
-
-    anchor_vis  = visibility[:, :, anchor_idx]           # (B, N, 3)
-    anchor_mask = anchor_vis > 0                         # (B, N, 3)
-    has_anchor  = anchor_mask.any(dim=2, keepdim=True)   # (B, N, 1)
-
-    anchor_pos = keypoints[:, :, anchor_idx, :]                                  # (B, N, 3, 2)
-    anchor_w   = anchor_mask.float().unsqueeze(-1)                               # (B, N, 3, 1)
-    root_from_anchors = (anchor_pos * anchor_w).sum(2) / anchor_w.sum(2).clamp(min=1)  # (B, N, 2)
-
-    all_mask      = (visibility > 0).float().unsqueeze(-1)                       # (B, N, 14, 1)
-    root_from_all = (keypoints * all_mask).sum(2) / all_mask.sum(2).clamp(min=1) # (B, N, 2)
-
-    return torch.where(has_anchor, root_from_anchors, root_from_all)             # (B, N, 2)
-
-
 def canonical_to_pixel(
-    pred_canonical: Tensor,
-    root_pos: Tensor,
-    scale: "float | Tensor" = 800.0,
-) -> Tensor:
-    """Invert the canonical-space normalisation and recover pixel keypoints.
+    pred_canonical: Tensor,  # (B, N, 14, 2)
+    img_wh: Tensor,          # (B, 2) [W, H] in pixels
+) -> Tensor:                 # (B, N, 14, 2)
+    """Invert the canonical-space normalisation to recover pixel keypoints.
+
+    Inverse of: canonical = pixel / [W, H] * 2 - 1
 
     Args:
-        pred_canonical: FloatTensor (B, N, 15, 2) – model output in canonical
-                        space (root-relative, divided by *scale*).
-        root_pos:       FloatTensor (B, N, 2) – root position in pixel space.
-        scale:          Normalisation divisor used in prepare_pose_graph_batch.
-                        Can be a scalar float (applied uniformly) or a
-                        FloatTensor of shape (B,) for per-image scales.  Must
-                        match the scale used when building the canonical graph.
+        pred_canonical: FloatTensor (B, N, 14, 2) – model output in canonical space.
+        img_wh:         FloatTensor (B, 2)         – [W, H] per image in pixels.
 
     Returns:
-        FloatTensor (B, N, 14, 2) – pixel-space keypoints (virtual root at
-        index 0 is dropped; indices 1–14 become 0–13).
+        FloatTensor (B, N, 14, 2) – pixel-space keypoints.
     """
-    if isinstance(scale, Tensor):
-        scale = scale.view(scale.shape[0], 1, 1, 1)  # (B, 1, 1, 1) for broadcasting
-    # Undo normalisation and shift back to pixel origin
-    pixel = pred_canonical * scale + root_pos.unsqueeze(2)  # (B, N, 15, 2)
-    # Drop the virtual root node (index 0)
-    return pixel[:, :, 1:, :]  # (B, N, 14, 2)
+    return (pred_canonical + 1) / 2 * img_wh[:, None, None, :]  # (B, N, 14, 2)
 
 
 class KeypointAPMetric:

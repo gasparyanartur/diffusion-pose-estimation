@@ -11,7 +11,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data import (
-    CANONICAL_POSE_GRAPH_EDGE_LIST,
     PoseSample,
     PoseGraphBatch,
     make_edge_index,
@@ -42,7 +41,7 @@ from src.metrics import compute_mpjpe, compute_pck
 # ---------------------------------------------------------------------------
 
 NUM_KEYPOINTS_CROWDPOSE = 14   # raw CrowdPose joints
-NUM_KEYPOINTS_CANONICAL = 15   # after virtual root is prepended
+NUM_KEYPOINTS_CANONICAL = 14   # no virtual root; same as CrowdPose
 BATCH_SIZE = 2
 N_POSES = 2  # people per image
 DEVICE = torch.device("cpu")
@@ -826,7 +825,7 @@ class TestMultiStepAPEval:
         """_refine_prediction_batch passes its num_steps arg to ddim_sample."""
         model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
-        M = self._B * self._N * 15
+        M = self._B * self._N * 14
         mock_ddim = MagicMock(return_value=torch.zeros(M, 2))
         module.model.ddim_sample = mock_ddim
 
@@ -841,7 +840,7 @@ class TestMultiStepAPEval:
         """_ap_step forwards num_steps as n_passes to _iterative_refine_batch."""
         model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model)
-        M = self._B * self._N * 15
+        M = self._B * self._N * 14
         module.model.ddim_sample = MagicMock(return_value=torch.zeros(M, 2))
 
         captured: list[int] = []
@@ -860,7 +859,7 @@ class TestMultiStepAPEval:
         """raw_refiner=True: add_noise is never called and ddim_sample gets num_inference_steps=1."""
         model = KeypointDiffusionModel(config, num_keypoints=NUM_KEYPOINTS_CANONICAL)
         module = PoseDiffusionModule(model, raw_refiner=True)
-        M = self._B * self._N * 15
+        M = self._B * self._N * 14
 
         add_noise_calls: list = []
         orig_add_noise = module.model.add_noise

@@ -82,7 +82,7 @@ def load_module(
 
     cfg = OmegaConf.load(hydra_config_path)
     model_config = KeypointDiffusionConfig(**OmegaConf.to_container(cfg.model, resolve=True))
-    model = KeypointDiffusionModel(config=model_config, num_keypoints=15)
+    model = KeypointDiffusionModel(config=model_config, num_keypoints=14)
 
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     hp: dict[str, Any] = ckpt["hyper_parameters"]

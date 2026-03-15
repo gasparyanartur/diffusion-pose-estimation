@@ -28,7 +28,7 @@ from src.metrics import KeypointAPMetric, canonical_to_pixel
 # ---------------------------------------------------------------------------
 
 NUM_KP = 14   # raw CrowdPose joints (no virtual root)
-NUM_KP_CANONICAL = 15  # after virtual root is prepended
+NUM_KP_CANONICAL = 14  # no virtual root; same as NUM_KP
 
 VAL_ANN_FILE  = Path("data/crowdpose/annotations/crowdpose_val.json")
 PRED_CACHE    = Path("results/cache/rtmpose-m_crowdpose_val_predictions.pkl")
@@ -61,75 +61,45 @@ class TestCanonicalToPixel:
         """canonical_to_pixel must exactly invert prepare_pose_graph_batch."""
         B, N = sample_b2n3.B, sample_b2n3.N
         canonical = graph_b2n3.node_pos.view(B, N, NUM_KP_CANONICAL, 2)
-        recovered = canonical_to_pixel(canonical, graph_b2n3.root_pos, scale=graph_b2n3.scale)
+        recovered = canonical_to_pixel(canonical, graph_b2n3.img_wh)
         assert recovered.shape == (B, N, NUM_KP, 2)
         torch.testing.assert_close(recovered, sample_b2n3.keypoints, atol=1e-4, rtol=1e-4,
                                    msg="canonical→pixel roundtrip must recover original keypoints")
 
-    def test_virtual_root_is_dropped(self):
-        """Output must have 14 joints (root index 0 is always dropped)."""
+    def test_output_shape_matches_input(self):
+        """Output shape is (B, N, K, 2) matching the input canonical tensor."""
         B, N = 2, 3
         canonical = torch.rand(B, N, NUM_KP_CANONICAL, 2)
-        root_pos  = torch.zeros(B, N, 2)
-        out = canonical_to_pixel(canonical, root_pos, scale=1.0)
-        assert out.shape == (B, N, NUM_KP, 2), (
-            f"Expected (B={B}, N={N}, 14, 2), got {out.shape}"
-        )
+        img_wh = torch.full((B, 2), 640.0)
+        out = canonical_to_pixel(canonical, img_wh)
+        assert out.shape == (B, N, NUM_KP_CANONICAL, 2)
 
-    def test_scale_one_with_zero_root_is_slice(self):
-        """With scale=1 and root=[0,0] the output is exactly canonical[:,1:,:]."""
-        B, N = 2, 3
-        canonical = torch.rand(B, N, NUM_KP_CANONICAL, 2)
-        root_pos  = torch.zeros(B, N, 2)
-        out = canonical_to_pixel(canonical, root_pos, scale=1.0)
-        torch.testing.assert_close(out, canonical[:, :, 1:, :])
+    def test_canonical_minus1_maps_to_pixel_0(self):
+        """canonical=-1 should map to pixel=0 for any img_wh."""
+        B, N = 1, 2
+        canonical = torch.full((B, N, NUM_KP, 2), -1.0)
+        img_wh = torch.tensor([[800.0, 600.0]])
+        out = canonical_to_pixel(canonical, img_wh)
+        torch.testing.assert_close(out, torch.zeros_like(out))
 
-    def test_tensor_scale_matches_float_scale(self):
-        """Per-image Tensor scale must give the same result as the equivalent scalar."""
-        B, N = 3, 2
-        canonical = torch.rand(B, N, NUM_KP_CANONICAL, 2)
-        root_pos  = torch.zeros(B, N, 2)
-        scale_val = 512.0
-
-        out_float  = canonical_to_pixel(canonical, root_pos, scale=scale_val)
-        out_tensor = canonical_to_pixel(canonical, root_pos,
-                                        scale=torch.full((B,), scale_val))
-
-        torch.testing.assert_close(out_float, out_tensor)
-
-    def test_tensor_scale_per_image(self):
-        """Different per-image scales must be applied independently."""
+    def test_canonical_1_maps_to_img_wh(self):
+        """canonical=+1 should map to pixel=[W, H]."""
         B, N = 2, 1
-        canonical = torch.ones(B, N, NUM_KP_CANONICAL, 2)  # all ones
-        root_pos  = torch.zeros(B, N, 2)
-        scales = torch.tensor([100.0, 200.0])
+        canonical = torch.ones(B, N, NUM_KP, 2)
+        img_wh = torch.tensor([[640.0, 480.0], [1280.0, 720.0]])
+        out = canonical_to_pixel(canonical, img_wh)
+        for b in range(B):
+            expected = img_wh[b]
+            torch.testing.assert_close(out[b, 0, 0], expected)
 
-        out = canonical_to_pixel(canonical, root_pos, scale=scales)
-        # After dropping root: joint positions = scale * 1 + 0 = scale
+    def test_per_image_wh_applied_independently(self):
+        """Different per-image (W, H) values must scale images independently."""
+        B, N = 2, 1
+        canonical = torch.zeros(B, N, NUM_KP, 2)  # all canonical=0 → pixel = wh/2
+        img_wh = torch.tensor([[200.0, 200.0], [400.0, 400.0]])
+        out = canonical_to_pixel(canonical, img_wh)
         assert out[0, 0, 0, 0].item() == pytest.approx(100.0)
         assert out[1, 0, 0, 0].item() == pytest.approx(200.0)
-
-    def test_zero_relative_position_maps_to_root(self):
-        """A canonical position of [0, 0] (relative) should map back to root_pos."""
-        B, N = 1, 1
-        # canonical[0,0,1,:] = [0,0] means joint 0 (first real joint) is at the root
-        canonical = torch.zeros(B, N, NUM_KP_CANONICAL, 2)
-        root_pos  = torch.tensor([[[42.0, 99.0]]])  # (1, 1, 2)
-        out = canonical_to_pixel(canonical, root_pos, scale=800.0)
-        # Every joint is at [0,0] canonical → should map to root_pos
-        torch.testing.assert_close(out[0, 0, 0], root_pos[0, 0])
-
-    def test_root_pos_shift_applied_correctly(self):
-        """Changing root_pos by delta should shift all output joints by the same delta."""
-        B, N = 2, 3
-        canonical = torch.rand(B, N, NUM_KP_CANONICAL, 2)
-        root_a = torch.zeros(B, N, 2)
-        root_b = torch.ones(B, N, 2) * 50.0
-
-        out_a = canonical_to_pixel(canonical, root_a, scale=800.0)
-        out_b = canonical_to_pixel(canonical, root_b, scale=800.0)
-
-        torch.testing.assert_close(out_b - out_a, torch.ones_like(out_a) * 50.0)
 
     def test_roundtrip_with_partial_visibility(self, sample_b2n3):
         """Roundtrip still works correctly when some joints are invisible (vis=0)."""
@@ -138,7 +108,7 @@ class TestCanonicalToPixel:
         _s = prepare_sample({"keypoints": sample_b2n3.keypoints, "visibility": vis_partial})
         graph = prepare_pose_graph_batch(_s)
         canonical = graph.node_pos.view(B, N, NUM_KP_CANONICAL, 2)
-        recovered = canonical_to_pixel(canonical, graph.root_pos, scale=graph.scale)
+        recovered = canonical_to_pixel(canonical, graph.img_wh)
         torch.testing.assert_close(recovered, sample_b2n3.keypoints, atol=1e-4, rtol=1e-4)
 
 
@@ -497,8 +467,8 @@ class TestKeypointAPMetricIntegration:
             _sample = prepare_sample({"keypoints": pred_kpts, "visibility": vis})
             g = prepare_pose_graph_batch(_sample)
             B2, N2 = pred_kpts.shape[:2]
-            canonical = g.node_pos.view(B2, N2, 15, 2)
-            recovered = canonical_to_pixel(canonical, g.root_pos, scale=g.scale)
+            canonical = g.node_pos.view(B2, N2, 14, 2)
+            recovered = canonical_to_pixel(canonical, g.img_wh)
             m_roundtrip.update(recovered, pred_scores, batch["image_id"])
 
         ap_raw       = m_raw.compute().get("crowdpose/AP", -1.0)
@@ -534,7 +504,7 @@ class TestKeypointAPMetricIntegration:
         cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
                                          dim_hidden=16, num_layers=1,
                                          num_train_steps=100)
-        model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
+        model  = KeypointDiffusionModel(config=cfg, num_keypoints=14)
         module = PoseDiffusionModule(model=model, start_inference_noise_frac=0.0)  # no noise
         module.eval()
 
@@ -593,7 +563,7 @@ class TestKeypointAPMetricIntegration:
         cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
                                          dim_hidden=16, num_layers=1,
                                          num_train_steps=T)
-        model  = KeypointDiffusionModel(config=cfg, num_keypoints=15)
+        model  = KeypointDiffusionModel(config=cfg, num_keypoints=14)
         module = PoseDiffusionModule(model=model, start_inference_noise_frac=frac)
         module.eval()
 

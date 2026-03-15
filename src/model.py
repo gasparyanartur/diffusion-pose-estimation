@@ -515,6 +515,10 @@ class PoseGraphDecoder(torch.nn.Module):
             torch.nn.Linear(hidden_dim, out_dim),
         )
 
+        # Initialise the final linear layer to zero so the untrained model predicts zero displacement.
+        self.output_proj[1].weight.data.zero_()
+        self.output_proj[1].bias.data.zero_()
+
     def forward(
         self,
         h: Tensor,           # (M, hidden_dim)  — h_i = LN(pos_emb + id_emb)
@@ -534,7 +538,7 @@ class KeypointDiffusionModel(torch.nn.Module):
     def __init__(
         self,
         config: KeypointDiffusionConfig,
-        num_keypoints: int = 15,
+        num_keypoints: int = 14,
     ) -> None:
         super().__init__()
         self.config = config
@@ -751,11 +755,11 @@ def denoise_and_decode(
         global_image_cond=graph.global_image_cond,
     )
 
-    # Drop virtual root (index 0); canonical = (pixel − root) / scale
-    pred_canonical = (noisy_node_pos - pred_delta).view(graph.B, graph.N, graph.K, 2)[:, :, 1:]  # (B, N, 14, 2)
-    pred_pixel = pred_canonical * graph.scale[:, None, None, None] + graph.root_pos[:, :, None]  # (B, N, 14, 2)
+    # canonical = (noisy - delta); inverse: pixel = (canonical + 1) / 2 * [W, H]
+    pred_canonical = (noisy_node_pos - pred_delta).view(graph.B, graph.N, graph.K, 2)  # (B, N, 14, 2)
+    pred_pixel = (pred_canonical + 1) / 2 * graph.img_wh[:, None, None, :]             # (B, N, 14, 2)
 
-    gt_canonical = (sample.gt_keypoints - graph.root_pos[:, :, None]) / graph.scale[:, None, None, None]
+    gt_canonical = sample.gt_keypoints / graph.img_wh[:, None, None, :] * 2 - 1
 
     return StepOutputs(
         pred_pixel=pred_pixel,
@@ -880,6 +884,22 @@ def compute_bone_loss(
     return loss / len(edge_list)
 
 
+def _read_img_wh(img_paths: list[str], B: int, device: torch.device) -> Tensor:
+    """Return (W, H) per image as a (B, 2) float tensor; fallback to (800, 800)."""
+    wh: list[tuple[float, float]] = []
+    for i in range(B):
+        path = img_paths[i] if i < len(img_paths) else ""
+        if path:
+            try:
+                h, w = read_image_size(path)
+                wh.append((float(w), float(h)))
+            except Exception:
+                wh.append((800.0, 800.0))
+        else:
+            wh.append((800.0, 800.0))
+    return torch.tensor(wh, dtype=torch.float32, device=device)
+
+
 class PoseDiffusionModule(pl.LightningModule):
     """PyTorch-Lightning wrapper for KeypointDiffusionModel."""
 
@@ -997,7 +1017,8 @@ class PoseDiffusionModule(pl.LightningModule):
         sample = prepare_sample(batch)
         if augment:
             self._augment_sample(sample)
-        graph = prepare_pose_graph_batch(sample)
+        img_wh = _read_img_wh(sample.img_path, sample.B, sample.keypoints.device)
+        graph = prepare_pose_graph_batch(sample, img_size=img_wh)
 
         if augment:
             self._augment_graph(graph)
@@ -1036,18 +1057,18 @@ class PoseDiffusionModule(pl.LightningModule):
         image_dropout(graph.image_cond, self.model.config.p_img_drop)
 
     def get_loss(self, sample: PoseSample, graph: PoseGraphBatch, outputs: StepOutputs) -> dict[str, Tensor]:
-        # Canonical (root-relative, normalised) space keeps loss magnitudes ~O(1).
+        # Pixel space keeps loss magnitudes independent of canonical parameterisation.
         cfg = self.model.config
         visibility = sample.visibility  # (B, N, 14)  0=absent 1=occluded 2=visible
 
         losses: dict[str, Tensor] = {}
         if cfg.use_joint_loss:
             losses["joint_loss"] = (
-                compute_joint_loss(outputs.pred_canonical, outputs.gt_canonical, visibility) * cfg.w_joint_loss
+                compute_joint_loss(outputs.pred_pixel, outputs.gt_pixel, visibility) * cfg.w_joint_loss
             )
         if cfg.use_bone_loss:
             losses["bone_loss"] = (
-                compute_bone_loss(outputs.pred_canonical, outputs.gt_canonical, visibility, CROWDPOSE_EDGE_LIST)
+                compute_bone_loss(outputs.pred_pixel, outputs.gt_pixel, visibility, CROWDPOSE_EDGE_LIST)
                 * cfg.w_bone_loss
             )
         if not losses:
@@ -1100,8 +1121,8 @@ class PoseDiffusionModule(pl.LightningModule):
         self,
         sample: PoseSample,
         graph: PoseGraphBatch,
-        kpt_pixel: Tensor | None = None,  # (B, N, K-1, 2) pixel-space; defaults to sample.keypoints
-    ) -> Tensor | None:  # (B*N*15, dim_image_cond)
+        kpt_pixel: Tensor | None = None,  # (B, N, 14, 2) pixel-space; defaults to sample.keypoints
+    ) -> Tensor | None:  # (B*N*14, dim_image_cond)
         if self.dino_conditioner is None and self.cnn_conditioner is None:
             return None
 
@@ -1122,10 +1143,7 @@ class PoseDiffusionModule(pl.LightningModule):
         else:
             keypoint_emb = self.cnn_conditioner.head(cnn_feat)
 
-        j = CROWDPOSE_JOINT_NAMES
-        anchor_idx = [j["left_hip"], j["right_hip"], j["neck"]]
-        root_emb = keypoint_emb[:, :, anchor_idx, :].mean(dim=2, keepdim=True)  # (B, N, 1, D)
-        return torch.cat([root_emb, keypoint_emb], dim=2).reshape(graph.B * graph.N * 15, -1)
+        return keypoint_emb.reshape(graph.B * graph.N * graph.K, -1)
 
     def _ap_step(
         self,
@@ -1223,11 +1241,9 @@ class PoseDiffusionModule(pl.LightningModule):
             guidance_scale=self.cfg_guidance_scale,
         )  # (B*N*K, 2)
 
-        # Convert back to pixel space using the root and scale from the graph
+        # Convert back to pixel space using per-image (W, H)
         nodes_canonical = nodes_canonical_flat.view(graph.B, graph.N, graph.K, 2)
-        joint_pred_pixel = canonical_to_pixel(
-            nodes_canonical, graph.root_pos, scale=graph.scale
-        )
+        joint_pred_pixel = canonical_to_pixel(nodes_canonical, graph.img_wh)
 
         return joint_pred_pixel, pred_scores, image_ids
 
@@ -1276,12 +1292,11 @@ class PoseDiffusionModule(pl.LightningModule):
         )
 
         if graph.image_cond is not None:
-            # Convert noisy canonical positions back to pixel space (drop virtual root).
+            # Convert noisy canonical positions back to pixel space.
             noisy_kpt_pixel = (
-                noisy_node_pos.view(graph.B, graph.N, graph.K, 2)[:, :, 1:, :]
-                * graph.scale[:, None, None, None]
-                + graph.root_pos[:, :, None, :]
-            )  # (B, N, K-1, 2)
+                (noisy_node_pos.view(graph.B, graph.N, graph.K, 2) + 1) / 2
+                * graph.img_wh[:, None, None, :]
+            )  # (B, N, 14, 2)
             graph.image_cond = self.get_local_spatial_condition(
                 sample, graph, kpt_pixel=noisy_kpt_pixel
             )

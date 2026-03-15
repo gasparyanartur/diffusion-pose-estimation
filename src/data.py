@@ -350,57 +350,6 @@ CROWDPOSE_EDGE_LIST: list[tuple[int, int]] = [
     (6, 7),                    # hips
 ]
 
-# Canonical pose graph: CrowdPose + virtual root node at index 0 (all original indices +1).
-# root = mean(left_hip, right_hip, neck); connected to those three joints.
-# 0=root  1=left_shoulder  2=right_shoulder  3=left_elbow   4=right_elbow
-# 5=left_wrist  6=right_wrist  7=left_hip  8=right_hip  9=left_knee
-# 10=right_knee  11=left_ankle  12=right_ankle  13=head  14=neck
-
-CANONICAL_POSE_GRAPH_JOINT_NAMES: dict[str, int] = {
-    "root":           0,   # virtual — mean of left_hip, right_hip, neck
-    "left_shoulder":  1,
-    "right_shoulder": 2,
-    "left_elbow":     3,
-    "right_elbow":    4,
-    "left_wrist":     5,
-    "right_wrist":    6,
-    "left_hip":       7,
-    "right_hip":      8,
-    "left_knee":      9,
-    "right_knee":     10,
-    "left_ankle":     11,
-    "right_ankle":    12,
-    "head":           13,
-    "neck":           14,
-}
-
-CANONICAL_POSE_GRAPH_EDGE_LIST: list[tuple[int, int]] = (
-    # All original CrowdPose edges, indices shifted by +1
-    [(u + 1, v + 1) for u, v in CROWDPOSE_EDGE_LIST]
-    + [
-        # Root connects to left_hip, right_hip, and neck
-        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["left_hip"]),
-        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["right_hip"]),
-        (CANONICAL_POSE_GRAPH_JOINT_NAMES["root"], CANONICAL_POSE_GRAPH_JOINT_NAMES["neck"]),
-    ]
-)
-
-
-def add_canonical_root_node(keypoints: Tensor) -> Tensor:
-    """Prepend a virtual root node (mean of left_hip, right_hip, neck) to a CrowdPose tensor.
-
-    (..., 14, 2) -> (..., 15, 2)
-    """
-    j = CROWDPOSE_JOINT_NAMES
-    root_pos = (
-        keypoints[..., j["left_hip"], :]
-        + keypoints[..., j["right_hip"], :]
-        + keypoints[..., j["neck"], :]
-    ) / 3.0                          # (..., 2)
-    root_pos = root_pos.unsqueeze(-2)  # (..., 1, 2)
-    return torch.cat([root_pos, keypoints], dim=-2)  # (..., 15, 2)
-
-
 def make_edge_index(
     edge_list: list[tuple[int, int]],
     make_undirected: bool = True,
@@ -421,12 +370,9 @@ def make_edge_index(
     return torch.tensor(edge_list, dtype=torch.long).t().contiguous()
 
 
-# Pre-built tensor version of CANONICAL_POSE_GRAPH_EDGE_LIST — avoids calling
-# torch.tensor() on a Python list on every forward pass.
-# Self-loops (i→i) are included so each node can learn to balance its own
-# features against aggregated neighbour messages.
+# Pre-built edge index for the CrowdPose graph (undirected + self-loops, 14 nodes).
 CANONICAL_EDGE_INDEX: Tensor = make_edge_index(
-    CANONICAL_POSE_GRAPH_EDGE_LIST, add_self_loops=True, num_nodes=15
+    CROWDPOSE_EDGE_LIST, add_self_loops=True, num_nodes=14
 )
 
 
@@ -516,16 +462,15 @@ class PoseSample:
 class PoseGraphBatch:
     """Canonical pose graph batch, derived from a PoseSample."""
 
-    node_pos: Tensor                # (B*N*K, 2)  root-relative, normalised
+    node_pos: Tensor                # (B*N*K, 2)  image-normalised: pixel/[W,H]*2-1 ∈ (-1,1)
     edge_index: Tensor              # (2, B*N*E)
     node_batch: Tensor              # (B*N*K,)    PyG batch vector
     batch_idx: Tensor               # (B, N, K)
     pose_idx: Tensor                # (B, N, K)
     kpt_type_idx: Tensor            # (B, N, K)
     node_idx: Tensor                # (B, N, K)
-    canonical_visibility: Tensor    # (B, N, 15)
-    root_pos: Tensor                # (B, N, 2)   pixel-space root anchor
-    scale: Tensor                   # (B,)        normalisation divisor
+    canonical_visibility: Tensor    # (B, N, 14)
+    img_wh: Tensor                  # (B, 2)      [W, H] in pixels
 
     # Optional — populated during prepare_batch
     image_cond: torch.Tensor | None = None
@@ -533,7 +478,7 @@ class PoseGraphBatch:
 
     @property
     def B(self) -> int:
-        return self.scale.shape[0]
+        return self.img_wh.shape[0]
 
     @property
     def N(self) -> int:
@@ -541,7 +486,7 @@ class PoseGraphBatch:
 
     @property
     def K(self) -> int:
-        return self.canonical_visibility.shape[2]  # 15
+        return self.canonical_visibility.shape[2]  # 14
 
     @property
     def num_nodes(self) -> int:
@@ -581,64 +526,30 @@ def prepare_pose_graph_batch(
 ) -> PoseGraphBatch:
     """Build a canonical pose graph batch from a PoseSample.
 
-    Computes the root per (batch, person) using visible anchor joints
-    (left_hip, right_hip, neck); falls back to centroid of all visible joints.
-    Keypoints are then made root-relative and normalised by max(W, H)
-    (or 800 if img_size is not provided).
+    Normalises keypoints to (-1, 1) via: canonical = pixel / [W, H] * 2 - 1.
+    The inverse is: pixel = (canonical + 1) / 2 * [W, H].
 
     Args:
         sample      PoseSample with keypoints (B, N, 14, 2) and visibility (B, N, 14)
-        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_POSE_GRAPH_EDGE_LIST
-        img_size    FloatTensor[B, 2] | None – (W, H) per image for normalisation
+        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_EDGE_INDEX
+        img_size    FloatTensor[B, 2] | None – (W, H) per image; fallback is (800, 800)
     """
     keypoints  = sample.keypoints
     visibility = sample.visibility
+    B = keypoints.shape[0]
     if edge_index is None:
         edge_index = CANONICAL_EDGE_INDEX
     ei = edge_index.to(keypoints.device)
 
-    j = CROWDPOSE_JOINT_NAMES
-    anchor_idx = torch.tensor(
-        [j["left_hip"], j["right_hip"], j["neck"]], device=keypoints.device
-    )  # (3,)
-
-    anchor_vis  = visibility[:, :, anchor_idx]          # (B, N, 3)
-    anchor_mask = anchor_vis > 0                        # (B, N, 3)
-    has_anchor  = anchor_mask.any(dim=2, keepdim=True)  # (B, N, 1)
-
-    # Mean of visible anchors; fallback to centroid of all visible joints
-    anchor_pos = keypoints[:, :, anchor_idx, :]                          # (B, N, 3, 2)
-    anchor_w   = anchor_mask.float().unsqueeze(-1)                       # (B, N, 3, 1)
-    root_from_anchors = (anchor_pos * anchor_w).sum(dim=2) / anchor_w.sum(dim=2).clamp(min=1)  # (B, N, 2)
-
-    all_mask      = (visibility > 0).float().unsqueeze(-1)               # (B, N, 14, 1)
-    root_from_all = (keypoints * all_mask).sum(dim=2) / all_mask.sum(dim=2).clamp(min=1)  # (B, N, 2)
-
-    root_pos = torch.where(has_anchor, root_from_anchors, root_from_all) # (B, N, 2)
-
-    # Root visibility: min of visible anchors, or 0 if none
-    root_vis = torch.where(
-        has_anchor.squeeze(2),                                            # (B, N)
-        anchor_vis.masked_fill(~anchor_mask, 2.0).min(dim=2).values,     # (B, N)
-        torch.zeros(keypoints.shape[:2], device=keypoints.device),       # (B, N)
-    )
-
-    canonical_kpts = torch.cat([root_pos.unsqueeze(2), keypoints], dim=2)  # (B, N, 15, 2)
-    canonical_vis  = torch.cat([root_vis.unsqueeze(2), visibility], dim=2) # (B, N, 15)
-
-    # Make all keypoints relative to the root node (root becomes [0, 0])
-    root = canonical_kpts[:, :, 0:1, :]   # (B, N, 1, 2)
-    canonical_kpts = canonical_kpts - root # (B, N, 15, 2)
-
-    # Normalise by max(W, H) per image so coordinates are in [-1, 1] roughly
-    B = keypoints.shape[0]
     if img_size is not None:
-        scale = img_size.max(dim=1).values.to(keypoints.device)  # (B,)
+        img_wh = img_size.to(keypoints.device)  # (B, 2)
     else:
-        scale = torch.full((B,), 800.0, device=keypoints.device)
-    canonical_kpts = canonical_kpts / scale.view(B, 1, 1, 1)
+        img_wh = torch.full((B, 2), 800.0, device=keypoints.device)
 
-    graph = create_graph_from_keypoints(ei, canonical_kpts)  # (B, N, 15, 2)
+    # canonical = pixel / [W, H] * 2 - 1  →  coords in (-1, 1) for in-frame joints
+    canonical_kpts = keypoints / img_wh.view(B, 1, 1, 2) * 2 - 1  # (B, N, 14, 2)
+
+    graph = create_graph_from_keypoints(ei, canonical_kpts)
 
     return PoseGraphBatch(
         node_pos=graph["node_pos"],
@@ -648,7 +559,6 @@ def prepare_pose_graph_batch(
         pose_idx=graph["pose_idx"],
         kpt_type_idx=graph["kpt_type_idx"],
         node_idx=graph["node_idx"],
-        canonical_visibility=canonical_vis,
-        root_pos=root_pos,
-        scale=scale,
+        canonical_visibility=visibility,
+        img_wh=img_wh,
     )

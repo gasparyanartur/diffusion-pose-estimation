@@ -158,7 +158,7 @@ def main(cfg: DictConfig) -> None:
         name=cfg.run_name,
         **OmegaConf.to_container(cfg.model, resolve=True),
     )
-    model = KeypointDiffusionModel(config=model_config, num_keypoints=15)
+    model = KeypointDiffusionModel(config=model_config, num_keypoints=14)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log.info("%s  —  %s trainable parameters", type(model).__name__, f"{n_params:,}")
