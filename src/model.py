@@ -731,14 +731,16 @@ def denoise_and_decode(
     graph: PoseGraphBatch,
     timestep: Tensor,        # (B,)
     generator: torch.Generator | None = None,
+    noisy_node_pos: Tensor | None = None,  # pre-computed; add_noise is skipped when provided
 ) -> StepOutputs:
     """Add noise at timestep, run backward_process, decode to pixel space."""
-    noisy_node_pos, _ = model.add_noise(
-        node_pos=graph.node_pos,
-        timestep=timestep,
-        batch_idx=graph.node_batch,
-        generator=generator,
-    )
+    if noisy_node_pos is None:
+        noisy_node_pos, _ = model.add_noise(
+            node_pos=graph.node_pos,
+            timestep=timestep,
+            batch_idx=graph.node_batch,
+            generator=generator,
+        )
     pred_delta = model.backward_process(
         noisy_node_pos=noisy_node_pos,
         edge_index=graph.edge_index,
@@ -1094,11 +1096,16 @@ class PoseDiffusionModule(pl.LightningModule):
             for b in range(graph.B)
         ])  # (B, N, K, cnn.backbone_dim)
 
-    def get_local_spatial_condition(self, sample: PoseSample, graph: PoseGraphBatch) -> Tensor | None:  # (B*N*15, dim_image_cond)
+    def get_local_spatial_condition(
+        self,
+        sample: PoseSample,
+        graph: PoseGraphBatch,
+        kpt_pixel: Tensor | None = None,  # (B, N, K-1, 2) pixel-space; defaults to sample.keypoints
+    ) -> Tensor | None:  # (B*N*15, dim_image_cond)
         if self.dino_conditioner is None and self.cnn_conditioner is None:
             return None
 
-        kpt = sample.keypoints.to(self.device)
+        kpt = kpt_pixel.to(self.device) if kpt_pixel is not None else sample.keypoints.to(self.device)
 
         if self.dino_conditioner is not None:
             dino_feat = self._get_dino_node_features(kpt, sample.image_id, sample.img_path)  # (B, N, K, D)
@@ -1131,7 +1138,6 @@ class PoseDiffusionModule(pl.LightningModule):
         bbox_scores = batch.get("bbox_scores")  # (B, N) or None
         metric.update(pred_pixel, pred_scores, image_ids, bbox_scores=bbox_scores)
 
-    @torch.no_grad()
     @torch.no_grad()
     def _iterative_refine_batch(
         self,
@@ -1260,7 +1266,33 @@ class PoseDiffusionModule(pl.LightningModule):
             device=graph.node_pos.device,
         )  # (B,)  — 1-indexed to match sigma schedule
 
-        outputs = denoise_and_decode(self.model, sample, graph, timestep, generator=generator)
+        # Add noise before deriving conditioning — prevents leaking clean GT positions
+        # to the conditioner (DINO patch lookup / CNN crop centre).
+        noisy_node_pos, _ = self.model.add_noise(
+            node_pos=graph.node_pos,
+            timestep=timestep,
+            batch_idx=graph.node_batch,
+            generator=generator,
+        )
+
+        if graph.image_cond is not None:
+            # Convert noisy canonical positions back to pixel space (drop virtual root).
+            noisy_kpt_pixel = (
+                noisy_node_pos.view(graph.B, graph.N, graph.K, 2)[:, :, 1:, :]
+                * graph.scale[:, None, None, None]
+                + graph.root_pos[:, :, None, :]
+            )  # (B, N, K-1, 2)
+            graph.image_cond = self.get_local_spatial_condition(
+                sample, graph, kpt_pixel=noisy_kpt_pixel
+            )
+            if stage == "train":
+                self._augment_image_cond(graph)
+
+        outputs = denoise_and_decode(
+            self.model, sample, graph, timestep,
+            generator=generator,
+            noisy_node_pos=noisy_node_pos,
+        )
         losses = self.get_loss(sample, graph, outputs)
         return losses, outputs, sample, graph
 

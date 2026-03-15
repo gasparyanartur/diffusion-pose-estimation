@@ -19,7 +19,7 @@ from torchvision.io import read_image as tv_read_image
 from torch.utils.data import Dataset
 
 
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=32000)
 def read_image_size(path: str) -> tuple[int, int]:
     """Return (height, width) for an image file. Results are cached by path."""
     with Image.open(path) as img:
