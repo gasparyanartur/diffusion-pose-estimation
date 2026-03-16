@@ -113,6 +113,9 @@ def load_module(
         dino_cache_train=dino_cache_train,
         dino_cache_val=dino_cache_val,
         dino_cache_test=dino_cache_test,
+        dino_conditioner_type=hp.get("dino_conditioner_type", "simple"),
+        dino_inner_dim=hp.get("dino_inner_dim", 256),
+        dino_num_heads=hp.get("dino_num_heads", 4),
     )
 
     module.load_state_dict(ckpt["state_dict"])
@@ -148,6 +151,8 @@ def run_eval(
         "noise_frac": noise_frac,
         "passes": passes,
         "guidance_scale": module.cfg_guidance_scale,
+        "raw_refiner": module._raw_refiner,
+        "use_message_passing": module.model.config.use_message_passing,
         **{k: round(float(v), 4) for k, v in ap.items()},
     }
 
@@ -187,6 +192,9 @@ def parse_args() -> argparse.Namespace:
                    help="Force delta=0 at all times (identity refinement; sanity check).")
     p.add_argument("--disable-noise", action="store_true", default=False,
                    help="Skip noise injection; DDIM starts from clean detector output.")
+    p.add_argument("--raw-refiner", action="store_true", default=False,
+                   help="Skip noise; force 1 DDIM step (pure single-pass denoising). "
+                        "Overrides the checkpoint value.")
     p.add_argument("--cfg-guidance-scale", type=float, default=None,
                    help="CFG guidance scale. Overrides the checkpoint value. "
                         "1.0 = no guidance. Default: use checkpoint value.")
@@ -237,6 +245,10 @@ def main() -> None:
     if args.disable_noise:
         module._disable_noise = True
         print("disable_noise=True: DDIM starts from clean detector output (no noise injected).")
+
+    if args.raw_refiner:
+        module._raw_refiner = True
+        print("raw_refiner=True: single backward pass, no DDIM noise (pure single-pass denoising).")
 
     if args.cfg_guidance_scale is not None:
         module.cfg_guidance_scale = args.cfg_guidance_scale
