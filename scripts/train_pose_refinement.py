@@ -85,6 +85,17 @@ class RunningLossLogger(pl.Callback):
         pl_module.log(f"running_loss_{self.window}", smooth, prog_bar=False)
 
 
+class GradNormLogger(pl.Callback):
+    """Log the global gradient L2 norm before each optimizer step."""
+
+    def on_before_optimizer_step(self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer) -> None:
+        total_sq: float = 0.0
+        for p in pl_module.parameters():
+            if p.grad is not None:
+                total_sq += p.grad.detach().norm(2).item() ** 2
+        pl_module.log("train/grad_norm", total_sq ** 0.5, on_step=True, on_epoch=False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -127,10 +138,6 @@ def _setup_logging(log_file: Path) -> logging.Logger:
 def main(cfg: DictConfig) -> None:
     pl.seed_everything(cfg.train.seed, workers=True)
 
-    # ------------------------------------------------------------------
-    # Output directory (Hydra creates it; its location is set by hydra.run.dir
-    # in conf/config.yaml, defaulting to out_dir/run_name/timestamp)
-    # ------------------------------------------------------------------
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     ckpt_dir = out_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -140,9 +147,6 @@ def main(cfg: DictConfig) -> None:
     log.info("Output dir: %s", out_dir)
     log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
-    # ------------------------------------------------------------------
-    # Data paths  (to_absolute_path resolves relative to the launch cwd)
-    # ------------------------------------------------------------------
     data_root = Path(to_absolute_path(cfg.data.root))
     train_ann = data_root / cfg.data.train_ann
     val_ann   = data_root / cfg.data.val_ann
@@ -159,9 +163,6 @@ def main(cfg: DictConfig) -> None:
             log.error("%s path does not exist: %s", label, path)
             sys.exit(1)
 
-    # ------------------------------------------------------------------
-    # Datasets
-    # ------------------------------------------------------------------
     log.info("Loading datasets from %s ...", data_root)
     train_ds = PoseDataset.from_path(train_ann, img_root=img_dir)
     val_ds   = PoseDataset.from_path(val_ann,   img_root=img_dir)
@@ -182,9 +183,6 @@ def main(cfg: DictConfig) -> None:
     val_loader   = val_ds.create_dataloader(**loader_kwargs,   shuffle=False, drop_last=False)
     test_loader  = test_ds.create_dataloader(**loader_kwargs,  shuffle=False, drop_last=False)
 
-    # ------------------------------------------------------------------
-    # Model
-    # ------------------------------------------------------------------
     use_image_cond = cfg.dino.model_name is not None
     model_config = KeypointDiffusionConfig(
         name=cfg.run_name,
@@ -225,18 +223,19 @@ def main(cfg: DictConfig) -> None:
         dino_cache_train=str(cfg.dino.cache_train) if cfg.dino.cache_train else None,
         dino_cache_val=str(cfg.dino.cache_val)     if cfg.dino.cache_val   else None,
         dino_cache_test=str(cfg.dino.cache_test)   if cfg.dino.cache_test  else None,
+        dino_conditioner_type=OmegaConf.select(cfg.dino, "conditioner_type", default="simple"),
+        dino_inner_dim=OmegaConf.select(cfg.dino, "inner_dim", default=256),
+        dino_num_heads=OmegaConf.select(cfg.dino, "num_heads", default=4),
     )
 
-    # ------------------------------------------------------------------
-    # Callbacks
-    # ------------------------------------------------------------------
     running_loss_window = cfg.train.running_loss_window
     monitor_key = f"running_loss_{running_loss_window}"
     callbacks: list[pl.Callback] = [
+        GradNormLogger(),
         RunningLossLogger(window=running_loss_window),
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename=f"epoch{{epoch:03d}}-{monitor_key}{{{monitor_key}:.4f}}",
+            filename=f"epoch{{epoch:03d}}-{monitor_key}={{{monitor_key}:.4f}}",
             monitor=monitor_key,
             mode="min",
             save_top_k=1,
@@ -253,17 +252,11 @@ def main(cfg: DictConfig) -> None:
             verbose=True,
         ))
 
-    # ------------------------------------------------------------------
-    # Loggers
-    # ------------------------------------------------------------------
     loggers = [
         TensorBoardLogger(save_dir=str(out_dir), name="tb_logs", version=""),
         CSVLogger(save_dir=str(out_dir),          name="csv_logs", version=""),
     ]
 
-    # ------------------------------------------------------------------
-    # Trainer
-    # ------------------------------------------------------------------
     grad_clip = cfg.train.grad_clip if cfg.train.grad_clip > 0 else None
     trainer = pl.Trainer(
         accelerator=cfg.hardware.accelerator,
@@ -293,9 +286,6 @@ def main(cfg: DictConfig) -> None:
 
     trainer.fit(module, train_loader, val_loader, ckpt_path=resume)
 
-    # ------------------------------------------------------------------
-    # Test on best checkpoint
-    # ------------------------------------------------------------------
     best_ckpt  = trainer.checkpoint_callback.best_model_path   # type: ignore[union-attr]
     best_score = trainer.checkpoint_callback.best_model_score  # type: ignore[union-attr]
     log.info("Best val/loss  : %.6f", best_score)

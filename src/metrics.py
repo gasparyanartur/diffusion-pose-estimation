@@ -53,17 +53,7 @@ def canonical_to_pixel(
     pred_canonical: Tensor,  # (B, N, 14, 2)
     img_wh: Tensor,          # (B, 2) [W, H] in pixels
 ) -> Tensor:                 # (B, N, 14, 2)
-    """Invert the canonical-space normalisation to recover pixel keypoints.
-
-    Inverse of: canonical = pixel / [W, H] * 2 - 1
-
-    Args:
-        pred_canonical: FloatTensor (B, N, 14, 2) – model output in canonical space.
-        img_wh:         FloatTensor (B, 2)         – [W, H] per image in pixels.
-
-    Returns:
-        FloatTensor (B, N, 14, 2) – pixel-space keypoints.
-    """
+    """Invert canonical-space normalisation: canonical = pixel / [W, H] * 2 - 1."""
     return (pred_canonical + 1) / 2 * img_wh[:, None, None, :]  # (B, N, 14, 2)
 
 
@@ -207,11 +197,6 @@ class KeypointAPMetric:
         if self._n_images == 0:
             return {}
         return self._metric.evaluate(self._n_images)
-
-
-# ---------------------------------------------------------------------------
-# Per-batch pose metrics (cheap — no annotation file required)
-# ---------------------------------------------------------------------------
 
 
 def compute_mpjpe(

@@ -21,6 +21,7 @@ from src.data import (
     PoseDataset,
 )
 from src.model import (
+    AttentionDinoConditioner,
     DinoConditioner,
     KeypointDiffusionConfig,
     KeypointDiffusionModel,
@@ -566,6 +567,111 @@ class TestDinoConditionerReal:
         assert cond._cache_dirs == []
 
 
+# ---------------------------------------------------------------------------
+# AttentionDinoConditioner unit tests
+# ---------------------------------------------------------------------------
+
+
+def _make_attn_cache(image_ids: list[int]) -> dict:
+    """Minimal synthetic cache for AttentionDinoConditioner (8×8 stage1, 1×1 stage4)."""
+    return {
+        iid: {
+            "spatial":  torch.zeros(96, 8, 8),
+            "semantic": torch.zeros(768, 1, 1),
+            "global":   torch.zeros(768),
+        }
+        for iid in image_ids
+    }
+
+
+class TestAttentionDinoConditioner:
+    """Tests for AttentionDinoConditioner."""
+
+    def _make_conditioner(
+        self,
+        image_ids: list[int],
+        out_dim: int = 16,
+        inner_dim: int = 32,
+        num_heads: int = 4,
+    ) -> AttentionDinoConditioner:
+        cond = AttentionDinoConditioner(out_dim=out_dim, inner_dim=inner_dim, num_heads=num_heads)
+        cond._cache = _make_attn_cache(image_ids)
+        return cond
+
+    def test_output_shape(self):
+        B, N, K, out_dim = 2, 3, 14, 16
+        cond = self._make_conditioner(list(range(B)), out_dim=out_dim)
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)))
+        assert out.shape == (B, N, K, out_dim)
+
+    def test_output_is_finite(self):
+        B, N, K = 2, 2, 14
+        cond = self._make_conditioner(list(range(B)))
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)))
+        assert torch.isfinite(out).all()
+
+    def test_gradients_flow(self):
+        B, N, K = 2, 2, 14
+        cond = self._make_conditioner(list(range(B)))
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)))
+        out.mean().backward()
+        has_grad = any(
+            p.grad is not None and p.grad.abs().sum() > 0
+            for p in cond.parameters()
+        )
+        assert has_grad
+
+    def test_variable_image_sizes_batch_padding(self):
+        """Two images with different spatial sizes are padded and produce the correct shape."""
+        N, K, out_dim = 2, 14, 16
+        cond = AttentionDinoConditioner(out_dim=out_dim, inner_dim=32, num_heads=4)
+        cond._cache = {
+            0: {"spatial": torch.zeros(96, 8,  8),  "semantic": torch.zeros(768, 1, 1), "global": torch.zeros(768)},
+            1: {"spatial": torch.zeros(96, 12, 16), "semantic": torch.zeros(768, 1, 2), "global": torch.zeros(768)},
+        }
+        kpt_pixel = torch.rand(2, N, K, 2) * 224
+        img_hw    = torch.tensor([[224.0, 224.0], [224.0, 336.0]])
+        out = cond(kpt_pixel, img_hw, image_ids=[0, 1])
+        assert out.shape == (2, N, K, out_dim)
+        assert torch.isfinite(out).all()
+
+    def test_joint_mask_zeroes_absent_joints(self):
+        """Output positions for absent joints (joint_mask=True) must be exactly zero."""
+        B, N, K = 1, 2, 14
+        cond = self._make_conditioner(list(range(B)))
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+
+        joint_mask = torch.zeros(B, N, K, dtype=torch.bool)
+        joint_mask[0, 0, 3] = True   # mark joint 3 of person 0 as absent
+        joint_mask[0, 1, 7] = True   # mark joint 7 of person 1 as absent
+
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)), joint_mask=joint_mask)
+        assert out.shape == (B, N, K, 16)
+        assert out[0, 0, 3].eq(0.0).all(), "absent joint should be zero"
+        assert out[0, 1, 7].eq(0.0).all(), "absent joint should be zero"
+
+    def test_all_joints_absent_returns_zeros_no_nan(self):
+        """When every joint in a person is absent the output must be zero and finite (no NaN)."""
+        B, N, K = 1, 2, 14
+        cond = self._make_conditioner(list(range(B)))
+        kpt_pixel = torch.rand(B, N, K, 2) * 640
+        img_hw = torch.tensor([[480.0, 640.0]] * B)
+
+        joint_mask = torch.zeros(B, N, K, dtype=torch.bool)
+        joint_mask[0, 0] = True  # all joints of person 0 absent
+
+        out = cond(kpt_pixel, img_hw, image_ids=list(range(B)), joint_mask=joint_mask)
+        assert torch.isfinite(out).all(), "output must not contain NaN or inf"
+        assert out[0, 0].eq(0.0).all(), "all-absent person should produce zero output"
+
+
 class TestImageConditioning:
     @pytest.fixture
     def cond_config(self) -> KeypointDiffusionConfig:
@@ -848,11 +954,11 @@ class TestMultiStepAPEval:
 
         module.on_validation_epoch_end()
 
-        assert "val/crowdpose/AP@2"   in logged
-        assert "val/crowdpose/AP@8"   in logged
-        assert "val/coco/AP50@2" in logged
-        assert "val/coco/AP50@8" in logged
-        assert "val/crowdpose/AP"     not in logged  # no bare key when step counts are set
+        assert "ap-val/crowdpose/AP@2"   in logged
+        assert "ap-val/crowdpose/AP@8"   in logged
+        assert "ap-val/coco/AP50@2" in logged
+        assert "ap-val/coco/AP50@8" in logged
+        assert "ap-val/crowdpose/AP"     not in logged  # no bare key when step counts are set
 
     def test_validation_epoch_end_no_suffix_without_step_counts(self, config):
         """on_validation_epoch_end without ap_step_counts logs val/coco/AP (no suffix)."""
@@ -874,7 +980,7 @@ class TestMultiStepAPEval:
 
         module.on_validation_epoch_end()
 
-        assert "val/crowdpose/AP" in logged
+        assert "ap-val/crowdpose/AP" in logged
         assert not any("@" in k for k in logged)
 
     def test_test_epoch_end_multi_step_logs_with_suffix(self, config):
@@ -895,11 +1001,11 @@ class TestMultiStepAPEval:
 
         module.on_test_epoch_end()
 
-        assert "test/crowdpose/AP@1"   in logged
-        assert "test/crowdpose/AP@4"   in logged
-        assert "test/coco/AP50@1" in logged
-        assert "test/coco/AP50@4" in logged
-        assert "test/coco/AP"     not in logged
+        assert "ap-test/crowdpose/AP@1"   in logged
+        assert "ap-test/crowdpose/AP@4"   in logged
+        assert "ap-test/coco/AP50@1" in logged
+        assert "ap-test/coco/AP50@4" in logged
+        assert "ap-test/coco/AP"     not in logged
 
 
 # ---------------------------------------------------------------------------

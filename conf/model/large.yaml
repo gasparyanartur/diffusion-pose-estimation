@@ -4,11 +4,11 @@ defaults:
   - _self_
 
 dim_pos: 256
-dim_index: 256
-dim_time: 256
-dim_hidden: 256
+dim_index: 128
+dim_time: 128
+dim_hidden: 512
 dim_image_cond: 256
-dim_global_image_cond: 256
+dim_global_image_cond: 128
 
-num_layers: 6
-num_heads: 8
+num_layers: 4
+num_heads: 2

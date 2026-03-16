@@ -58,9 +58,7 @@ class KeypointDiffusionConfig:
 
     # Training augmentations
     aug_joint_drop: bool = True
-    p_joint_drop: float = (
-        0.1  # probability of dropping each non-root joint independently
-    )
+    p_joint_drop: float = 0.1  # probability of dropping each non-root joint independently
     aug_pose_drop: bool = True
     p_pose_drop: float = 0.1  # probability of dropping an entire person
     aug_joint_rand: bool = True
@@ -285,6 +283,247 @@ class DinoConditioner(torch.nn.Module):
         return self.proj(torch.cat([spatial_feats, semantic_feats], dim=-1))           # (B, N, K, out_dim)
 
 
+class AttentionDinoConditioner(DinoConditioner):
+    """Per-keypoint DINO conditioning via cross-attention over all patch embeddings.
+
+    Architecture:
+      1. Fuse stage1 (96ch) and upsampled stage4 (768ch) patches → inner_dim via FF.
+      2. Project normalised joint positions → node query features (inner_dim).
+      3. Cross-attention (Q=nodes, K/V=patches) with a per-head relative-position
+         bias (patch_pos − node_pos → Linear → num_heads) folded into attn_mask.
+         Padded patch slots (variable P_i across the batch) are masked to −inf.
+      4. Residual + LayerNorm + linear.
+      5. Add absolute joint position encoding.
+      6. Self-attention over K joints per person; absent joints masked via
+         key_padding_mask and zeroed in the final output.
+      7. Residual + LayerNorm + linear → out_proj → out_dim.
+
+    Patch padding: images in a batch may have different numbers of stage-1 patches
+    (variable spatial size after aspect-ratio-preserving resize).  All images are
+    padded to max_P with zeros; padded positions receive −inf attention bias so
+    they never contribute to the pooled output.
+
+    NOTE: cross-attention memory scales as O(N·K·max_P).  For shortest_edge ≥ 448
+    (stage1 ≈ 112×112 = 12 544 patches) this may be significant.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        out_dim: int = 128,
+        inner_dim: int = 256,
+        num_heads: int = 4,
+        dropout_rate: float = 0.1,
+        cache_paths: list[str | Path] | None = None,
+    ) -> None:
+        super().__init__(model_name=model_name, out_dim=out_dim, cache_paths=cache_paths)
+        assert inner_dim % num_heads == 0, (
+            f"inner_dim ({inner_dim}) must be divisible by num_heads ({num_heads})"
+        )
+        self.inner_dim = inner_dim
+        self.num_heads = num_heads
+        self.out_dim = out_dim
+
+        # Fuse stage1 (96ch) + upsampled stage4 (768ch) → inner_dim
+        self.patch_fusion = torch.nn.Sequential(
+            torch.nn.Linear(self.SPATIAL_DIM + self.HIDDEN_DIM, inner_dim * 2),
+            torch.nn.GELU(),
+            torch.nn.Dropout(dropout_rate),
+            torch.nn.Linear(inner_dim * 2, inner_dim),
+        )
+
+        # Project normalised joint position (2D) → node query features
+        self.node_pos_proj = torch.nn.Linear(2, inner_dim)
+
+        # Relative-position bias for cross-attention: 2D offset → per-head scalar
+        self.cross_rel_pos_bias = torch.nn.Linear(2, num_heads, bias=False)
+
+        # Cross-attention block (nodes attend to patches)
+        self.cross_attn = torch.nn.MultiheadAttention(
+            inner_dim, num_heads, batch_first=True, dropout=dropout_rate
+        )
+        self.cross_norm    = torch.nn.LayerNorm(inner_dim)
+        self.cross_linear  = torch.nn.Linear(inner_dim, inner_dim)
+        self.cross_ff_norm = torch.nn.LayerNorm(inner_dim)
+
+        # Absolute joint position encoding (added inside self-attention block)
+        self.joint_pos_proj = torch.nn.Linear(2, inner_dim)
+
+        # Self-attention block over K joints per person
+        self.self_attn    = torch.nn.MultiheadAttention(
+            inner_dim, num_heads, batch_first=True, dropout=dropout_rate
+        )
+        self.self_norm    = torch.nn.LayerNorm(inner_dim)
+        self.self_linear  = torch.nn.Linear(inner_dim, inner_dim)
+        self.self_ff_norm = torch.nn.LayerNorm(inner_dim)
+
+        # Final projection
+        self.out_proj = torch.nn.Linear(inner_dim, out_dim)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _fuse_patches(
+        self,
+        spatial_map:  Tensor,  # (96,  H_s,     W_s    )  stage1, stride-4
+        semantic_map: Tensor,  # (768, H_s//8,  W_s//8 )  stage4, stride-32
+    ) -> tuple[Tensor, Tensor]:  # (P, inner_dim), (P, 2)
+        C_s, H_s, W_s = spatial_map.shape
+        P = H_s * W_s
+
+        # Upsample semantic map to stage1 spatial resolution
+        semantic_up = F.interpolate(
+            semantic_map.unsqueeze(0),
+            size=(H_s, W_s),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)  # (768, H_s, W_s)
+
+        # Flatten patches and concatenate both levels: (P, 96+768)
+        spatial_flat  = spatial_map.permute(1, 2, 0).reshape(P, C_s)
+        semantic_flat = semantic_up.permute(1, 2, 0).reshape(P, self.HIDDEN_DIM)
+        combined = torch.cat([spatial_flat, semantic_flat], dim=-1)  # (P, 864)
+
+        patch_feats = self.patch_fusion(combined)  # (P, inner_dim)
+
+        # Patch centre positions normalised to [-1, 1] (same space as node positions)
+        device = spatial_map.device
+        ys = (torch.arange(H_s, device=device).float() + 0.5) / H_s * 2 - 1
+        xs = (torch.arange(W_s, device=device).float() + 0.5) / W_s * 2 - 1
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")  # (H_s, W_s)
+        patch_pos = torch.stack([grid_x, grid_y], dim=-1).reshape(P, 2)  # (P, 2) as (x, y)
+
+        return patch_feats, patch_pos
+
+    def _build_patch_batch(
+        self,
+        all_patch_feats: list[Tensor],  # B tensors, each (P_i, inner_dim)
+        all_patch_pos:   list[Tensor],  # B tensors, each (P_i, 2)
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        # Returns padded_feats (B, max_P, d), padded_pos (B, max_P, 2),
+        #         patch_key_mask (B, max_P) bool — True = padded slot.
+        B      = len(all_patch_feats)
+        max_P  = max(f.shape[0] for f in all_patch_feats)
+        device = all_patch_feats[0].device
+        dtype  = all_patch_feats[0].dtype
+
+        padded_feats   = torch.zeros(B, max_P, self.inner_dim, device=device, dtype=dtype)
+        padded_pos     = torch.zeros(B, max_P, 2,              device=device, dtype=dtype)
+        patch_key_mask = torch.ones( B, max_P, dtype=torch.bool, device=device)  # True = padded
+
+        for i, (feats, pos) in enumerate(zip(all_patch_feats, all_patch_pos)):
+            P_i = feats.shape[0]
+            padded_feats[i, :P_i]   = feats
+            padded_pos[i,   :P_i]   = pos
+            patch_key_mask[i, :P_i] = False  # real patches
+
+        return padded_feats, padded_pos, patch_key_mask
+
+    def _cross_attend(
+        self,
+        node_feats:     Tensor,  # (B, NK, inner_dim)
+        patch_feats:    Tensor,  # (B, max_P, inner_dim)
+        node_pos:       Tensor,  # (B, NK, 2)
+        patch_pos:      Tensor,  # (B, max_P, 2)
+        patch_key_mask: Tensor,  # (B, max_P) bool — True = padded
+    ) -> Tensor:                 # (B, NK, inner_dim)
+        B, NK, _ = node_feats.shape
+        max_P = patch_feats.shape[1]
+        H     = self.num_heads
+
+        # Relative offset of every patch to every node: (B, NK, max_P, 2)
+        rel_pos  = patch_pos.unsqueeze(1) - node_pos.unsqueeze(2)
+
+        # Per-head relative-position bias: (B, NK, max_P, H) → (B*H, NK, max_P)
+        rel_bias = self.cross_rel_pos_bias(rel_pos)                        # (B, NK, max_P, H)
+        rel_bias = rel_bias.permute(0, 3, 1, 2).reshape(B * H, NK, max_P) # (B*H, NK, max_P)
+
+        # Fold padding mask into attn_mask: padded positions → −inf attention weight
+        pad_inf = (
+            patch_key_mask
+            .view(B, 1, 1, max_P)
+            .expand(B, H, NK, max_P)
+            .reshape(B * H, NK, max_P)
+        )
+        rel_bias = rel_bias.masked_fill(pad_inf, float("-inf"))
+
+        attn_out, _ = self.cross_attn(
+            node_feats,   # Q: (B, NK, inner_dim)
+            patch_feats,  # K: (B, max_P, inner_dim)
+            patch_feats,  # V: (B, max_P, inner_dim)
+            attn_mask=rel_bias,  # (B*H, NK, max_P)
+        )  # (B, NK, inner_dim)
+        h = self.cross_norm(node_feats + attn_out)
+        h = self.cross_ff_norm(h + self.cross_linear(h))
+        return h
+
+    def _self_attend_joints(
+        self,
+        h:          Tensor,        # (BN, K, inner_dim)
+        joint_pos:  Tensor,        # (BN, K, 2)  normalised [-1, 1]
+        joint_mask: Tensor | None, # (BN, K) bool — True = absent; or None
+    ) -> Tensor:                   # (BN, K, inner_dim)
+        q = h + self.joint_pos_proj(joint_pos)  # add absolute position encoding
+
+        # Guard: all-absent rows would produce NaN in softmax.
+        safe_mask = None
+        if joint_mask is not None:
+            all_absent = joint_mask.all(dim=-1)  # (BN,)
+            safe_mask  = joint_mask.clone()
+            if all_absent.any():
+                safe_mask[all_absent, 0] = False
+
+        attn_out, _ = self.self_attn(q, q, q, key_padding_mask=safe_mask)  # (BN, K, inner_dim)
+        h = self.self_norm(q + attn_out)
+        h = self.self_ff_norm(h + self.self_linear(h))
+        return h
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def forward(
+        self,
+        kpt_pixel:  Tensor,            # (B, N, K, 2)  pixel-space (x, y)
+        img_hw:     Tensor,            # (B, 2)         original image (H, W)
+        image_ids:  list[int],
+        joint_mask: Tensor | None = None,  # (B, N, K) bool — True = absent joint
+    ) -> Tensor:                       # (B, N, K, out_dim)
+        B, N, K, _ = kpt_pixel.shape
+        device = kpt_pixel.device
+
+        spatial_maps, semantic_maps = self._load_maps(image_ids, device)
+        all_patch_feats: list[Tensor] = []
+        all_patch_pos:   list[Tensor] = []
+        for i in range(B):
+            feats, pos = self._fuse_patches(spatial_maps[i], semantic_maps[i])
+            all_patch_feats.append(feats)
+            all_patch_pos.append(pos)
+
+        padded_feats, padded_pos, patch_key_mask = self._build_patch_batch(
+            all_patch_feats, all_patch_pos
+        )  # (B, max_P, d), (B, max_P, 2), (B, max_P)
+
+        node_pos_norm   = pixel_to_grid_sample_coords(
+            kpt_pixel, img_hw.view(B, 1, 1, 2)
+        )  # (B, N, K, 2)  in [-1, 1]
+        node_pos_flat   = node_pos_norm.view(B, N * K, 2)
+        h               = self.node_pos_proj(node_pos_flat)  # (B, NK, inner_dim)
+
+        h = h + self._cross_attend(h, padded_feats, node_pos_flat, padded_pos, patch_key_mask)
+
+        joint_pos       = node_pos_norm.view(B * N, K, 2)
+        h               = h.view(B * N, K, self.inner_dim)
+        joint_mask_flat = joint_mask.view(B * N, K) if joint_mask is not None else None
+        h = h + self._self_attend_joints(h, joint_pos, joint_mask_flat)
+
+        out = self.out_proj(h)
+        if joint_mask is not None:
+            out = out.masked_fill(joint_mask_flat.unsqueeze(-1), 0.0)
+        return out.view(B, N, K, self.out_dim)
+
+
 class FiLMLayer(torch.nn.Module):
     """Feature-wise Linear Modulation conditioned on a global vector: h → (1 + scale) * h + shift."""
 
@@ -325,12 +564,10 @@ class PoseGraphLayer(MessagePassing):
         self.attn_dropout = attn_dropout_rate
 
         if use_message_passing:
-            # Step 1: projections for query / key / value-state
             self.W_q = torch.nn.Linear(dim, dim, bias=False)
             self.W_k = torch.nn.Linear(dim, dim, bias=False)
             self.W_v = torch.nn.Linear(dim, dim, bias=False)
 
-            # Step 2: message content MLP — [V_state_j, e_ij, v_j] → message
             msg_in = dim + dim_edge + dim_vis
             self.msg_mlp = torch.nn.Sequential(
                 torch.nn.LayerNorm(msg_in),
@@ -340,7 +577,6 @@ class PoseGraphLayer(MessagePassing):
                 torch.nn.Linear(dim * 2, dim),
             )
 
-            # Step 3: edge geometry → per-head attention bias
             self.edge_bias = torch.nn.Linear(dim_edge, num_heads, bias=False)
 
         update_in = dim + (dim if use_message_passing else 0) + dim_vis
@@ -601,12 +837,10 @@ class KeypointDiffusionModel(torch.nn.Module):
         num_steps = num_inference_steps if num_inference_steps is not None else t_start
         device = device or edge_index.device
 
-        # Build decreasing timestep schedule: [t_start, ..., 1]
         timesteps = torch.linspace(
             t_start, 1, num_steps, dtype=torch.long, device=device
         )
 
-        # Start from provided initial estimate or pure Gaussian noise
         if x_init is not None:
             x = x_init.to(device)
         else:
@@ -730,20 +964,13 @@ def _run_and_log_ap_eval(
     epoch: int | None = None,
     log_prog_bar: bool = False,
 ) -> None:
-    step_counts = module._ap_step_counts
-    if step_counts:
-        for n in step_counts:
-            desc = f"{prefix} AP@{n}" + (f" [epoch {epoch}]" if epoch is not None else "")
-            module._run_ap_eval(pred_cache, metric, desc=desc, num_steps=n)
-            results = metric.compute()
-            for key, val in results.items():
-                module.log(f"{prefix}/{key}@{n}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
-    else:
-        desc = f"{prefix} AP" + (f" [epoch {epoch}]" if epoch is not None else "")
-        module._run_ap_eval(pred_cache, metric, desc=desc)
+    for n in (module._ap_step_counts or [None]):
+        suffix = f"@{n}" if n is not None else ""
+        desc = f"{prefix} AP{suffix}" + (f" [epoch {epoch}]" if epoch is not None else "")
+        module._run_ap_eval(pred_cache, metric, desc=desc, num_steps=n)
         results = metric.compute()
         for key, val in results.items():
-            module.log(f"{prefix}/{key}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
+            module.log(f"{prefix}/{key}{suffix}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
 
 
 def joint_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
@@ -823,13 +1050,10 @@ def _read_img_wh(img_paths: list[str], B: int, device: torch.device) -> Tensor:
     wh: list[tuple[float, float]] = []
     for i in range(B):
         path = img_paths[i] if i < len(img_paths) else ""
-        if path:
-            try:
-                h, w = read_image_size(path)
-                wh.append((float(w), float(h)))
-            except Exception:
-                wh.append((800.0, 800.0))
-        else:
+        try:
+            h, w = read_image_size(path)
+            wh.append((float(w), float(h)))
+        except Exception:
             wh.append((800.0, 800.0))
     return torch.tensor(wh, dtype=torch.float32, device=device)
 
@@ -863,6 +1087,9 @@ class PoseDiffusionModule(pl.LightningModule):
         dino_cache_train: str | None = None,
         dino_cache_val: str | None = None,
         dino_cache_test: str | None = None,
+        dino_conditioner_type: str = "simple",  # "simple" | "attention"
+        dino_inner_dim: int = 256,
+        dino_num_heads: int = 4,
         dino_conditioner: "DinoConditioner | None" = None,  # inject directly (e.g. for testing)
     ) -> None:
         super().__init__()
@@ -895,11 +1122,20 @@ class PoseDiffusionModule(pl.LightningModule):
                 for p in [dino_cache_train, dino_cache_val, dino_cache_test]
                 if p is not None
             ]
-            self.dino_conditioner = DinoConditioner(
-                model_name=dino_model_name,
-                out_dim=model.config.dim_image_cond,
-                cache_paths=cache_files or None,
-            )
+            if dino_conditioner_type == "attention":
+                self.dino_conditioner = AttentionDinoConditioner(
+                    model_name=dino_model_name,
+                    out_dim=model.config.dim_image_cond,
+                    inner_dim=dino_inner_dim,
+                    num_heads=dino_num_heads,
+                    cache_paths=cache_files or None,
+                )
+            else:
+                self.dino_conditioner = DinoConditioner(
+                    model_name=dino_model_name,
+                    out_dim=model.config.dim_image_cond,
+                    cache_paths=cache_files or None,
+                )
 
         self.global_dino_proj: torch.nn.Linear | None = None
         if model.config.use_global_image_cond:
@@ -914,11 +1150,6 @@ class PoseDiffusionModule(pl.LightningModule):
                 dino_hidden, model.config.dim_global_image_cond
             )
 
-        # Compile the hot inner loop of DDIM sampling for faster training and inference.
-        # fullgraph=False allows graceful fallback on graph breaks (e.g. PyG scatter ops).
-        #self.model.backward_process = torch.compile(
-        #    self.model.backward_process, fullgraph=False
-        #)
 
     def prepare_batch(self, batch: dict, augment: bool = False) -> tuple[PoseSample, PoseGraphBatch]:
         sample = prepare_sample(batch)
@@ -1003,7 +1234,13 @@ class PoseDiffusionModule(pl.LightningModule):
         image_sizes = [read_image_size(p) for p in sample.img_path]
         img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)
         kpt = kpt_pixel.to(self.device) if kpt_pixel is not None else sample.keypoints.to(self.device)
-        feats = self.dino_conditioner(kpt, img_hw, image_ids=sample.image_id)  # (B, N, K, out_dim)
+        if isinstance(self.dino_conditioner, AttentionDinoConditioner):
+            joint_mask = (graph.canonical_visibility == 0).to(self.device)  # (B, N, K)
+            feats = self.dino_conditioner(
+                kpt, img_hw, image_ids=sample.image_id, joint_mask=joint_mask
+            )  # (B, N, K, out_dim)
+        else:
+            feats = self.dino_conditioner(kpt, img_hw, image_ids=sample.image_id)  # (B, N, K, out_dim)
         return feats.reshape(graph.B * graph.N * graph.K, -1)
 
     def _ap_step(
@@ -1200,12 +1437,12 @@ class PoseDiffusionModule(pl.LightningModule):
             return
         if (self.current_epoch + 1) % self._ap_eval_interval != 0:
             return
-        _run_and_log_ap_eval(self, self._val_pred_cache, self._val_metric, prefix="val", epoch=self.current_epoch, log_prog_bar=True)
+        _run_and_log_ap_eval(self, self._val_pred_cache, self._val_metric, prefix="ap-val", epoch=self.current_epoch, log_prog_bar=True)
 
     def on_test_epoch_end(self) -> None:
         if self._test_metric is None or self._test_pred_cache is None:
             return
-        _run_and_log_ap_eval(self, self._test_pred_cache, self._test_metric, prefix="test")
+        _run_and_log_ap_eval(self, self._test_pred_cache, self._test_metric, prefix="ap-test")
 
     def configure_optimizers(self):
         # Weight matrices get weight decay; 1-D tensors (biases, norms, embeddings) do not.

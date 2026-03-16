@@ -5,11 +5,10 @@ lr: 1e-3
 weight_decay: 1e-4
 cosine_lr: true
 lr_warmup_epochs: 0    # linear warmup for this many epochs before cosine decay
-lr_min_frac: 1e-2      # eta_min = lr * lr_min_frac for cosine decay
-cfg_guidance_scale: 1.0  # classifier-free guidance at inference; 1.0 = no guidance
+lr_min_frac: 1e-1      # eta_min = lr * lr_min_frac for cosine decay
 
 # Trainer
-batch_size: 256
+batch_size: 64
 max_epochs: 200
 seed: 42
 grad_clip: 1.0          # 0 = disabled
@@ -21,6 +20,7 @@ num_inference_steps: 5   # null → use round(start_inference_noise_frac × num_
 start_inference_noise_frac: 0.4  # noise frac for pass 1; halved each subsequent pass (0.4 → 0.2 → 0.1 → ...)
 raw_refiner: false        # if true: skip noise, force 1 DDIM step (pure single-pass denoising)
 ap_step_counts: [1, 2, 3]  # null → single-pass AP; list → evaluate at each iterative-pass count
+cfg_guidance_scale: 1.0  # classifier-free guidance at inference; 1.0 = no guidance
 
 # Logging
 log_every_n_steps: 50

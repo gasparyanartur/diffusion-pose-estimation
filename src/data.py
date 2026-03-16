@@ -212,16 +212,7 @@ class PoseDataset(Dataset):
         pin_memory: bool = False,
         **kwargs: Any,
     ) -> "torch.utils.data.DataLoader":
-        """DataLoader backed by SceneGraphSampler (homogeneous N per batch).
-
-        Args:
-            load_images: If True, each worker loads the full image tensor in
-                __getitem__ and stores it in batch["image"] as a list.  This
-                moves disk I/O off the GPU-process training step and into the
-                CPU worker threads, overlapping with GPU compute.
-            pin_memory: Use pinned (page-locked) memory for faster host→GPU
-                transfers.  Recommended when training on a GPU.
-        """
+        """DataLoader backed by SceneGraphSampler (homogeneous N per batch)."""
         import torch.utils.data
         self._load_images = load_images
         sampler = SceneGraphSampler(self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
@@ -366,12 +357,6 @@ class SceneGraphSampler:
             self.groups[n_people].append(idx)
 
         # Pre-compute the full batch list once so __iter__ is a trivial walk.
-        #
-        # Non-shuffled: batches are ordered by ascending group size, indices
-        #   within each group are in dataset order.
-        # Shuffled: indices within each group are shuffled first, then the
-        #   resulting batch list is shuffled globally so batches from different
-        #   groups are interleaved randomly.
         all_batches: list[list[int]] = []
         for n_people in sorted(self.groups):
             indices = list(self.groups[n_people])
@@ -603,11 +588,6 @@ def prepare_pose_graph_batch(
 
     Normalises keypoints to (-1, 1) via: canonical = pixel / [W, H] * 2 - 1.
     The inverse is: pixel = (canonical + 1) / 2 * [W, H].
-
-    Args:
-        sample      PoseSample with keypoints (B, N, 14, 2) and visibility (B, N, 14)
-        edge_index  LongTensor[2, E] | None  – defaults to CANONICAL_EDGE_INDEX
-        img_size    FloatTensor[B, 2] | None – (W, H) per image; fallback is (800, 800)
     """
     keypoints  = sample.keypoints
     visibility = sample.visibility

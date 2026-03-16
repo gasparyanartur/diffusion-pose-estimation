@@ -113,6 +113,10 @@ _SPLIT_BBOX_FILES: dict[str, str | None] = {
 }
 
 
+def _tensors_to_numpy(pred: dict) -> dict:
+    return {k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in pred.items()}
+
+
 def extract_predictions(
     model_name: str,
     cache_path: Path,
@@ -238,28 +242,12 @@ def extract_predictions(
                 if hasattr(pred_instances, 'bbox_scores'):
                     pred_data['bbox_scores'] = pred_instances.bbox_scores
                 
-                # Optionally extract intermediate features
-                # This would require hooks on the model - TODO for future
-                if include_features:
-                    pass  # Reserved for future feature extraction
-                
                 predictions.append(pred_data)
     
     print(f"[extracting] Completed. Collected {len(predictions)} raw predictions.")
     
-    # Convert tensors to numpy before grouping
-    def clean_predict(pred):
-        """Convert tensors to numpy arrays for caching."""
-        cleaned = {}
-        for k, v in pred.items():
-            if isinstance(v, torch.Tensor):
-                cleaned[k] = v.cpu().numpy()
-            else:
-                cleaned[k] = v
-        return cleaned
-    
-    predictions = [clean_predict(p) for p in predictions]
-    
+    predictions = [_tensors_to_numpy(p) for p in predictions]
+
     # Convert to per-image format
     if arch_type == "top-down":
         # Group predictions by image_id

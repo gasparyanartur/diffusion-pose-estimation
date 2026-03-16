@@ -32,42 +32,7 @@ def show_img_with_keypoints(
     numbered: bool = False,
     ax: Optional[plt.Axes] = None,
 ) -> plt.Axes:
-    """Overlay predicted keypoints and bounding-boxes on an image.
-
-    Parameters
-    ----------
-    img_tensor:
-        RGB image as a ``uint8`` tensor of shape ``(C, H, W)``.
-    keypoints:
-        Keypoint coordinates of shape ``(N, K, 2)`` in ``(x, y)`` order,
-        where *N* is the number of people and *K* is the number of joints.
-        ``None`` skips keypoint drawing.
-    bboxes:
-        Bounding boxes of shape ``(N, 4)`` or ``(N, 5)`` in ``xyxy`` format.
-        Only the first four values are used.  ``None`` skips bbox drawing.
-    figsize:
-        Figure size passed to :func:`matplotlib.pyplot.figure`.  Ignored when
-        *ax* is provided.
-    kpt_color:
-        Matplotlib colour string for keypoint markers.
-    kpt_txt_color:
-        Matplotlib colour string for keypoint index text (when *numbered* is
-        ``True``).
-    bbox_color:
-        Matplotlib colour string for bounding-box edges.
-    kpt_size:
-        Marker size for keypoints (in points).
-    bbox_linewidth:
-        Line width for bounding-box rectangles.
-    ax:
-        Existing :class:`~matplotlib.axes.Axes` to draw on.  A new figure is
-        created when this is ``None``.
-
-    Returns
-    -------
-    matplotlib.axes.Axes
-        The axes on which the visualisation was drawn.
-    """
+    """Overlay keypoints and bounding-boxes on an image; return the axes."""
     img_np: np.ndarray = img_tensor.permute(1, 2, 0).numpy().astype(np.uint8)
 
     if ax is None:
