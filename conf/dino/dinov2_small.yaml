@@ -1,7 +1,0 @@
-# DINOv2-small image conditioning.
-# Set cache_train / cache_val to precomputed .pt files to avoid running
-# the backbone live (see scripts/extract_predictions.py).
-model_name: facebook/dinov2-small
-cache_train: null   # path to precomputed train patch cache (.pt)
-cache_val: null     # path to precomputed val/test patch cache (.pt)
-neighborhood_radius: 1

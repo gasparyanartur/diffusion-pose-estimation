@@ -1,0 +1,13 @@
+# DINOv3 ConvNeXt-Small image conditioning.
+# Saves three feature types per image:
+#   spatial:  stage1  (96ch, 1/4 downsampled) — fine-grained spatial texture
+#   semantic: stage4  (768ch, 1/32 downsampled) — high-level semantics
+#   global:   pooler_output (768-d)                    — per-image summary vector
+#
+# Run precompute_dino.py with --backbone-type convnext to generate the caches.
+model_name: facebook/dinov3-convnext-small-pretrain-lvd1689m
+backbone_type: convnext
+cache_train: results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/train
+cache_val: results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/val
+cache_test: results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/test
+neighborhood_radius: 1

@@ -13,13 +13,17 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data import (
+    CANONICAL_EDGE_INDEX,
     CROWDPOSE_EDGE_LIST,
+    PoseSample,
+    PoseGraphBatch,
     SceneGraphSampler,
     PoseDataset,
     PredictionDataset,
     create_graph_from_keypoints,
     load_gt_annotations,
     make_edge_index,
+    prepare_sample,
     prepare_pose_graph_batch,
 )
 
@@ -70,6 +74,27 @@ def dataset() -> PoseDataset:
     """12 images, 4 each for 1 / 2 / 3 people."""
     counts = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
     return PoseDataset(samples=_make_pose_samples(counts))
+
+
+@pytest.fixture
+def pose_sample() -> PoseSample:
+    """Canonical B=2, N=3 PoseSample used across multiple tests."""
+    B, N, K = 2, 3, NUM_KEYPOINTS
+    torch.manual_seed(0)
+    kpts = torch.rand(B, N, K, 2) * 640
+    vis  = torch.randint(0, 3, (B, N, K)).float()
+    return prepare_sample({
+        "keypoints": kpts,
+        "visibility": vis,
+        "image_id": [0, 1],
+        "img_path": ["/fake/0.jpg", "/fake/1.jpg"],
+    })
+
+
+@pytest.fixture
+def pose_graph(pose_sample: PoseSample) -> PoseGraphBatch:
+    """Canonical B=2, N=3 PoseGraphBatch built from pose_sample."""
+    return prepare_pose_graph_batch(pose_sample)
 
 
 def _make_gt_ann_json(image_ids: list[int], gt_counts: list[int], tmp_path) -> str:
@@ -268,6 +293,34 @@ def test_make_edge_index_shape_and_reverse_edges():
     assert all((v, u) in edges for u, v in CROWDPOSE_EDGE_LIST)
 
 
+def test_make_edge_index_self_loops():
+    """add_self_loops appends exactly num_nodes self-loop edges (i, i) after undirected expansion."""
+    num_nodes = 5
+    ei = make_edge_index(CROWDPOSE_EDGE_LIST, make_undirected=True, add_self_loops=True, num_nodes=num_nodes)
+    expected_total = 2 * len(CROWDPOSE_EDGE_LIST) + num_nodes
+    assert ei.shape == (2, expected_total)
+
+    # Every self-loop (i, i) is present exactly once
+    self_loop_edges = [(ei[0, j].item(), ei[1, j].item()) for j in range(ei.shape[1]) if ei[0, j] == ei[1, j]]
+    assert sorted(self_loop_edges) == [(i, i) for i in range(num_nodes)]
+
+
+def test_make_edge_index_self_loops_requires_num_nodes():
+    """add_self_loops=True without num_nodes raises ValueError."""
+    with pytest.raises(ValueError, match="num_nodes"):
+        make_edge_index(CROWDPOSE_EDGE_LIST, add_self_loops=True)
+
+
+def test_canonical_edge_index_has_self_loops():
+    """CANONICAL_EDGE_INDEX contains exactly 14 self-loops (one per CrowdPose node)."""
+    ei = CANONICAL_EDGE_INDEX
+    self_loops = [(ei[0, j].item(), ei[1, j].item()) for j in range(ei.shape[1]) if ei[0, j] == ei[1, j]]
+    assert sorted(self_loops) == [(i, i) for i in range(14)]
+
+    expected_total = 2 * len(CROWDPOSE_EDGE_LIST) + 14
+    assert ei.shape == (2, expected_total)
+
+
 def test_create_graph_from_keypoints():
     """Output shapes, node_idx formula, batch vector, and edge index bounds are correct."""
     B, N, K = 3, 5, NUM_KEYPOINTS
@@ -348,38 +401,58 @@ def test_create_graph_poses_are_disjoint():
     assert torch.all(src_pose == dst_pose), "Some edge crosses pose boundaries"
 
 
-def test_prepare_pose_graph_batch():
-    """Root node is at origin; coordinates are normalised; visibility shape is correct."""
-    B, N, K = 2, 3, 14
-    torch.manual_seed(0)
-    kpts = torch.rand(B, N, K, 2) * 640
-    vis  = torch.randint(0, 3, (B, N, K)).float()
+def test_pose_sample_b_n_properties(pose_sample):
+    """PoseSample.B and .N reflect the batch and person dimensions."""
+    assert pose_sample.B == 2
+    assert pose_sample.N == 3
 
-    # --- without img_size: scale factor is 100 ---
-    g = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis})
 
-    # Output shapes
-    assert g["node_pos"].shape              == (B * N * 15, 2)
-    assert g["canonical_visibility"].shape  == (B, N, 15)
+def test_prepare_sample_optional_field_defaults():
+    """img_path, image_id, and image default to [] / [] / None when absent from the batch dict."""
+    B, N, K = 1, 2, NUM_KEYPOINTS
+    s = prepare_sample({"keypoints": torch.rand(B, N, K, 2), "visibility": torch.ones(B, N, K)})
+    assert s.image_id == []
+    assert s.img_path == []
+    assert s.image is None
 
-    # Root node (index 0 per pose) must be exactly (0, 0) after root-relative shift
-    node_pos = g["node_pos"].view(B, N, 15, 2)
-    assert torch.all(node_pos[:, :, 0, :] == 0.0), "Root nodes should be at origin"
 
-    # All coordinates should be in a sensible range when divided by 100
-    # (raw offsets up to ~640 px → up to ~6.4)
-    assert g["node_pos"].abs().max().item() < 10.0
+def test_prepare_sample_gt_keypoints_identity():
+    """gt_keypoints must reference the same tensor as keypoints — no copy."""
+    kpts = torch.rand(2, 3, NUM_KEYPOINTS, 2) * 640
+    s = prepare_sample({"keypoints": kpts, "visibility": torch.ones(2, 3, NUM_KEYPOINTS)})
+    assert isinstance(s, PoseSample)
+    assert s.gt_keypoints is kpts
 
-    # --- with img_size: scale factor is max(W, H) per image ---
-    img_size = torch.tensor([[640.0, 480.0], [320.0, 240.0]])
-    g2 = prepare_pose_graph_batch({"keypoints": kpts, "visibility": vis}, img_size=img_size)
 
-    # Root still at origin
-    node_pos2 = g2["node_pos"].view(B, N, 15, 2)
-    assert torch.all(node_pos2[:, :, 0, :] == 0.0)
+def test_prepare_pose_graph_batch_default_scale(pose_sample):
+    """Without img_size: node_pos in (-1, 1) using 800px fallback; 14 joints per pose."""
+    B, N = 2, 3
+    g = prepare_pose_graph_batch(pose_sample)
 
-    # Coordinates for image b=0 are divided by 640; offsets within frame are ≤ 1
-    coords_b0 = node_pos2[0]  # (N, 15, 2)
-    assert coords_b0.abs().max().item() <= 1.0 + 1e-5, (
-        "Root-relative offsets within a 640-px image should be at most 1.0 when scaled by max dim"
-    )
+    assert isinstance(g, PoseGraphBatch)
+    assert g.node_pos.shape             == (B * N * 14, 2)
+    assert g.canonical_visibility.shape == (B, N, 14)
+    assert g.B == B
+    assert g.N == N
+    assert g.K == 14
+    assert g.num_nodes == B * N * 14
+    assert g.flat_kpt_type_idx.shape == (B * N * 14,)
+    assert g.img_wh.shape == (B, 2)
+
+    # Keypoints are ~640px, fallback img_wh=800; (-1,1) range → abs ≤ 1+small
+    assert g.node_pos.abs().max().item() <= 1.0 + 1e-4
+
+
+def test_prepare_pose_graph_batch_per_image_scale(pose_sample):
+    """With img_size: each image is normalised by (W, H) independently to (-1, 1)."""
+    B, N = 2, 3
+    # Use 640-wide images so that ~640px keypoints land near the edge of (-1, 1)
+    img_size = torch.tensor([[640.0, 640.0], [640.0, 640.0]])
+    g = prepare_pose_graph_batch(pose_sample, img_size=img_size)
+
+    assert g.img_wh.shape == (B, 2)
+    torch.testing.assert_close(g.img_wh, img_size)
+
+    node_pos = g.node_pos.view(B, N, 14, 2)
+    # Keypoints drawn from [0, 640]; with wh=640 → canonical in [-1, 1]
+    assert node_pos.abs().max().item() <= 1.0 + 1e-4

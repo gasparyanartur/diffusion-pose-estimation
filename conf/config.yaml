@@ -6,10 +6,10 @@
 #   python scripts/train_pose_refinement.py train.resume=checkpoints/run/last.ckpt
 
 defaults:
-  - model: base
+  - model: small
   - data: crowdpose
   - train: base
-  - dino: dinov3_vits16
+  - dino: attention_convnext_small
   - hardware: auto
   - _self_
 

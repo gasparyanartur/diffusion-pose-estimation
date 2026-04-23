@@ -1,50 +1,14 @@
 # KeypointDiffusionConfig — large (256-dim, 6 layers)
+defaults:
+  - base
+  - _self_
 
-# Feature dimensions
 dim_pos: 256
-dim_index: 256
-dim_time: 256
-dim_edge: 64
-
-# GNN backbone
-dim_hidden: 256
-num_layers: 6
-num_heads: 8
-
-# Diffusion schedule (VE: noisy = x + sigma * epsilon)
-num_train_steps: 100
-sigma_min: 0.002
-sigma_max: 0.5
-
-# DINO local conditioning
-use_image_cond: true
+dim_index: 128
+dim_time: 128
+dim_hidden: 512
 dim_image_cond: 256
+dim_global_image_cond: 128
 
-# Global image conditioning — pooled DINO combined with timestep embedding
-use_global_image_cond: true   # requires dino_model_name; changes global_cond_mlp input size
-dim_global_image_cond: 256
-
-# CNN patch conditioning — local pixel-level evidence per joint
-use_cnn_cond: false
-cnn_patch_size: 32
-
-# Architecture ablations
-use_message_passing: true
-
-# Augmentations
-aug_joint_drop: true
-p_joint_drop: 0.1
-aug_pose_drop: true
-p_pose_drop: 0.1
-aug_joint_rand: true
-p_joint_rand: 0.1
-aug_jitter: true
-p_jitter_px: 4.0
-aug_img_drop: true
-p_img_drop: 0.1
-
-# Loss terms
-use_joint_loss: true
-w_joint_loss: 1.0
-use_bone_loss: true
-w_bone_loss: 1.0
+num_layers: 4
+num_heads: 2

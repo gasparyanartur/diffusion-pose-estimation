@@ -13,7 +13,6 @@ test_pred_cache: results/cache/rtmpose-m_crowdpose_test_predictions.pkl
 
 # AP evaluation settings
 ap_batch_size: 256
-ap_eval_interval: 10   # run val AP every N epochs (0 = only after training)
 
 # DataLoader
 num_workers: 4

@@ -16,6 +16,8 @@ img_prefix       : str   – image directory, relative to data_root
 metainfo_config  : Path  – absolute path to dataset metainfo config (.py)
 bbox_file        : str | None – detector-box file, relative to data_root;
                                None → GT bounding boxes (oracle mode)
+architecture_type: str   – "top-down" or "bottom-up"; controls prediction
+                           grouping in extract_predictions.py
 """
 
 from src import defaults
@@ -39,6 +41,7 @@ DEKR_W32_CROWDPOSE_300: dict = {
     "img_prefix": "crowdpose/images/",
     "metainfo_config": defaults.MMPOSE_DIR / "configs/_base_/datasets/crowdpose.py",
     "bbox_file": None,  # bottom-up: no person detector needed
+    "architecture_type": "bottom-up",
 }
 
 # RTMPose-M  ×  CrowdPose
@@ -60,6 +63,7 @@ RTMPOSE_M_CROWDPOSE_210: dict = {
     "img_prefix": "crowdpose/images/",
     "metainfo_config": defaults.MMPOSE_DIR / "configs/_base_/datasets/crowdpose.py",
     "bbox_file": "crowdpose/annotations/det_for_crowd_test_0.1_0.5.json",
+    "architecture_type": "top-down",
 }
 
 ALL_CONFIGS = [DEKR_W32_CROWDPOSE_300, RTMPOSE_M_CROWDPOSE_210]

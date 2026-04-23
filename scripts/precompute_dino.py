@@ -1,7 +1,12 @@
-"""Precompute DINO patch features for all images in a CrowdPose split.
+"""Precompute DINO backbone features for all images in a CrowdPose split.
 
-Saves a dict  {image_id: Tensor(G*G, hidden_dim)}  as a .pt file so that
-training / inference never has to run the DINO backbone again.
+ViT backbone
+  Saves {image_id: Tensor(G*G, hidden_dim)} — one flat patch-token tensor per image.
+
+ConvNeXt backbone
+  Saves {image_id: {'spatial':  Tensor(96, H/4, W/4),   # stage1 — high-res spatial (H,W vary with aspect ratio)
+                    'semantic': Tensor(768, H/32, W/32), # stage4 — semantic bottleneck
+                    'global':   Tensor(768)}}            # pooler_output — per-image summary
 
 Output path: results/cache/crowdpose/<model_slug>/<split>.pt
 where <model_slug> is the model name with '/' replaced by '_'.
@@ -9,16 +14,27 @@ where <model_slug> is the model name with '/' replaced by '_'.
 Usage
 -----
 python scripts/precompute_dino.py \\
+    --ann-path  data/crowdpose/annotations/ \\
+    --img-root  data/crowdpose/images \\
+    --split     all \\
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \\
+    --backbone-type convnext
+
+# Single split
+python scripts/precompute_dino.py \\
+    --ann-path  data/crowdpose/annotations/ \\
+    --img-root  data/crowdpose/images \\
+    --split     train \\
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \\
+    --backbone-type convnext
+
+# Legacy: pass a specific annotation file directly
+python scripts/precompute_dino.py \\
     --ann-path  data/crowdpose/annotations/crowdpose_train.json \\
     --img-root  data/crowdpose/images \\
     --split     train \\
-    --model-name facebook/dinov3-vits16-pretrain-lvd1689m
-
-python scripts/precompute_dino.py \\
-    --ann-path  data/crowdpose/annotations/crowdpose_val.json \\
-    --img-root  data/crowdpose/images \\
-    --split     val \\
-    --model-name facebook/dinov3-vits16-pretrain-lvd1689m
+    --model-name facebook/dinov3-convnext-small-pretrain-lvd1689m \\
+    --backbone-type convnext
 """
 
 from __future__ import annotations
@@ -35,12 +51,17 @@ from transformers import AutoImageProcessor, AutoModel
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Precompute DINO patch features.")
-    p.add_argument("--ann-path",   required=True, help="COCO-style annotation JSON")
-    p.add_argument("--img-root",   required=True, help="Root directory for images")
-    p.add_argument("--split",      required=True, help="Split name, e.g. train / val / test")
-    p.add_argument("--model-name", default="facebook/dinov3-vits16-pretrain-lvd1689m",
+    p.add_argument("--ann-path",   default="data/crowdpose/annotations",
+                   help="COCO-style annotation JSON, or a directory containing crowdpose_*.json files")
+    p.add_argument("--img-root",   default="data/crowdpose/images",
+                   help="Root directory for images")
+    p.add_argument("--split",      default="all",
+                   help="Split name (train / val / test) or 'all' to process every crowdpose_*.json found")
+    p.add_argument("--model-name",    default="facebook/dinov3-convnext-small-pretrain-lvd1689m",
                    help="HuggingFace model ID for the DINO backbone")
-    p.add_argument("--image-size", type=int, default=224,
+    p.add_argument("--backbone-type", default="auto", choices=["auto", "vit", "convnext"],
+                   help="Backbone type. 'auto' detects from the model class name.")
+    p.add_argument("--image-size",    type=int, default=224,
                    help="Resolution to which images are resized before feeding DINO")
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--output-dir", default="results/cache/crowdpose",
@@ -76,46 +97,122 @@ def extract_features(
     return {iid: patch_feats[i] for i, iid in enumerate(image_ids)}
 
 
+@torch.no_grad()
+def extract_features_convnext(
+    image_ids: list[int],
+    paths: list[str],
+    processor: AutoImageProcessor,
+    model: AutoModel,
+    device: str,
+) -> dict[int, dict]:
+    """Run ConvNeXt backbone one image at a time.
+
+    Images with different aspect ratios would be padded when batched, which
+    corrupts the pixel→feature-map coordinate mapping. Processing one image
+    at a time avoids that entirely.
+
+    Returns {image_id: {'spatial': Tensor(96, H/4, W/4),
+                        'semantic': Tensor(768, H/32, W/32),
+                        'global': Tensor(768)}} on CPU.
+    """
+    result = {}
+    for iid, path in zip(image_ids, paths):
+        pil_img = Image.open(path).convert("RGB")
+        inputs = processor(images=pil_img, return_tensors="pt").to(device)
+        outputs = model(**inputs, output_hidden_states=True)
+        # hidden_states index: 0=input pixels, 1=stage1, 2=stage2, 3=stage3, 4=stage4
+        stage1 = outputs.hidden_states[1][0].cpu()  # (96, H/4, W/4)
+        stage4 = outputs.hidden_states[4][0].cpu()  # (768, H/32, W/32)
+        pooler = outputs.pooler_output[0].cpu()     # (768,)
+        result[iid] = {"spatial": stage1, "semantic": stage4, "global": pooler}
+    return result
+
+
+def resolve_splits(ann_path: str, split: str) -> list[tuple[str, Path]]:
+    """Return [(split_name, annotation_file)] to process.
+
+    If ann_path is a directory:
+      - split='all'  → find every crowdpose_*.json in the directory
+      - split=<name> → use crowdpose_<name>.json inside the directory
+    If ann_path is a file, use it directly with the given split name.
+    """
+    p = Path(ann_path)
+    if p.is_dir():
+        if split == "all":
+            files = sorted(p.glob("crowdpose_*.json"))
+            if not files:
+                raise FileNotFoundError(f"No crowdpose_*.json files found in {p}")
+            return [(f.stem.removeprefix("crowdpose_"), f) for f in files]
+        else:
+            return [(split, p / f"crowdpose_{split}.json")]
+    else:
+        return [(split, p)]
+
+
+def run_split(
+    split_name: str,
+    ann_file: Path,
+    args: argparse.Namespace,
+    out_dir: Path,
+    extractor,
+    processor: AutoImageProcessor,
+    backbone: AutoModel,
+) -> None:
+    split_dir = out_dir / split_name
+    if split_dir.exists() and any(split_dir.iterdir()):
+        print(f"[{split_name}] Cache directory already exists and is non-empty: {split_dir} — delete it to recompute.")
+        return
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    image_paths = load_image_paths(str(ann_file), args.img_root)
+    image_ids   = sorted(image_paths.keys())
+    print(f"[{split_name}] {len(image_ids)} images  ({ann_file.name})")
+
+    bs = args.batch_size
+    sample = None
+    for start in tqdm(range(0, len(image_ids), bs), unit="batch", desc=split_name):
+        batch_ids   = image_ids[start : start + bs]
+        batch_paths = [image_paths[iid] for iid in batch_ids]
+        batch = extractor(batch_ids, batch_paths, processor, backbone, args.device)
+        for iid, feats in batch.items():
+            torch.save(feats, split_dir / f"{iid}.pt")
+            sample = feats
+
+    print(f"[{split_name}] Saved {len(image_ids)} embeddings → {split_dir}/")
+    if sample is not None and isinstance(sample, dict):
+        print(f"  keys per image: { {k: tuple(v.shape) for k, v in sample.items()} }")
+
+
 def main() -> None:
     args = parse_args()
 
-    # ---- output path --------------------------------------------------------
+    splits = resolve_splits(args.ann_path, args.split)
+    print(f"Splits to process: {[s for s, _ in splits]}")
+
+    # ---- output directory ---------------------------------------------------
     model_slug = args.model_name.replace("/", "_")
     out_dir = Path(args.output_dir) / model_slug
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{args.split}.pt"
 
-    if out_path.exists():
-        print(f"Cache already exists at {out_path} — delete it to recompute.")
-        return
-
-    # ---- load image list ----------------------------------------------------
-    image_paths = load_image_paths(args.ann_path, args.img_root)
-    image_ids   = sorted(image_paths.keys())
-    print(f"Found {len(image_ids)} images for split '{args.split}'")
-
-    # ---- load DINO ----------------------------------------------------------
+    # ---- load backbone once -------------------------------------------------
     print(f"Loading backbone: {args.model_name}")
-    device    = args.device
-    processor = AutoImageProcessor.from_pretrained(args.model_name, use_fast=True,
-                                                   size=args.image_size)
-    backbone  = AutoModel.from_pretrained(args.model_name).to(device).eval()
+    processor = AutoImageProcessor.from_pretrained(
+        args.model_name, use_fast=True,
+        do_center_crop=False, size={"shortest_edge": args.image_size},
+    )
+    backbone = AutoModel.from_pretrained(args.model_name).to(args.device).eval()
 
-    # ---- iterate in batches -------------------------------------------------
-    cache: dict[int, torch.Tensor] = {}
-    bs = args.batch_size
+    if args.backbone_type == "auto":
+        backbone_type = "convnext" if "convnext" in type(backbone).__name__.lower() else "vit"
+        print(f"Auto-detected backbone type: {backbone_type}")
+    else:
+        backbone_type = args.backbone_type
 
-    for start in tqdm(range(0, len(image_ids), bs), unit="batch", desc="Extracting"):
-        batch_ids   = image_ids[start : start + bs]
-        batch_paths = [image_paths[iid] for iid in batch_ids]
-        cache.update(extract_features(batch_ids, batch_paths, processor, backbone, device))
+    extractor = extract_features_convnext if backbone_type == "convnext" else extract_features
 
-    # ---- save ---------------------------------------------------------------
-    torch.save(cache, out_path)
-    sample_tensor = next(iter(cache.values()))
-    print(f"Saved {len(cache)} embeddings → {out_path}")
-    print(f"  shape per image: {tuple(sample_tensor.shape)}  "
-          f"(G*G={sample_tensor.shape[0]}, hidden_dim={sample_tensor.shape[1]})")
+    # ---- process each split -------------------------------------------------
+    for split_name, ann_file in splits:
+        run_split(split_name, ann_file, args, out_dir, extractor, processor, backbone)
 
 
 if __name__ == "__main__":

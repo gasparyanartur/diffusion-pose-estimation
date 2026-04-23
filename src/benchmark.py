@@ -39,12 +39,7 @@ def _patch_config(
     bbox_file: str | None,
     work_dir: Path,
 ) -> None:
-    """
-    Inject local paths into an mmengine Config in-place.
-
-    metainfo_config must be an absolute path so that mmpose's
-    parse_pose_metainfo resolves it correctly regardless of cwd.
-    """
+    # metainfo_config must be absolute for parse_pose_metainfo to resolve correctly.
     data_root_str = str(data_root) + "/"
 
     cfg.work_dir = str(work_dir)
@@ -75,14 +70,7 @@ def run_benchmark(
     out: Path,
     show_dir: str | None = None,
 ) -> None:
-    """
-    Validate, patch config, build the mmengine Runner, and run evaluation.
-
-    config  : dict with keys from src/configs.py (may be a modified copy).
-    work_dir: directory for mmengine logs / checkpoints.
-    out     : metrics output file (.yaml or .json, detected by extension).
-    show_dir: optional directory for visualisation output.
-    """
+    """Validate, patch config, build the mmengine Runner, and run evaluation."""
     mmpose_dir: Path = config["mmpose_dir"]
     config_path: Path = config["config_path"]
     checkpoint: Path = config["checkpoint"]

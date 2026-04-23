@@ -12,14 +12,15 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import softmax
-from PIL import Image
 from torch import Tensor
 
 from src.data import (
     CROWDPOSE_EDGE_LIST,
     CROWDPOSE_JOINT_NAMES,
+    PoseSample,
+    PoseGraphBatch,
+    prepare_sample,
     prepare_pose_graph_batch,
-    read_image_pil,
     read_image_size,
 )
 from src.metrics import KeypointAPMetric, canonical_to_pixel, compute_mpjpe, compute_pck
@@ -51,20 +52,13 @@ class KeypointDiffusionConfig:
     use_image_cond: bool = False
     dim_image_cond: int = 128  # projected DINO feature dim per node
 
-    # Global image conditioning (TODO[5]): pooled DINO as a per-image global signal
-    # combined with the timestep embedding before being fed into global_cond_mlp.
+    # Global image conditioning: pooled DINO per-image signal combined with timestep
     use_global_image_cond: bool = False
     dim_global_image_cond: int = 128  # projected pooled-DINO dim
 
-    # CNN patch conditioning (TODO[3])  — alternative local visual source to DINO
-    use_cnn_cond: bool = False
-    cnn_patch_size: int = 64  # height and width of the crop fed to the CNN
-
     # Training augmentations
     aug_joint_drop: bool = True
-    p_joint_drop: float = (
-        0.1  # probability of dropping each non-root joint independently
-    )
+    p_joint_drop: float = 0.1  # probability of dropping each non-root joint independently
     aug_pose_drop: bool = True
     p_pose_drop: float = 0.1  # probability of dropping an entire person
     aug_joint_rand: bool = True
@@ -76,6 +70,11 @@ class KeypointDiffusionConfig:
 
     # Architecture ablations
     use_message_passing: bool = True  # if False, use per-node MLP (no graph aggregation or bone embedding)
+    zero_delta: bool = False          # if True, always return delta=0 (identity refinement; for sanity checks)
+
+    # Regularisation
+    dropout_rate: float = 0.1       # dropout probability in MLPs
+    attn_dropout_rate: float = 0.1  # dropout probability on attention weights
 
     # Loss terms
     use_joint_loss: bool = True
@@ -105,278 +104,428 @@ class TimestepSinusoidalEmbedding(torch.nn.Module):
         return torch.cat([torch.cos(args), torch.sin(args)], dim=-1)  # (B, dim)
 
 
-class DinoConditioner(torch.nn.Module):
-    """Per-keypoint local DINO patch features.
+def pixel_to_grid_sample_coords(
+    kpt_pixel: Tensor,  # (..., 2)  pixel-space (x, y)
+    img_hw: Tensor,     # (..., 2)  original image (H, W) — broadcastable to kpt_pixel
+) -> Tensor:            # (..., 2)  grid_sample coords in [-1, 1]
+    # With resize-only preprocessing (do_center_crop=False,
+    # size={"shortest_edge": S}), a scale s = S/min(H,W) maps pixel coords
+    # to feature-map coords and also scales the feature-map size by the same
+    # factor, so s cancels in the normalisation:
+    #   x_feat = x * s / stride
+    #   x_norm = 2 * x_feat / (W_orig * s / stride) - 1
+    #          = 2 * x / W_orig - 1
+    # Normalising against the original image dimensions is therefore exact.
+    img_h = img_hw[..., 0].float()
+    img_w = img_hw[..., 1].float()
+    x_norm = (kpt_pixel[..., 0].float() / img_w) * 2 - 1
+    y_norm = (kpt_pixel[..., 1].float() / img_h) * 2 - 1
+    return torch.stack([x_norm, y_norm], dim=-1)
 
-    Gathers the (2r+1)×(2r+1) patch neighbourhood for each keypoint and
-    mean-pools it into a single projected embedding.  Backbone is frozen;
-    only the linear projection is trained.
+
+class DinoConditioner(torch.nn.Module):
+    """Per-keypoint ConvNeXt DINO features, sampled from precomputed caches.
+
+    Two feature levels are sampled at each keypoint location and concatenated:
+      spatial:  stage1 (96ch @ 56×56) — fine-grained spatial texture
+      semantic: stage4 (768ch @ 7×7)  — high-level semantics
+    The 864-d vector is linearly projected to out_dim.
+
+    A pre-pooled global image vector (768-d) is also available via
+    fetch_global_feats() for use as a per-image global conditioning signal.
+
+    Caches must be precomputed with scripts/precompute_dino.py --backbone-type convnext.
     """
+
+    # Architectural constants for facebook/dinov3-convnext-small-pretrain-lvd1689m.
+    SPATIAL_DIM: int = 96   # stage1 channels
+    HIDDEN_DIM: int  = 768  # stage4 / pooler channels
 
     def __init__(
         self,
-        model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m",
+        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
         out_dim: int = 128,
-        patch_size: int = 16,
-        image_size: int = 224,
-        neighborhood_radius: int = 1,
         cache_paths: list[str | Path] | None = None,
     ) -> None:
         super().__init__()
-        from transformers import AutoConfig, AutoImageProcessor, AutoModel
+        self.model_name = model_name
+        self.spatial_dim: int = self.SPATIAL_DIM
+        self.hidden_dim: int  = self.HIDDEN_DIM
+        self.proj = torch.nn.Linear(self.spatial_dim + self.hidden_dim, out_dim)
 
-        self.patch_size = patch_size
-        self.image_size = image_size
-        self.neighborhood_radius = neighborhood_radius
-        self.grid_size = image_size // patch_size  # e.g. 14 for ViT-S/16 @ 224
-
-        _cfg = AutoConfig.from_pretrained(model_name)
-        n_registers = getattr(_cfg, "num_register_tokens", 0)
-        self.n_prefix_tokens: int = 1 + n_registers
-        self.hidden_dim: int = _cfg.hidden_size
-
-        # Only load the full backbone when no caches are provided (live-inference mode).
-        # Training always uses precomputed caches, so backbone weights are never needed.
-        if cache_paths:
-            self.backbone = None
-            self.processor = None
-        else:
-            self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-            self.backbone = AutoModel.from_pretrained(model_name)
-            # Freeze the backbone – only the projection is trained
-            for param in self.backbone.parameters():
-                param.requires_grad_(False)
-
-        self.proj = torch.nn.Linear(self.hidden_dim, out_dim)
-
-        # Precomputed patch cache: {image_id: Tensor(G*G, hidden_dim)}
-        # Populated by load_cache(); when set, the backbone is never called.
-        self._patch_cache: dict[int, Tensor] | None = None
+        # In-memory cache: {image_id: {'spatial': ..., 'semantic': ..., 'global': ...}}
+        # Populated lazily on first access via _load_image().
+        self._cache: dict[int, dict] = {}
+        # Directories to search for {image_id}.pt files.
+        self._cache_dirs: list[Path] = []
         if cache_paths:
             self.load_cache(*cache_paths)
 
     def load_cache(self, *paths: str | Path) -> None:
-        """Merge one or more ``{image_id → patch_features}`` cache files into the lookup table."""
-        merged: dict = {} if self._patch_cache is None else dict(self._patch_cache)
+        """Register one or more cache directories to load images from on demand."""
         for path in paths:
-            data = torch.load(Path(path), map_location="cpu", weights_only=False)
-            merged.update(data)
-        self._patch_cache = merged
-        print(
-            f"DinoConditioner: patch cache has {len(merged)} images ({len(paths)} file(s) loaded)"
-        )
+            p = Path(path)
+            if not p.exists():
+                # Backward-compat: old checkpoints store 'split.pt' paths; the new
+                # per-image format lives in the same-named directory without the suffix.
+                if p.suffix == ".pt":
+                    candidate = p.with_suffix("")
+                    if candidate.is_dir():
+                        print(
+                            f"DinoConditioner: '{p}' not found; "
+                            f"using per-image directory '{candidate}' instead."
+                        )
+                        p = candidate
+                    else:
+                        print(f"DinoConditioner: cache path not found, skipping: {p}")
+                        continue
+                else:
+                    print(f"DinoConditioner: cache directory not found, skipping: {p}")
+                    continue
+            if not p.is_dir():
+                raise RuntimeError(
+                    f"Cache path {p} is a file, not a directory. "
+                    "Re-run scripts/precompute_dino.py to generate per-image .pt files."
+                )
+            self._cache_dirs.append(p)
+        print(f"DinoConditioner: registered {len(self._cache_dirs)} cache dir(s)")
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    @torch.no_grad()
-    def _extract_patch_features(self, pil_images: list[Image.Image]) -> Tensor:
-        """Run DINO backbone; return patch features (B, G*G, hidden_dim) with CLS and register tokens dropped."""
-        if self.backbone is None:
-            raise RuntimeError(
-                "DinoConditioner was created in cache-only mode (backbone not loaded). "
-                "Cannot run live inference without a backbone."
-            )
-        inputs = self.processor(images=pil_images, return_tensors="pt")
-        inputs = {
-            k: v.to(next(self.backbone.parameters()).device) for k, v in inputs.items()
-        }
-        outputs = self.backbone(**inputs)
-        return outputs.last_hidden_state[:, self.n_prefix_tokens:]  # drop CLS + registers  (B, G*G, D)
+    def _load_dino_feature(self, iid: int) -> dict:
+        """Return the cached feature dict for one image, loading from disk if needed."""
+        if iid not in self._cache:
+            if not self._cache_dirs:
+                raise RuntimeError(
+                    "Feature cache not loaded. "
+                    "Call load_cache() with the directory produced by "
+                    "scripts/precompute_dino.py --backbone-type convnext."
+                )
+            for cache_dir in self._cache_dirs:
+                pt_path = cache_dir / f"{iid}.pt"
+                if pt_path.exists():
+                    self._cache[iid] = torch.load(pt_path, map_location="cpu", weights_only=False)
+                    break
+            else:
+                raise RuntimeError(
+                    f"Image id {iid} not found in any cache directory: "
+                    + ", ".join(str(d) for d in self._cache_dirs)
+                )
+        return self._cache[iid]
 
-    def _gather_neighborhood(
+    def _load_maps(
+        self, image_ids: list[int], device: torch.device
+    ) -> tuple[list[Tensor], list[Tensor]]:
+        """Load spatial and semantic feature maps from the cache for a batch.
+
+        Returns lists (not stacked) because images may have different spatial
+        dimensions when preprocessed with aspect-ratio-preserving resize.
+
+            spatial_maps:  list of B tensors, each (96, H_i/4, W_i/4)
+            semantic_maps: list of B tensors, each (768, H_i/32, W_i/32)
+        """
+        spatial  = [self._load_dino_feature(iid)["spatial"].to(device)  for iid in image_ids]
+        semantic = [self._load_dino_feature(iid)["semantic"].to(device) for iid in image_ids]
+        return spatial, semantic
+
+    def _sample_at_keypoints(
         self,
-        patch_feats: Tensor,  # (B, G*G, D)
-        kpt_pixel: Tensor,    # (B, N, K, 2)  pixel-space (x, y)
-        img_hw: Tensor,       # (B, 2)  original (H, W)
-    ) -> Tensor:
-        """Return the single closest DINO patch for each keypoint → (B, N, K, D)."""
-        B, N, K, _ = kpt_pixel.shape
-        G, D = self.grid_size, patch_feats.shape[-1]
-        device = patch_feats.device
+        feat_maps: list[Tensor],  # B tensors, each (C, H_i, W_i)
+        kpt_pixel: Tensor,        # (B, N, K, 2)  pixel-space (x, y)
+        img_hw: Tensor,           # (B, 2)  original image (H, W)
+    ) -> Tensor:                  # (B, N, K, C)
+        """Bilinearly sample a feature map at each keypoint's pixel location.
 
-        # Scale pixel coords → DINO input space, then find the containing patch
-        img_h = img_hw[:, 0].float().view(B, 1, 1)
-        img_w = img_hw[:, 1].float().view(B, 1, 1)
-        x_scaled = kpt_pixel[..., 0].to(device) * (self.image_size / img_w)
-        y_scaled = kpt_pixel[..., 1].to(device) * (self.image_size / img_h)
-        cx = (x_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) col
-        cy = (y_scaled / self.patch_size).long().clamp(0, G - 1)  # (B, N, K) row
-
-        # Index of the single containing patch for every keypoint: (B, N*K)
-        patch_idx = (cy * G + cx).reshape(B, N * K)
-        gathered = patch_feats.gather(1, patch_idx.unsqueeze(-1).expand(-1, -1, D))
-        return gathered.view(B, N, K, D)
+        Processes one image at a time so that variable spatial dimensions
+        (from aspect-ratio-preserving resize) are handled without padding.
+        Keypoints outside the image boundary return zero features.
+        """
+        B = len(feat_maps)
+        N, K = kpt_pixel.shape[1], kpt_pixel.shape[2]
+        device = kpt_pixel.device
+        results = []
+        for i in range(B):
+            feat = feat_maps[i].to(device)              # (C, H_i, W_i)
+            C = feat.shape[0]
+            coords = pixel_to_grid_sample_coords(
+                kpt_pixel[i].unsqueeze(0),              # (1, N, K, 2)
+                img_hw[i].to(device).view(1, 1, 1, 2),
+            )  # (1, N, K, 2)
+            grid = coords.reshape(1, N * K, 1, 2)
+            sampled = F.grid_sample(
+                feat.unsqueeze(0).contiguous(), grid,
+                mode="bilinear", align_corners=False, padding_mode="zeros",
+            )  # (1, C, N*K, 1)
+            results.append(sampled.squeeze(0).squeeze(-1).permute(1, 0).view(N, K, C))
+        return torch.stack(results)  # (B, N, K, C)
 
     # ------------------------------------------------------------------
-    # Forward
+    # Public API
     # ------------------------------------------------------------------
+
+    def fetch_global_feats(self, image_ids: list[int], device: torch.device) -> Tensor:
+        """Load the pre-pooled global image vector from the cache → (B, hidden_dim)."""
+        return torch.stack(
+            [self._load_dino_feature(iid)["global"] for iid in image_ids]
+        ).to(device)
 
     def forward(
         self,
-        kpt_pixel: Tensor,  # (B, N, K, 2) pixel-space (x, y)
-        img_hw: Tensor,  # (B, 2) original image (H, W)
-        image_ids: list[int] | None = None,
-        pil_images: list[Image.Image] | None = None,
-    ) -> Tensor:
-        """Return per-keypoint DINO embeddings (B, N, K, out_dim).
-
-        Provide image_ids when using a precomputed cache, or pil_images for live inference.
-        """
-        if self._patch_cache is not None:
-            if image_ids is None:
-                raise ValueError(
-                    "image_ids must be provided when using a precomputed cache"
-                )
-            patch_feats = torch.stack([self._patch_cache[iid] for iid in image_ids]).to(
-                kpt_pixel.device
-            )
-        else:
-            if pil_images is None:
-                raise ValueError("pil_images must be provided when no cache is loaded")
-            patch_feats = self._extract_patch_features(pil_images)
-
-        return self.proj(self._gather_neighborhood(patch_feats, kpt_pixel, img_hw))
+        kpt_pixel: Tensor,    # (B, N, K, 2) pixel-space (x, y)
+        img_hw: Tensor,       # (B, 2) original image (H, W)
+        image_ids: list[int], # image IDs to look up in the cache
+    ) -> Tensor:              # (B, N, K, out_dim)
+        spatial_maps, semantic_maps = self._load_maps(image_ids, kpt_pixel.device)
+        spatial_feats  = self._sample_at_keypoints(spatial_maps,  kpt_pixel, img_hw)  # (B, N, K, 96)
+        semantic_feats = self._sample_at_keypoints(semantic_maps, kpt_pixel, img_hw)  # (B, N, K, 768)
+        return self.proj(torch.cat([spatial_feats, semantic_feats], dim=-1))           # (B, N, K, out_dim)
 
 
-class PatchCNNConditioner(torch.nn.Module):
-    """Per-keypoint patch CNN conditioner (TODO[3]).
+class AttentionDinoConditioner(DinoConditioner):
+    """Per-keypoint DINO conditioning via cross-attention over all patch embeddings.
 
-    For each joint, extracts a ``patch_size \u00d7 patch_size`` crop from the
-    full-resolution image centred on the joint pixel coordinate.  The crop is
-    augmented with two extra channels that carry the *relative* spatial
-    coordinate (normalised to [-1, 1] within the crop), giving a 5-channel
-    input (RGB + coord_x + coord_y).
+    Architecture:
+      1. Fuse stage1 (96ch) and upsampled stage4 (768ch) patches → inner_dim via FF.
+      2. Project normalised joint positions → node query features (inner_dim).
+      3. Cross-attention (Q=nodes, K/V=patches) with a per-head relative-position
+         bias (patch_pos − node_pos → Linear → num_heads) folded into attn_mask.
+         Padded patch slots (variable P_i across the batch) are masked to −inf.
+      4. Residual + LayerNorm + linear.
+      5. Add absolute joint position encoding.
+      6. Self-attention over K joints per person; absent joints masked via
+         key_padding_mask and zeroed in the final output.
+      7. Residual + LayerNorm + linear → out_proj → out_dim.
 
-    CNN architecture (exact from TODO[3]):
-        Conv 5 \u2192 32  (3\u00d73, pad 1)
-        Conv 32 \u2192 64  (3\u00d73, pad 1, stride 2)
-        Conv 64 \u2192 128 (3\u00d73, pad 1, stride 2)
-        Conv 128 \u2192 128 (3\u00d73, pad 1, stride 2)
-        GlobalAvgPool
-        Linear \u2192 out_dim
-        LayerNorm
+    Patch padding: images in a batch may have different numbers of stage-1 patches
+    (variable spatial size after aspect-ratio-preserving resize).  All images are
+    padded to max_P with zeros; padded positions receive −inf attention bias so
+    they never contribute to the pooled output.
 
-    Args:
-        out_dim: Output embedding dimension per keypoint.
-        patch_size: Spatial size of the extracted crop (square).
+    NOTE: cross-attention memory scales as O(N·K·max_P).  For shortest_edge ≥ 448
+    (stage1 ≈ 112×112 = 12 544 patches) this may be significant.
     """
 
-    def __init__(self, out_dim: int = 128, patch_size: int = 64) -> None:
-        super().__init__()
-        self.patch_size = patch_size
-
-        d = 64
-        self.backbone_dim: int = d  # output channels of the CNN backbone (before head)
-        self.cnn = torch.nn.Sequential(
-            # 5 × P × P  →  32 × (P/2) × (P/2)
-            torch.nn.Conv2d(5, d//4, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d//4),
-            torch.nn.SiLU(),
-            # 32 × (P/2) × (P/2)  →  64 × (P/4) × (P/4)
-            torch.nn.Conv2d(d//4, d//2, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d//2),
-            torch.nn.SiLU(),
-            # 64 × (P/4) × (P/4)  →  128 × (P/8) × (P/8)
-            torch.nn.Conv2d(d//2, d, 3, stride=2, padding=1),
-            torch.nn.BatchNorm2d(d),
-            torch.nn.SiLU(),
-            # → 128 × 1 × 1
-            torch.nn.AdaptiveAvgPool2d(1),
+    def __init__(
+        self,
+        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        out_dim: int = 128,
+        inner_dim: int = 256,
+        num_heads: int = 4,
+        dropout_rate: float = 0.1,
+        cache_paths: list[str | Path] | None = None,
+    ) -> None:
+        super().__init__(model_name=model_name, out_dim=out_dim, cache_paths=cache_paths)
+        assert inner_dim % num_heads == 0, (
+            f"inner_dim ({inner_dim}) must be divisible by num_heads ({num_heads})"
         )
-        self.head = torch.nn.Sequential(
-            torch.nn.Linear(d, out_dim),
-            torch.nn.LayerNorm(out_dim),
+        self.inner_dim = inner_dim
+        self.num_heads = num_heads
+        self.out_dim = out_dim
+
+        # Fuse stage1 (96ch) + upsampled stage4 (768ch) → inner_dim
+        self.patch_fusion = torch.nn.Sequential(
+            torch.nn.Linear(self.SPATIAL_DIM + self.HIDDEN_DIM, inner_dim * 2),
+            torch.nn.GELU(),
+            torch.nn.Dropout(dropout_rate),
+            torch.nn.Linear(inner_dim * 2, inner_dim),
         )
 
-        # Fixed (2, P, P) spatial coordinate grid in [-1, 1]: channel 0 = x, channel 1 = y.
-        # These are appended as channels 4-5 of every extracted patch so the CNN
-        # knows where each pixel sits relative to the joint centre.
-        P = patch_size
-        coords_1d = torch.linspace(-1.0, 1.0, P)
-        grid_y, grid_x = torch.meshgrid(coords_1d, coords_1d, indexing="ij")  # (P, P) each
-        self.register_buffer("_spatial_grid", torch.stack([grid_x, grid_y], dim=0))  # (2, P, P)
+        # Project normalised joint position (2D) → node query features
+        self.node_pos_proj = torch.nn.Linear(2, inner_dim)
+
+        # Relative-position bias for cross-attention: 2D offset → per-head scalar
+        self.cross_rel_pos_bias = torch.nn.Linear(2, num_heads, bias=False)
+
+        # Cross-attention block (nodes attend to patches)
+        self.cross_attn = torch.nn.MultiheadAttention(
+            inner_dim, num_heads, batch_first=True, dropout=dropout_rate
+        )
+        self.cross_norm    = torch.nn.LayerNorm(inner_dim)
+        self.cross_linear  = torch.nn.Linear(inner_dim, inner_dim)
+        self.cross_ff_norm = torch.nn.LayerNorm(inner_dim)
+
+        # Absolute joint position encoding (added inside self-attention block)
+        self.joint_pos_proj = torch.nn.Linear(2, inner_dim)
+
+        # Self-attention block over K joints per person
+        self.self_attn    = torch.nn.MultiheadAttention(
+            inner_dim, num_heads, batch_first=True, dropout=dropout_rate
+        )
+        self.self_norm    = torch.nn.LayerNorm(inner_dim)
+        self.self_linear  = torch.nn.Linear(inner_dim, inner_dim)
+        self.self_ff_norm = torch.nn.LayerNorm(inner_dim)
+
+        # Final projection
+        self.out_proj = torch.nn.Linear(inner_dim, out_dim)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _extract_patches(
+    def _fuse_patches(
         self,
-        image: Tensor,     # (3, H, W) float in [0, 1]
-        kpt_pixel: Tensor, # (N, K, 2) pixel-space (x, y)
-    ) -> Tensor:           # (N*K, 5, P, P)
-        """Extract 5-channel (RGB + spatial) patches for all joints of one image.
+        spatial_map:  Tensor,  # (96,  H_s,     W_s    )  stage1, stride-4
+        semantic_map: Tensor,  # (768, H_s//8,  W_s//8 )  stage4, stride-32
+    ) -> tuple[Tensor, Tensor]:  # (P, inner_dim), (P, 2)
+        C_s, H_s, W_s = spatial_map.shape
+        P = H_s * W_s
 
-        Uses F.pad + integer indexing instead of expand + grid_sample to avoid
-        creating zero-stride (non-contiguous) tensors that trigger a CUDA
-        allocator assertion (!block->expandable_segment_) in PyTorch ≥ 2.1.
-        """
-        N, K = kpt_pixel.shape[:2]
-        P = self.patch_size
-        half = P // 2
-        M = N * K
-        _, H, W = image.shape
-        device = image.device
+        # Upsample semantic map to stage1 spatial resolution
+        semantic_up = F.interpolate(
+            semantic_map.unsqueeze(0),
+            size=(H_s, W_s),
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)  # (768, H_s, W_s)
 
-        # Pad image by half on every side so any crop stays in bounds.
-        # Use replicate (not reflect) — reflect requires padding < dimension,
-        # which fails for images smaller than patch_size.
-        padded = F.pad(image.unsqueeze(0), (half, half, half, half), mode="replicate").squeeze(0)
-        # (3, H + 2*half, W + 2*half)
+        # Flatten patches and concatenate both levels: (P, 96+768)
+        spatial_flat  = spatial_map.permute(1, 2, 0).reshape(P, C_s)
+        semantic_flat = semantic_up.permute(1, 2, 0).reshape(P, self.HIDDEN_DIM)
+        combined = torch.cat([spatial_flat, semantic_flat], dim=-1)  # (P, 864)
 
-        # Integer keypoint coords clamped to original image bounds.
-        # These are the top-left corners of the crops in padded space.
-        px = kpt_pixel[..., 0].long().clamp(0, W - 1).reshape(M)  # (M,)
-        py = kpt_pixel[..., 1].long().clamp(0, H - 1).reshape(M)  # (M,)
+        patch_feats = self.patch_fusion(combined)  # (P, inner_dim)
 
-        # Build index arrays: row_idxs[m, i] = py[m] + i  (M, P)
-        offsets = torch.arange(P, device=device)                    # (P,)
-        row_idxs = py.unsqueeze(1) + offsets.unsqueeze(0)           # (M, P)
-        col_idxs = px.unsqueeze(1) + offsets.unsqueeze(0)           # (M, P)
+        # Patch centre positions normalised to [-1, 1] (same space as node positions)
+        device = spatial_map.device
+        ys = (torch.arange(H_s, device=device).float() + 0.5) / H_s * 2 - 1
+        xs = (torch.arange(W_s, device=device).float() + 0.5) / W_s * 2 - 1
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")  # (H_s, W_s)
+        patch_pos = torch.stack([grid_x, grid_y], dim=-1).reshape(P, 2)  # (P, 2) as (x, y)
 
-        # Gather all patches in one advanced-index call.
-        # padded[:, row_idxs[m, i, :], col_idxs[m, :, j]]
-        #   row shape (M, P, 1), col shape (M, 1, P) → broadcast (M, P, P)
-        #   result shape: (3, M, P, P)
-        patches_rgb = padded[:, row_idxs.unsqueeze(2), col_idxs.unsqueeze(1)]
-        patches_rgb = patches_rgb.permute(1, 0, 2, 3).contiguous()  # (M, 3, P, P)
+        return patch_feats, patch_pos
 
-        # Pre-allocate output and fill in-place to avoid any torch.cat or repeat
-        # allocation — those allocations can hit the CUDA expandable-segment
-        # assertion (!block->expandable_segment_) in PyTorch ≥ 2.1.
-        out = torch.empty(M, 5, P, P, device=device)
-        out[:, :3] = patches_rgb
-        out[:, 3:] = self._spatial_grid  # (2, P, P) broadcasts to (M, 2, P, P)
-        return out
+    def _build_patch_batch(
+        self,
+        all_patch_feats: list[Tensor],  # B tensors, each (P_i, inner_dim)
+        all_patch_pos:   list[Tensor],  # B tensors, each (P_i, 2)
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        # Returns padded_feats (B, max_P, d), padded_pos (B, max_P, 2),
+        #         patch_key_mask (B, max_P) bool — True = padded slot.
+        B      = len(all_patch_feats)
+        max_P  = max(f.shape[0] for f in all_patch_feats)
+        device = all_patch_feats[0].device
+        dtype  = all_patch_feats[0].dtype
+
+        padded_feats   = torch.zeros(B, max_P, self.inner_dim, device=device, dtype=dtype)
+        padded_pos     = torch.zeros(B, max_P, 2,              device=device, dtype=dtype)
+        patch_key_mask = torch.ones( B, max_P, dtype=torch.bool, device=device)  # True = padded
+
+        for i, (feats, pos) in enumerate(zip(all_patch_feats, all_patch_pos)):
+            P_i = feats.shape[0]
+            padded_feats[i, :P_i]   = feats
+            padded_pos[i,   :P_i]   = pos
+            patch_key_mask[i, :P_i] = False  # real patches
+
+        return padded_feats, padded_pos, patch_key_mask
+
+    def _cross_attend(
+        self,
+        node_feats:     Tensor,  # (B, NK, inner_dim)
+        patch_feats:    Tensor,  # (B, max_P, inner_dim)
+        node_pos:       Tensor,  # (B, NK, 2)
+        patch_pos:      Tensor,  # (B, max_P, 2)
+        patch_key_mask: Tensor,  # (B, max_P) bool — True = padded
+    ) -> Tensor:                 # (B, NK, inner_dim)
+        B, NK, _ = node_feats.shape
+        max_P = patch_feats.shape[1]
+        H     = self.num_heads
+
+        # Relative offset of every patch to every node: (B, NK, max_P, 2)
+        rel_pos  = patch_pos.unsqueeze(1) - node_pos.unsqueeze(2)
+
+        # Per-head relative-position bias: (B, NK, max_P, H) → (B*H, NK, max_P)
+        rel_bias = self.cross_rel_pos_bias(rel_pos)                        # (B, NK, max_P, H)
+        rel_bias = rel_bias.permute(0, 3, 1, 2).reshape(B * H, NK, max_P) # (B*H, NK, max_P)
+
+        # Fold padding mask into attn_mask: padded positions → −inf attention weight
+        pad_inf = (
+            patch_key_mask
+            .view(B, 1, 1, max_P)
+            .expand(B, H, NK, max_P)
+            .reshape(B * H, NK, max_P)
+        )
+        rel_bias = rel_bias.masked_fill(pad_inf, float("-inf"))
+
+        attn_out, _ = self.cross_attn(
+            node_feats,   # Q: (B, NK, inner_dim)
+            patch_feats,  # K: (B, max_P, inner_dim)
+            patch_feats,  # V: (B, max_P, inner_dim)
+            attn_mask=rel_bias,  # (B*H, NK, max_P)
+        )  # (B, NK, inner_dim)
+        h = self.cross_norm(node_feats + attn_out)
+        h = self.cross_ff_norm(h + self.cross_linear(h))
+        return h
+
+    def _self_attend_joints(
+        self,
+        h:          Tensor,        # (BN, K, inner_dim)
+        joint_pos:  Tensor,        # (BN, K, 2)  normalised [-1, 1]
+        joint_mask: Tensor | None, # (BN, K) bool — True = absent; or None
+    ) -> Tensor:                   # (BN, K, inner_dim)
+        q = h + self.joint_pos_proj(joint_pos)  # add absolute position encoding
+
+        # Guard: all-absent rows would produce NaN in softmax.
+        safe_mask = None
+        if joint_mask is not None:
+            all_absent = joint_mask.all(dim=-1)  # (BN,)
+            safe_mask  = joint_mask.clone()
+            if all_absent.any():
+                safe_mask[all_absent, 0] = False
+
+        attn_out, _ = self.self_attn(q, q, q, key_padding_mask=safe_mask)  # (BN, K, inner_dim)
+        h = self.self_norm(q + attn_out)
+        h = self.self_ff_norm(h + self.self_linear(h))
+        return h
 
     # ------------------------------------------------------------------
-    # Forward
+    # Public API
     # ------------------------------------------------------------------
 
     def forward(
         self,
-        images: list[Tensor],  # B tensors, each (3, H_i, W_i) float in [0, 1]
-        kpt_pixel: Tensor,     # (B, N, K, 2) pixel-space (x, y)
-    ) -> Tensor:               # (B, N, K, out_dim)
-        """Encode per-keypoint CNN embeddings for a batch."""
-        B, N, K = kpt_pixel.shape[:3]
-        outputs = []
-        for b in range(B):
-            patches = self._extract_patches(images[b], kpt_pixel[b])  # (N*K, 5, P, P)
-            feats = self.cnn(patches).mean(dim=(-2, -1))               # (N*K, 128) global avg pool
-            outputs.append(self.head(feats).view(N, K, -1))            # (N, K, out_dim)
-        return torch.stack(outputs, dim=0)  # (B, N, K, out_dim)
+        kpt_pixel:  Tensor,            # (B, N, K, 2)  pixel-space (x, y)
+        img_hw:     Tensor,            # (B, 2)         original image (H, W)
+        image_ids:  list[int],
+        joint_mask: Tensor | None = None,  # (B, N, K) bool — True = absent joint
+    ) -> Tensor:                       # (B, N, K, out_dim)
+        B, N, K, _ = kpt_pixel.shape
+        device = kpt_pixel.device
+
+        spatial_maps, semantic_maps = self._load_maps(image_ids, device)
+        all_patch_feats: list[Tensor] = []
+        all_patch_pos:   list[Tensor] = []
+        for i in range(B):
+            feats, pos = self._fuse_patches(spatial_maps[i], semantic_maps[i])
+            all_patch_feats.append(feats)
+            all_patch_pos.append(pos)
+
+        padded_feats, padded_pos, patch_key_mask = self._build_patch_batch(
+            all_patch_feats, all_patch_pos
+        )  # (B, max_P, d), (B, max_P, 2), (B, max_P)
+
+        node_pos_norm   = pixel_to_grid_sample_coords(
+            kpt_pixel, img_hw.view(B, 1, 1, 2)
+        )  # (B, N, K, 2)  in [-1, 1]
+        node_pos_flat   = node_pos_norm.view(B, N * K, 2)
+        h               = self.node_pos_proj(node_pos_flat)  # (B, NK, inner_dim)
+
+        h = h + self._cross_attend(h, padded_feats, node_pos_flat, padded_pos, patch_key_mask)
+
+        joint_pos       = node_pos_norm.view(B * N, K, 2)
+        h               = h.view(B * N, K, self.inner_dim)
+        joint_mask_flat = joint_mask.view(B * N, K) if joint_mask is not None else None
+        h = h + self._self_attend_joints(h, joint_pos, joint_mask_flat)
+
+        out = self.out_proj(h)
+        if joint_mask is not None:
+            out = out.masked_fill(joint_mask_flat.unsqueeze(-1), 0.0)
+        return out.view(B, N, K, self.out_dim)
 
 
 class FiLMLayer(torch.nn.Module):
-    """Feature-wise Linear Modulation: h → (1 + scale) * h + shift.
-
-    Conditions node states on a global vector ``g`` (e.g. the processed
-    timestep embedding).  The affine parameters are produced by a single
-    linear projection of ``g``.
-    """
+    """Feature-wise Linear Modulation conditioned on a global vector: h → (1 + scale) * h + shift."""
 
     def __init__(self, cond_dim: int, feature_dim: int) -> None:
         super().__init__()
@@ -390,17 +539,9 @@ class FiLMLayer(torch.nn.Module):
 
 
 class PoseGraphLayer(MessagePassing):
-    """One graph denoising layer implementing the 5-step design from the TODO[2] spec:
+    """One graph attention layer: FiLM conditioning → edge-attentive message passing → residual update.
 
-    5.1  FiLM — modulate node states h with global conditioning g.
-    5.2  Q = W_q h,  K = W_k h,  V_state = W_v h
-    5.3  For each edge (j→i):  m_ij = MLP_msg([V_state_j, e_ij, v_j])
-    5.4  score_ij = dot(q_i, k_j)/√D + w_e^T e_ij;  α = softmax over neighbours
-    5.5  Aggregate: agg_i = Σ_j α_ij · m_ij
-    5.6  Node update: h ← h + MLP_update([h_i, agg_i, v_i])
-
-    When ``use_message_passing=False`` steps 5.2–5.5 are skipped and the
-    update MLP receives only ``[h_i, v_i]``.
+    When use_message_passing=False the attention is skipped and the update MLP receives only [h_i, v_i].
     """
 
     def __init__(
@@ -411,6 +552,8 @@ class PoseGraphLayer(MessagePassing):
         dim_global: int,
         num_heads: int = 4,
         use_message_passing: bool = True,
+        dropout_rate: float = 0.1,
+        attn_dropout_rate: float = 0.1,
     ) -> None:
         super().__init__(aggr="add")  # weighted sum handled inside message()
         self.dim = dim
@@ -418,71 +561,59 @@ class PoseGraphLayer(MessagePassing):
         self.head_dim = dim // num_heads
         assert dim % num_heads == 0, f"dim ({dim}) must be divisible by num_heads ({num_heads})"
         self.use_message_passing = use_message_passing
+        self.attn_dropout = attn_dropout_rate
 
         if use_message_passing:
-            # Step 1: projections for query / key / value-state
             self.W_q = torch.nn.Linear(dim, dim, bias=False)
             self.W_k = torch.nn.Linear(dim, dim, bias=False)
             self.W_v = torch.nn.Linear(dim, dim, bias=False)
 
-            # Step 2: message content MLP — [V_state_j, e_ij, v_j] → message
             msg_in = dim + dim_edge + dim_vis
             self.msg_mlp = torch.nn.Sequential(
                 torch.nn.LayerNorm(msg_in),
                 torch.nn.Linear(msg_in, dim * 2),
                 torch.nn.GELU(),
+                torch.nn.Dropout(dropout_rate),
                 torch.nn.Linear(dim * 2, dim),
             )
 
-            # Step 3: edge geometry → per-head attention bias
             self.edge_bias = torch.nn.Linear(dim_edge, num_heads, bias=False)
 
-        # Step 5: node update MLP — input size differs by whether we have agg
         update_in = dim + (dim if use_message_passing else 0) + dim_vis
         self.update_mlp = torch.nn.Sequential(
             torch.nn.LayerNorm(update_in),
             torch.nn.Linear(update_in, dim * 2),
             torch.nn.GELU(),
+            torch.nn.Dropout(dropout_rate),
             torch.nn.Linear(dim * 2, dim),
         )
 
-        # FiLM conditioning: applied once at step 5.1 before attention
         self.film = FiLMLayer(dim_global, dim)
-
-    # ------------------------------------------------------------------
-    # MessagePassing hook
-    # ------------------------------------------------------------------
 
     def message(
         self,
-        q_i: Tensor,       # (E, dim) — destination query
-        k_j: Tensor,       # (E, dim) — source key
-        v_state_j: Tensor, # (E, dim) — source value-state
-    ) -> Tensor:           # returns (E, dim) attention-weighted messages
+        q_i: Tensor,        # (E, dim)      — destination query
+        k_j: Tensor,        # (E, dim)      — source key
+        v_state_j: Tensor,  # (E, dim)      — source value-state
+        edge_feat: Tensor,  # (E, dim_edge) — per-edge relative-position features
+        vis_j: Tensor,      # (E, dim_vis)  — source visual features (sliced by PyG)
+        edge_dst: Tensor,   # (E,)          — destination node index for softmax
+    ) -> Tensor:            # (E, dim) attention-weighted messages
         E = q_i.shape[0]
         H, D = self.num_heads, self.head_dim
 
-        e_ij  = self._edge_feats  # (E, dim_edge) — stashed before propagate
-        vis_j = self._vis_j       # (E, dim_vis)  — source visual features
+        msg = self.msg_mlp(torch.cat([v_state_j, edge_feat, vis_j], dim=-1))  # (E, dim)
 
-        # Step 2: generate message content
-        msg = self.msg_mlp(torch.cat([v_state_j, e_ij, vis_j], dim=-1))  # (E, dim)
-
-        # Step 3: compute attention score (head-wise dot + edge geometry bias)
         q_h = q_i.view(E, H, D)
         k_h = k_j.view(E, H, D)
-        dot   = (q_h * k_h).sum(-1) / math.sqrt(D)  # (E, H)
-        score = dot + self.edge_bias(e_ij)            # (E, H)
-        alpha = softmax(score, index=self._edge_dst, num_nodes=self._num_nodes)  # (E, H)
+        dot   = (q_h * k_h).sum(-1) / math.sqrt(D)       # (E, H)
+        score = dot + self.edge_bias(edge_feat)            # (E, H)
+        alpha = softmax(score, index=edge_dst, num_nodes=self._num_nodes)  # (E, H)
+        alpha = F.dropout(alpha, p=self.attn_dropout, training=self.training)  # (E, H)
 
-        # Step 4: weight messages by attention
         msg_h    = msg.view(E, H, D)
         weighted = (msg_h * alpha.unsqueeze(-1)).view(E, self.dim)  # (E, dim)
         return weighted
-
-    # ------------------------------------------------------------------
-    # Main forward
-    # ------------------------------------------------------------------
 
     def forward(
         self,
@@ -492,43 +623,35 @@ class PoseGraphLayer(MessagePassing):
         v: Tensor,           # (M, dim_vis)  per-node local visual features
         g: Tensor,           # (M, dim_global) global conditioning (timestep …)
     ) -> Tensor:
-        # 5.1 FiLM: inject global conditioning before attention
         h = self.film(h, g)
 
         if self.use_message_passing:
-            # 5.2 Q / K / V projections
             q       = self.W_q(h)
             k       = self.W_k(h)
             v_state = self.W_v(h)
 
-            # Stash per-edge data for message() — MessagePassing doesn't
-            # support arbitrary per-edge tensors natively, so we stash them.
-            src, dst = edge_index[0], edge_index[1]
-            self._edge_feats = e          # (E, dim_edge)
-            self._vis_j      = v[src]     # (E, dim_vis)  — source visual
-            self._edge_dst   = dst        # (E,)          — for softmax norm
-            self._num_nodes  = h.shape[0] # M
-
-            # 5.3–5.5 generate, score, and aggregate conditioned messages
-            agg = self.propagate(edge_index, q=q, k=k, v_state=v_state)  # (M, dim)
-
-            # 5.6 residual node update with aggregated messages + local vis
+            _, dst = edge_index[0], edge_index[1]
+            # Pass per-edge and per-node tensors through propagate kwargs.
+            # Avoids stashing activations as module attributes, which confuses
+            # torch.compile (dynamo captures stashed dtype and produces stale kernels
+            # when bf16-mixed autocast changes activation dtypes).
+            self._num_nodes = int(h.shape[0])  # plain Python int — safe for compile
+            agg = self.propagate(
+                edge_index,
+                q=q, k=k, v_state=v_state,
+                edge_feat=e,   # (E, dim_edge) — per-edge, passed as-is to message()
+                vis=v,         # (M, dim_vis)  — PyG slices vis_j = v[src] automatically
+                edge_dst=dst,  # (E,)          — destination indices for softmax
+            )  # (M, dim)
             h = h + self.update_mlp(torch.cat([h, agg, v], dim=-1))
         else:
-            # No graph — update from local visual features only
             h = h + self.update_mlp(torch.cat([h, v], dim=-1))
 
         return h
 
 
 class PoseGraphDecoder(torch.nn.Module):
-    """Stacked :class:`PoseGraphLayer` decoder.
-
-    Accepts a node state tensor already at ``hidden_dim`` (produced by
-    ``KeypointDiffusionModel.backward_process`` as ``h_i = LN(pos_emb + id_emb)``),
-    runs ``num_layers`` conditional message-passing layers, then predicts a
-    2-D coordinate correction with a final LayerNorm + linear head.
-    """
+    """Stacked PoseGraphLayers followed by a LayerNorm + linear coordinate prediction head."""
 
     def __init__(
         self,
@@ -540,6 +663,8 @@ class PoseGraphDecoder(torch.nn.Module):
         num_heads: int = 4,
         out_dim: int = 2,
         use_message_passing: bool = True,
+        dropout_rate: float = 0.1,
+        attn_dropout_rate: float = 0.1,
     ) -> None:
         super().__init__()
         self.layers = torch.nn.ModuleList([
@@ -550,6 +675,8 @@ class PoseGraphDecoder(torch.nn.Module):
                 dim_global=dim_global,
                 num_heads=num_heads,
                 use_message_passing=use_message_passing,
+                dropout_rate=dropout_rate,
+                attn_dropout_rate=attn_dropout_rate,
             )
             for _ in range(num_layers)
         ])
@@ -557,6 +684,10 @@ class PoseGraphDecoder(torch.nn.Module):
             torch.nn.LayerNorm(hidden_dim),
             torch.nn.Linear(hidden_dim, out_dim),
         )
+
+        # Initialise the final linear layer to zero so the untrained model predicts zero displacement.
+        self.output_proj[1].weight.data.zero_()
+        self.output_proj[1].bias.data.zero_()
 
     def forward(
         self,
@@ -577,45 +708,40 @@ class KeypointDiffusionModel(torch.nn.Module):
     def __init__(
         self,
         config: KeypointDiffusionConfig,
-        num_keypoints: int = 15,
+        num_keypoints: int = 14,
     ) -> None:
         super().__init__()
         self.config = config
         self.num_keypoints = num_keypoints
 
-        # --- Step 1: Node state initialisation ---
-        # pos_emb_i = MLP_pos(x_i)  (2 → dim_pos → dim_hidden)
         self.position_embedding = torch.nn.Sequential(
             torch.nn.Linear(2, config.dim_pos),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_pos, config.dim_hidden),
         )
-        # id_emb_i = Embedding(id_i)  (→ dim_hidden)
         self.node_idx_embedding = torch.nn.Embedding(num_keypoints, config.dim_hidden)
-        # h_i = LayerNorm(pos_emb_i + id_emb_i)
         self.node_init_norm = torch.nn.LayerNorm(config.dim_hidden)
 
-        # --- Step 3: Global conditioning ---
         self.timestep_embedding = TimestepSinusoidalEmbedding(config.dim_time)
-        # MLP_global: [t_emb (, pooled_dino)] → g
         global_in = config.dim_time + (
             config.dim_global_image_cond if config.use_global_image_cond else 0
         )
         self.global_cond_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_in, config.dim_time),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_time, config.dim_time),
         )
 
-        # --- Step 4: Edge feature encoder: MLP_edge(delta_ij)  (2 → dim_edge) ---
         self.edge_encoder = torch.nn.Sequential(
             torch.nn.Linear(2, config.dim_edge),
             torch.nn.GELU(),
+            torch.nn.Dropout(config.dropout_rate),
             torch.nn.Linear(config.dim_edge, config.dim_edge),
         )
 
-        # Step 2 visual features (v_i) are injected per-layer via image_cond.
-        # Zeros are passed when use_image_cond=False; dim is always dim_image_cond.
+        # Visual features (v_i) are zeros when use_image_cond=False; dim is always dim_image_cond.
         dim_vis = config.dim_image_cond
 
         self.decoder = PoseGraphDecoder(
@@ -626,6 +752,8 @@ class KeypointDiffusionModel(torch.nn.Module):
             num_layers=config.num_layers,
             num_heads=config.num_heads,
             use_message_passing=config.use_message_passing,
+            dropout_rate=config.dropout_rate,
+            attn_dropout_rate=config.attn_dropout_rate,
         )
 
         # VE noise schedule (EDM-style): sigmas[0]=0 (clean sentinel used at the end
@@ -663,33 +791,31 @@ class KeypointDiffusionModel(torch.nn.Module):
     ) -> Tensor:
         M = noisy_node_pos.shape[0]  # B*N*K
 
-        # Step 1: h_i = LayerNorm(MLP_pos(x_i) + Embedding(id_i))
+        if self.config.zero_delta:
+            return torch.zeros_like(noisy_node_pos)
+
         pos_emb = self.position_embedding(noisy_node_pos)  # (M, dim_hidden)
         idx_emb = self.node_idx_embedding(kpt_type_idx)    # (M, dim_hidden)
         h = self.node_init_norm(pos_emb + idx_emb)         # (M, dim_hidden)
 
-        # 2. Edge features: e_ij = MLP_edge(x_j − x_i)  (relative joint position)
         src, dst = edge_index[0], edge_index[1]
-        delta_ij = noisy_node_pos[src] - noisy_node_pos[dst]  # (E, 2)  x_j − x_i
+        delta_ij = noisy_node_pos[src] - noisy_node_pos[dst]  # (E, 2)
         e = self.edge_encoder(delta_ij)                        # (E, dim_edge)
 
-        # 3. Local visual features: v_i from image conditioning (zeros if disabled)
         if image_cond is not None:
-            v = image_cond  # (M, dim_image_cond) — projected DINO patch features
+            v = image_cond
         else:
             v = torch.zeros(
                 M, self.config.dim_image_cond,
                 device=noisy_node_pos.device, dtype=noisy_node_pos.dtype,
             )
 
-        # 4. Global conditioning: g = MLP_global([t_emb, pooled_dino?])
         t_emb = self.timestep_embedding(timestep)[batch_idx]  # (M, dim_time)
         if global_image_cond is not None:
             t_emb = torch.cat([t_emb, global_image_cond], dim=-1)  # (M, dim_time + dim_global)
         g = self.global_cond_mlp(t_emb)                           # (M, dim_time)
 
-        # Steps 5–6: stacked graph layers + coordinate prediction head
-        return self.decoder(h, edge_index, e, v, g)        # (M, 2)
+        return self.decoder(h, edge_index, e, v, g)  # (M, 2)
 
     @torch.no_grad()
     def ddim_sample(
@@ -711,12 +837,10 @@ class KeypointDiffusionModel(torch.nn.Module):
         num_steps = num_inference_steps if num_inference_steps is not None else t_start
         device = device or edge_index.device
 
-        # Build decreasing timestep schedule: [t_start, ..., 1]
         timesteps = torch.linspace(
             t_start, 1, num_steps, dtype=torch.long, device=device
         )
 
-        # Start from provided initial estimate or pure Gaussian noise
         if x_init is not None:
             x = x_init.to(device)
         else:
@@ -725,8 +849,9 @@ class KeypointDiffusionModel(torch.nn.Module):
         prev_timestep_list = torch.cat(
             [timesteps[1:], timesteps.new_zeros(1)]
         )  # trailing 0 = clean
+        B = batch_idx.max().item() + 1  # computed once to avoid per-step CPU-GPU sync
         for timestep, prev_timestep in zip(timesteps, prev_timestep_list):
-            timestep_batch = timestep.expand(batch_idx.max().item() + 1)  # (B,)
+            timestep_batch = timestep.expand(B)  # (B,)
 
             bp_kwargs = dict(
                 noisy_node_pos=x,
@@ -763,15 +888,94 @@ class KeypointDiffusionModel(torch.nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Standalone augmentation functions  (pure, stateless — easy to unit-test)
-# ---------------------------------------------------------------------------
+@dataclass
+class StepOutputs:
+    pred_pixel: Tensor       # (B, N, 14, 2)
+    pred_canonical: Tensor   # (B, N, 14, 2)
+    gt_pixel: Tensor         # (B, N, 14, 2)
+    gt_canonical: Tensor     # (B, N, 14, 2)
+    timestep: Tensor         # (B,)
+
+
+def denoise_and_decode(
+    model: KeypointDiffusionModel,
+    sample: PoseSample,
+    graph: PoseGraphBatch,
+    timestep: Tensor,        # (B,)
+    generator: torch.Generator | None = None,
+    noisy_node_pos: Tensor | None = None,  # pre-computed; add_noise is skipped when provided
+) -> StepOutputs:
+    """Add noise at timestep, run backward_process, decode to pixel space."""
+    if noisy_node_pos is None:
+        noisy_node_pos, _ = model.add_noise(
+            node_pos=graph.node_pos,
+            timestep=timestep,
+            batch_idx=graph.node_batch,
+            generator=generator,
+        )
+    pred_delta = model.backward_process(
+        noisy_node_pos=noisy_node_pos,
+        edge_index=graph.edge_index,
+        kpt_type_idx=graph.flat_kpt_type_idx,
+        batch_idx=graph.node_batch,
+        timestep=timestep,
+        image_cond=graph.image_cond,
+        global_image_cond=graph.global_image_cond,
+    )
+
+    # canonical = (noisy - delta); inverse: pixel = (canonical + 1) / 2 * [W, H]
+    pred_canonical = (noisy_node_pos - pred_delta).view(graph.B, graph.N, graph.K, 2)  # (B, N, 14, 2)
+    pred_pixel = (pred_canonical + 1) / 2 * graph.img_wh[:, None, None, :]             # (B, N, 14, 2)
+
+    gt_canonical = sample.gt_keypoints / graph.img_wh[:, None, None, :] * 2 - 1
+
+    return StepOutputs(
+        pred_pixel=pred_pixel,
+        pred_canonical=pred_canonical,
+        gt_pixel=sample.gt_keypoints,
+        gt_canonical=gt_canonical,
+        timestep=timestep,
+    )
+
+
+def _log_eval_step(
+    module: "PoseDiffusionModule",
+    losses: dict[str, Tensor],
+    outputs: StepOutputs,
+    sample: PoseSample,
+    graph: PoseGraphBatch,
+    prefix: str,
+    on_step: bool,
+) -> None:
+    log_kwargs = dict(batch_size=graph.B, on_step=on_step, on_epoch=True)
+    module.log(f"{prefix}/loss", losses["loss"], prog_bar=True, **log_kwargs)
+    for name, value in losses.items():
+        if name != "loss":
+            module.log(f"{prefix}/{name}", value, **log_kwargs)
+    module.log(f"{prefix}/mpjpe_px", compute_mpjpe(outputs.pred_pixel, outputs.gt_pixel, sample.visibility), **log_kwargs)
+    module.log(f"{prefix}/pck_20px", compute_pck(outputs.pred_pixel, outputs.gt_pixel, sample.visibility, threshold_px=20.0), **log_kwargs)
+
+
+def _run_and_log_ap_eval(
+    module: "PoseDiffusionModule",
+    pred_cache: str,
+    metric: "KeypointAPMetric",
+    prefix: str,
+    epoch: int | None = None,
+    log_prog_bar: bool = False,
+) -> None:
+    for n in (module._ap_step_counts or [None]):
+        suffix = f"@{n}" if n is not None else ""
+        desc = f"{prefix} AP{suffix}" + (f" [epoch {epoch}]" if epoch is not None else "")
+        module._run_ap_eval(pred_cache, metric, desc=desc, num_steps=n)
+        results = metric.compute()
+        for key, val in results.items():
+            module.log(f"{prefix}/{key}{suffix}", val, prog_bar=(log_prog_bar and key == "crowdpose/AP"), sync_dist=True)
 
 
 def joint_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
-    """Zero random non-root joints in-place; return updated visibility (dropped joints → 0)."""
+    # Root (index 0) is never dropped.
     B, N, K = can_vis.shape
-    # Root (index 0) is never dropped; sample only the K-1 remaining joints
     drop_mask = torch.zeros_like(can_vis, dtype=torch.bool)
     drop_mask[:, :, 1:] = torch.bernoulli(
         torch.full((B, N, K - 1), p, device=node_pos.device)
@@ -781,12 +985,8 @@ def joint_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
 
 
 def joint_randomize(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
-    """Replace random non-root joints in-place with uniform positions in [-1, 1]².
-
-    Simulates a badly-localised detector output (present joint, wrong position).
-    Visibility is intentionally preserved so the loss still penalises wrong positions.
-    Root (index 0) is never touched.
-    """
+    # Simulates a badly-localised detector: joint present but wrong position.
+    # Visibility is preserved so the loss still penalises the wrong position.
     B, N, K = can_vis.shape
     rand_mask = torch.zeros_like(can_vis, dtype=torch.bool)
     rand_mask[:, :, 1:] = torch.bernoulli(
@@ -798,7 +998,6 @@ def joint_randomize(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
 
 
 def pose_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
-    """Zero all joints of random persons in-place; return updated visibility (dropped → 0)."""
     B, N, K = can_vis.shape
     person_drop = torch.bernoulli(torch.full((B, N), p, device=node_pos.device)).bool()
     drop_mask = person_drop.unsqueeze(-1).expand(B, N, K)
@@ -807,12 +1006,10 @@ def pose_dropout(node_pos: Tensor, can_vis: Tensor, p: float) -> Tensor:
 
 
 def keypoint_jitter(keypoints: Tensor, std_px: float) -> Tensor:
-    """Return new keypoints with zero-mean Gaussian noise (std=std_px pixels) added."""
     return keypoints + torch.randn_like(keypoints) * std_px
 
 
 def image_dropout(image_cond: Tensor, p: float) -> None:
-    """Zero random rows of image_cond (B*N*K, D) in-place with probability p."""
     drop = torch.bernoulli(
         torch.full((image_cond.shape[0],), p, device=image_cond.device)
     ).bool()
@@ -824,7 +1021,6 @@ def compute_joint_loss(
     gt_pixel: Tensor,  # (B, N, K, 2)
     visibility: Tensor,  # (B, N, K)  0=absent 1=occluded 2=visible
 ) -> Tensor:
-    """Visibility-weighted per-joint MSE (absent→0, occluded→1, visible→2 weight)."""
     visibility_weight = visibility.float()  # (B, N, K)
     per_joint_sq_err = ((pred_pixel - gt_pixel) ** 2).sum(dim=-1)  # (B, N, K)
     total_weight = visibility_weight.sum().clamp(min=1.0)
@@ -837,10 +1033,7 @@ def compute_bone_loss(
     visibility: Tensor,  # (B, N, K)  0/1/2
     edge_list: list[tuple[int, int]],
 ) -> Tensor:
-    """Visibility-weighted bone-length MSE averaged over edges.
-
-    Edge weight = vis[u] * vis[v]; absent endpoint → 0, both visible → 4.
-    """
+    # Edge weight = vis[u] * vis[v]; absent endpoint → 0, both visible → 4.
     visibility_weight = visibility.float()
     loss = gt_pixel.new_zeros(())
     for u, v in edge_list:
@@ -850,6 +1043,19 @@ def compute_bone_loss(
         gt_len = (gt_pixel[:, :, u] - gt_pixel[:, :, v]).norm(dim=-1)  # (B, N)
         loss = loss + ((pred_len - gt_len).pow(2) * edge_weight).sum() / weight_sum
     return loss / len(edge_list)
+
+
+def _read_img_wh(img_paths: list[str], B: int, device: torch.device) -> Tensor:
+    """Return (W, H) per image as a (B, 2) float tensor; fallback to (800, 800)."""
+    wh: list[tuple[float, float]] = []
+    for i in range(B):
+        path = img_paths[i] if i < len(img_paths) else ""
+        try:
+            h, w = read_image_size(path)
+            wh.append((float(w), float(h)))
+        except Exception:
+            wh.append((800.0, 800.0))
+    return torch.tensor(wh, dtype=torch.float32, device=device)
 
 
 class PoseDiffusionModule(pl.LightningModule):
@@ -872,13 +1078,18 @@ class PoseDiffusionModule(pl.LightningModule):
         ap_batch_size: int = 8,
         ap_eval_interval: int = 0,
         ap_step_counts: list[int] | None = None,
-        inference_noise_frac: float = 0.1,
+        start_inference_noise_frac: float = 0.4,
+        raw_refiner: bool = False,
+        disable_noise: bool = False,
         # DINO conditioning
         dino_model_name: str | None = None,
         dino_neighborhood_radius: int = 1,
         dino_cache_train: str | None = None,
         dino_cache_val: str | None = None,
         dino_cache_test: str | None = None,
+        dino_conditioner_type: str = "simple",  # "simple" | "attention"
+        dino_inner_dim: int = 256,
+        dino_num_heads: int = 4,
         dino_conditioner: "DinoConditioner | None" = None,  # inject directly (e.g. for testing)
     ) -> None:
         super().__init__()
@@ -894,7 +1105,9 @@ class PoseDiffusionModule(pl.LightningModule):
         self._ap_batch_size = ap_batch_size
         self._ap_eval_interval = ap_eval_interval
         self._ap_step_counts = ap_step_counts
-        self._inference_noise_frac = inference_noise_frac
+        self._start_inference_noise_frac = start_inference_noise_frac
+        self._raw_refiner = raw_refiner
+        self._disable_noise = disable_noise
         self._val_pred_cache = val_pred_cache
         self._test_pred_cache = test_pred_cache
 
@@ -909,35 +1122,21 @@ class PoseDiffusionModule(pl.LightningModule):
                 for p in [dino_cache_train, dino_cache_val, dino_cache_test]
                 if p is not None
             ]
-            self.dino_conditioner = DinoConditioner(
-                model_name=dino_model_name,
-                out_dim=model.config.dim_image_cond,
-                neighborhood_radius=dino_neighborhood_radius,
-                cache_paths=cache_files or None,
-            )
+            if dino_conditioner_type == "attention":
+                self.dino_conditioner = AttentionDinoConditioner(
+                    model_name=dino_model_name,
+                    out_dim=model.config.dim_image_cond,
+                    inner_dim=dino_inner_dim,
+                    num_heads=dino_num_heads,
+                    cache_paths=cache_files or None,
+                )
+            else:
+                self.dino_conditioner = DinoConditioner(
+                    model_name=dino_model_name,
+                    out_dim=model.config.dim_image_cond,
+                    cache_paths=cache_files or None,
+                )
 
-        # Optional CNN patch conditioner (TODO[3]): local pixel-level evidence per joint.
-        self.cnn_conditioner: PatchCNNConditioner | None = None
-        if model.config.use_cnn_cond:
-            self.cnn_conditioner = PatchCNNConditioner(
-                out_dim=model.config.dim_image_cond,
-                patch_size=model.config.cnn_patch_size,
-            )
-
-        # When both conditioners are active, raw features are projected + fused in
-        # get_local_spatial_condition via these three linears.
-        self.dino_proj: torch.nn.Linear | None = None
-        self.cnn_proj: torch.nn.Linear | None = None
-        self.fuse_proj: torch.nn.Linear | None = None
-        if self.dino_conditioner is not None and self.cnn_conditioner is not None:
-            dino_raw_dim = self.dino_conditioner.hidden_dim
-            dim_cond = model.config.dim_image_cond
-            self.dino_proj = torch.nn.Linear(dino_raw_dim, dim_cond)
-            self.cnn_proj = torch.nn.Linear(self.cnn_conditioner.backbone_dim, dim_cond)
-            self.fuse_proj = torch.nn.Linear(2 * dim_cond, dim_cond)
-
-        # Global image conditioning (TODO[5]): project mean-pooled DINO patch tokens
-        # to dim_global_image_cond; combined with timestep in global_cond_mlp.
         self.global_dino_proj: torch.nn.Linear | None = None
         if model.config.use_global_image_cond:
             if self.dino_conditioner is None:
@@ -951,92 +1150,63 @@ class PoseDiffusionModule(pl.LightningModule):
                 dino_hidden, model.config.dim_global_image_cond
             )
 
-    # ------------------------------------------------------------------
-    # Batch preparation (graph build + optional DINO conditioning)
-    # ------------------------------------------------------------------
 
-    def transfer_batch_to_device(self, batch: dict, device: torch.device, dataloader_idx: int) -> dict:
-        """Move batch to device, but keep pre-loaded images on CPU.
-
-        Lightning normally moves every tensor in the batch to the accelerator
-        device.  Images are only needed on CPU for patch extraction, so we pop
-        them out before the transfer and put them back afterwards.
-        """
-        images = batch.pop("image", None)
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        if images is not None:
-            batch["image"] = images  # keep as CPU tensors
-        return batch
-
-    def prepare_batch(self, batch: dict, augment: bool = False) -> dict:
-        """Build graph, optionally augment (jitter before conditioning so coordinates match), add image conditioning."""
-        prepare_pose_graph_batch(batch)
+    def prepare_batch(self, batch: dict, augment: bool = False) -> tuple[PoseSample, PoseGraphBatch]:
+        sample = prepare_sample(batch)
+        if augment:
+            self._augment_sample(sample)
+        img_wh = _read_img_wh(sample.img_path, sample.B, sample.keypoints.device)
+        graph = prepare_pose_graph_batch(sample, img_size=img_wh)
 
         if augment:
-            self._augment_graph(batch)
+            self._augment_graph(graph)
 
-        image_cond = self.get_local_spatial_condition(batch)
+        image_cond = self.get_local_spatial_condition(sample, graph)
         if image_cond is not None:
-            batch["image_cond"] = image_cond
+            graph.image_cond = image_cond
 
-        global_image_cond = self.get_global_image_cond(batch)
+        global_image_cond = self.get_global_image_cond(sample, graph)
         if global_image_cond is not None:
-            batch["global_image_cond"] = global_image_cond
+            graph.global_image_cond = global_image_cond
 
         if augment:
-            self._augment_image_cond(batch)
+            self._augment_image_cond(graph)
 
-        return batch
+        return sample, graph
 
-    # ------------------------------------------------------------------
-    # Augmentation helpers
-    # ------------------------------------------------------------------
-
-    def _augment_graph(self, batch: dict) -> None:
-        """Joint/pose dropout and pixel jitter (runs before DINO so jittered coords are used)."""
+    def _augment_sample(self, sample: PoseSample) -> None:
         cfg = self.model.config
-        node_pos = batch["node_pos"]  # (B*N*K, 2)  canonical
-        can_vis = batch["canonical_visibility"]  # (B, N, K)
+        if cfg.aug_jitter:
+            sample.keypoints = keypoint_jitter(sample.keypoints, cfg.p_jitter_px)
+
+    def _augment_graph(self, graph: PoseGraphBatch) -> None:
+        cfg = self.model.config
 
         if cfg.aug_joint_drop:
-            can_vis = joint_dropout(node_pos, can_vis, cfg.p_joint_drop)
+            graph.canonical_visibility = joint_dropout(graph.node_pos, graph.canonical_visibility, cfg.p_joint_drop)
         if cfg.aug_pose_drop:
-            can_vis = pose_dropout(node_pos, can_vis, cfg.p_pose_drop)
+            graph.canonical_visibility = pose_dropout(graph.node_pos, graph.canonical_visibility, cfg.p_pose_drop)
         if cfg.aug_joint_rand:
-            joint_randomize(node_pos, can_vis, cfg.p_joint_rand)
-        batch["canonical_visibility"] = can_vis
+            joint_randomize(graph.node_pos, graph.canonical_visibility, cfg.p_joint_rand)
 
-        if cfg.aug_jitter:
-            keypoints = batch["keypoints"]  # (B, N, 14, 2) pixel-space
-            batch["gt_keypoints"] = keypoints.clone()
-            batch["keypoints"] = keypoint_jitter(keypoints, cfg.p_jitter_px)
-
-    def _augment_image_cond(self, batch: dict) -> None:
-        """Zero random DINO node embeddings in-place (runs after DINO conditioning)."""
-        image_cond = batch.get("image_cond")
-        if image_cond is None or not self.model.config.aug_img_drop:
+    def _augment_image_cond(self, graph: PoseGraphBatch) -> None:
+        if graph.image_cond is None or not self.model.config.aug_img_drop:
             return
-        image_dropout(image_cond, self.model.config.p_img_drop)
+        image_dropout(graph.image_cond, self.model.config.p_img_drop)
 
-    def get_loss(self, batch: dict, outputs: dict) -> dict[str, Tensor]:
-        """Compute weighted losses in canonical (normalised root-relative) space.
-
-        Using canonical coords keeps magnitudes ~O(1) regardless of image scale
-        (pixel-space losses were ~1e5 for typical CrowdPose images).
-        """
+    def get_loss(self, sample: PoseSample, graph: PoseGraphBatch, outputs: StepOutputs) -> dict[str, Tensor]:
+        # Pixel space keeps loss magnitudes independent of canonical parameterisation.
         cfg = self.model.config
-        pred_canonical = outputs["pred_canonical"]  # (B, N, 14, 2)
-        gt_canonical = outputs["gt_canonical"]       # (B, N, 14, 2)
-        visibility = batch["visibility"]              # (B, N, 14)  0=absent 1=occluded 2=visible
+        visibility = sample.visibility  # (B, N, 14)  0=absent 1=occluded 2=visible
 
         losses: dict[str, Tensor] = {}
         if cfg.use_joint_loss:
             losses["joint_loss"] = (
-                compute_joint_loss(pred_canonical, gt_canonical, visibility) * cfg.w_joint_loss
+                compute_joint_loss(outputs.pred_pixel, outputs.gt_pixel, visibility) * cfg.w_joint_loss
             )
         if cfg.use_bone_loss:
             losses["bone_loss"] = (
-                compute_bone_loss(pred_canonical, gt_canonical, visibility, CROWDPOSE_EDGE_LIST)
+                compute_bone_loss(outputs.pred_pixel, outputs.gt_pixel, visibility, CROWDPOSE_EDGE_LIST)
                 * cfg.w_bone_loss
             )
         if not losses:
@@ -1046,109 +1216,32 @@ class PoseDiffusionModule(pl.LightningModule):
         losses["loss"] = sum(losses.values())
         return losses
 
-    def get_global_image_cond(self, batch: dict) -> Tensor | None:
-        """Mean-pool DINO patch tokens per image → (B*N*K, dim_global_image_cond) or None.
-
-        The pooled feature is projected by ``global_dino_proj``, then broadcast
-        to every node of the corresponding image via ``batch["batch"]``.
-        """
+    def get_global_image_cond(self, sample: PoseSample, graph: PoseGraphBatch) -> Tensor | None:  # (B*N*K, dim_global_image_cond)
         if self.global_dino_proj is None:
             return None
+        pooled = self.dino_conditioner.fetch_global_feats(sample.image_id, self.device)  # (B, hidden_dim)
+        projected = self.global_dino_proj(pooled)   # (B, dim_global_image_cond)
+        return projected[graph.node_batch]          # (B*N*K, dim_global_image_cond)
 
-        dino = self.dino_conditioner
-        image_ids = [int(i) for i in batch["image_id"]]
-
-        if dino._patch_cache is None:
-            raise RuntimeError(
-                "DINO patch cache is not loaded. "
-                "Run scripts/precompute_dino.py and set dino.cache_train / dino.cache_val "
-                "in your config, or disable use_global_image_cond."
-            )
-        try:
-            patch_feats = torch.stack(
-                [dino._patch_cache[iid] for iid in image_ids]
-            ).to(self.device)  # (B, G*G, D)
-        except KeyError as e:
-            raise RuntimeError(
-                f"Image id {e} not found in DINO patch cache. "
-                f"Re-run scripts/precompute_dino.py for the correct split and update "
-                f"dino.cache_train / dino.cache_val in your config."
-            ) from e
-
-        pooled = patch_feats.mean(dim=1)                     # (B, D)
-        projected = self.global_dino_proj(pooled)            # (B, dim_global_image_cond)
-        return projected[batch["batch"]]                     # (B*N*K, dim_global_image_cond)
-
-    def get_local_spatial_condition(self, batch: dict) -> Tensor | None:
-        """Compute per-keypoint local visual features → (B*N*15, dim_image_cond) or None.
-
-        DINO only   : dino.proj(dino_feat)
-        CNN only    : cnn.head(cnn_feat)
-        DINO + CNN  : fuse_proj(cat([dino_proj(dino_feat), cnn_proj(cnn_feat)]))
-        """
-        from src.data import read_image
-
-        if self.dino_conditioner is None and self.cnn_conditioner is None:
+    def get_local_spatial_condition(
+        self,
+        sample: PoseSample,
+        graph: PoseGraphBatch,
+        kpt_pixel: Tensor | None = None,  # (B, N, 14, 2) pixel-space; defaults to sample.keypoints
+    ) -> Tensor | None:  # (B*N*14, dim_image_cond)
+        if self.dino_conditioner is None:
             return None
-
-        keypoints = batch["keypoints"]  # (B, N, 14, 2)
-        B, N, K = keypoints.shape[:3]
-        kpt = keypoints.to(self.device)
-        image_ids = [int(i) for i in batch["image_id"]]
-
-        if self.dino_conditioner is not None:
-            dino = self.dino_conditioner
-            if dino._patch_cache is None:
-                raise RuntimeError(
-                    "DINO patch cache is not loaded. "
-                    "Run scripts/precompute_dino.py and set dino.cache_train / dino.cache_val "
-                    "in your config, or disable use_image_cond."
-                )
-            try:
-                patch_feats = torch.stack(
-                    [dino._patch_cache[iid] for iid in image_ids]
-                ).to(self.device)
-            except KeyError as e:
-                raise RuntimeError(
-                    f"Image id {e} not found in DINO patch cache. "
-                    f"Re-run scripts/precompute_dino.py for the correct split and update "
-                    f"dino.cache_train / dino.cache_val in your config."
-                ) from e
-            image_sizes = [read_image_size(p) for p in batch["img_path"]]
-            img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)
-            dino_feat = dino._gather_neighborhood(patch_feats, kpt, img_hw)  # (B, N, K, D_dino)
-
-        if self.cnn_conditioner is not None:
-            cnn = self.cnn_conditioner
-            # Use images pre-loaded by DataLoader workers if available;
-            # otherwise fall back to reading from disk on the training process.
-            images_cpu: list[Tensor] = batch.get("image") or [
-                read_image(p).float().div(255.0) for p in batch["img_path"]
-            ]
-            cnn_feat = torch.stack([
-                cnn.cnn(
-                    cnn._extract_patches(images_cpu[b], kpt[b].cpu()).to(self.device)
-                ).mean(dim=(-2, -1)).view(N, K, -1)
-                for b in range(B)
-            ])  # (B, N, K, cnn.backbone_dim)
-
-        if self.dino_conditioner is not None and self.cnn_conditioner is not None:
-            keypoint_emb = self.fuse_proj(
-                torch.cat([self.dino_proj(dino_feat), self.cnn_proj(cnn_feat)], dim=-1)
-            )
-        elif self.dino_conditioner is not None:
-            keypoint_emb = dino.proj(dino_feat)
+        image_sizes = [read_image_size(p) for p in sample.img_path]
+        img_hw = torch.tensor(image_sizes, dtype=torch.float32, device=self.device)
+        kpt = kpt_pixel.to(self.device) if kpt_pixel is not None else sample.keypoints.to(self.device)
+        if isinstance(self.dino_conditioner, AttentionDinoConditioner):
+            joint_mask = (graph.canonical_visibility == 0).to(self.device)  # (B, N, K)
+            feats = self.dino_conditioner(
+                kpt, img_hw, image_ids=sample.image_id, joint_mask=joint_mask
+            )  # (B, N, K, out_dim)
         else:
-            keypoint_emb = cnn.head(cnn_feat)
-
-        j = CROWDPOSE_JOINT_NAMES
-        anchor_idx = [j["left_hip"], j["right_hip"], j["neck"]]
-        root_emb = keypoint_emb[:, :, anchor_idx, :].mean(dim=2, keepdim=True)  # (B, N, 1, D)
-        return torch.cat([root_emb, keypoint_emb], dim=2).reshape(B * N * 15, -1)
-
-    # ------------------------------------------------------------------
-    # AP evaluation helpers
-    # ------------------------------------------------------------------
+            feats = self.dino_conditioner(kpt, img_hw, image_ids=sample.image_id)  # (B, N, K, out_dim)
+        return feats.reshape(graph.B * graph.N * graph.K, -1)
 
     def _ap_step(
         self,
@@ -1156,74 +1249,99 @@ class PoseDiffusionModule(pl.LightningModule):
         metric: KeypointAPMetric,
         num_steps: int | None = None,
     ) -> None:
-        """Refine one batch of detector predictions with DDIM and feed results to *metric*."""
-        pred_pixel, pred_scores, image_ids = self._refine_prediction_batch(batch, num_steps=num_steps)
-        metric.update(pred_pixel, pred_scores, image_ids)
+        n_passes = num_steps if num_steps is not None else 1
+        pred_pixel, pred_scores, image_ids = self._iterative_refine_batch(batch, n_passes=n_passes)
+        bbox_scores = batch.get("bbox_scores")  # (B, N) or None
+        metric.update(pred_pixel, pred_scores, image_ids, bbox_scores=bbox_scores)
 
+    @torch.no_grad()
+    def _iterative_refine_batch(
+        self,
+        batch: dict,
+        n_passes: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Run refinement n_passes times, halving noise_frac each pass.
+
+        Pass i uses noise_frac = start_inference_noise_frac / 2^i (0-indexed),
+        feeding each pass's pixel output as the next pass's input.
+        """
+        start_frac = self._start_inference_noise_frac
+        current_batch = batch
+        for i in range(n_passes):
+            noise_frac = start_frac / (2 ** i)
+            pred_pixel, pred_scores, image_ids = self._refine_prediction_batch(
+                current_batch, noise_frac=noise_frac
+            )
+            if i < n_passes - 1:
+                current_batch = {**batch, "pred_keypoints": pred_pixel.detach()}
+        return pred_pixel, pred_scores, image_ids
+
+    @torch.no_grad()
     def _refine_prediction_batch(
         self,
         batch: dict,
         num_steps: int | None = None,
+        noise_frac: float | None = None,
     ) -> tuple[Tensor, Tensor, Tensor]:
         pred_kpts = batch["pred_keypoints"].to(self.device)  # (B, N, 14, 2) pixel
         pred_scores = batch["pred_keypoint_scores"].to(self.device)  # (B, N, 14)
         image_ids = batch["image_id"]  # (B,)
-
-        B, N = pred_kpts.shape[:2]
-        K = 15  # canonical keypoints (14 + virtual root)
 
         batch["keypoints"] = pred_kpts
         # Detector confidence > 0.1 → treat as visible (matches the threshold used in training data)
         batch["visibility"] = (pred_scores > 0.1).float()
 
         # Convert predictions to canonical space (root-relative, normalised)
-        self.prepare_batch(batch)
-
-        edge_index = batch["edge_index"]  # (2, B*N*E)
-        node_type_idx = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
-        node_batch_idx = batch["batch"]  # (B*N*K,)
-        num_nodes = B * N * K
+        sample, graph = self.prepare_batch(batch)
 
         T = self.model.config.num_train_steps
-        t_start = max(1, round(T * self._inference_noise_frac))
+        frac = noise_frac if noise_frac is not None else self._start_inference_noise_frac
+        t_start = max(1, round(T * frac))
 
-        # Add a small amount of noise so the model sees in-distribution inputs
-        # while keeping predictions close to the detector output.
-        noise_timestep = torch.full(
-            (B,), t_start, dtype=torch.long, device=pred_kpts.device
-        )
-        x_init_noisy, _ = self.model.add_noise(
-            node_pos=batch["node_pos"],
-            timestep=noise_timestep,
-            batch_idx=node_batch_idx,
-        )  # (B*N*K, 2)
+        if self._raw_refiner:
+            # No noise — feed clean detector output directly; single backward pass.
+            x_init_noisy = graph.node_pos
+            n_steps = 1
+        else:
+            if self._disable_noise:
+                # Skip noise injection — start DDIM from clean detector output.
+                x_init_noisy = graph.node_pos
+            else:
+                # Add a small amount of noise so the model sees in-distribution inputs
+                # while keeping predictions close to the detector output.
+                noise_timestep = torch.full(
+                    (graph.B,), t_start, dtype=torch.long, device=pred_kpts.device
+                )
+                x_init_noisy, _ = self.model.add_noise(
+                    node_pos=graph.node_pos,
+                    timestep=noise_timestep,
+                    batch_idx=graph.node_batch,
+                )  # (B*N*K, 2)
 
-        default_steps = (
-            self.num_inference_steps
-            if self.num_inference_steps is not None
-            else t_start
-        )
-        n_steps = num_steps if num_steps is not None else default_steps
+            default_steps = (
+                self.num_inference_steps
+                if self.num_inference_steps is not None
+                else t_start
+            )
+            n_steps = num_steps if num_steps is not None else default_steps
 
         nodes_canonical_flat = self.model.ddim_sample(
-            edge_index=edge_index,
-            kpt_type_idx=node_type_idx,
-            batch_idx=node_batch_idx,
-            num_nodes=num_nodes,
+            edge_index=graph.edge_index,
+            kpt_type_idx=graph.flat_kpt_type_idx,
+            batch_idx=graph.node_batch,
+            num_nodes=graph.num_nodes,
             num_inference_steps=n_steps,
             start_t=t_start,
             device=pred_kpts.device,
             x_init=x_init_noisy,
-            image_cond=batch.get("image_cond"),
-            global_image_cond=batch.get("global_image_cond"),
+            image_cond=graph.image_cond,
+            global_image_cond=graph.global_image_cond,
             guidance_scale=self.cfg_guidance_scale,
         )  # (B*N*K, 2)
 
-        # Convert back to pixel space using the root and scale from the batch
-        nodes_canonical = nodes_canonical_flat.view(B, N, K, 2)
-        joint_pred_pixel = canonical_to_pixel(
-            nodes_canonical, batch["root_pos"], scale=batch["scale"]
-        )
+        # Convert back to pixel space using per-image (W, H)
+        nodes_canonical = nodes_canonical_flat.view(graph.B, graph.N, graph.K, 2)
+        joint_pred_pixel = canonical_to_pixel(nodes_canonical, graph.img_wh)
 
         return joint_pred_pixel, pred_scores, image_ids
 
@@ -1234,7 +1352,6 @@ class PoseDiffusionModule(pl.LightningModule):
         desc: str = "AP eval",
         num_steps: int | None = None,
     ) -> None:
-        """Load a prediction cache, refine every batch, and accumulate into *metric*."""
         from tqdm import tqdm
         from src.data import PredictionDataset
 
@@ -1253,70 +1370,48 @@ class PoseDiffusionModule(pl.LightningModule):
         batch: dict,
         stage: str,
         generator: torch.Generator | None = None,
-    ) -> Tensor:
-        self.prepare_batch(batch, augment=(stage == "train"))
-
-        B, N = batch["keypoints"].shape[:2]
-        K = 15  # canonical nodes: 14 joints + 1 virtual root
-
-        node_pos = batch["node_pos"]  # (B*N*K, 2) canonical
-        node_type_idx = batch["kpt_type_idx"].reshape(-1)  # (B*N*K,) values in [0, K-1]
-        node_batch_idx = batch["batch"]  # (B*N*K,)
-        edge_index = batch["edge_index"]  # (2, B*N*E)
-        root_pos = batch["root_pos"]  # (B, N, 2) pixel-space root
-        scale = batch["scale"]  # (B,) normalisation divisor
+    ) -> tuple[dict[str, Tensor], StepOutputs, PoseSample, PoseGraphBatch]:
+        sample, graph = self.prepare_batch(batch, augment=(stage == "train"))
 
         timestep = torch.randint(
             1,
             self.model.config.num_train_steps + 1,
-            (B,),
-            device=node_pos.device,
-            generator=generator,
-        )  # (B,)  — 1-indexed to match VP schedule buffers
+            (graph.B,),
+            device=graph.node_pos.device,
+        )  # (B,)  — 1-indexed to match sigma schedule
 
+        # Add noise before deriving conditioning — prevents leaking clean GT positions
+        # to the conditioner (DINO patch lookup / CNN crop centre).
         noisy_node_pos, _ = self.model.add_noise(
-            node_pos=node_pos,
+            node_pos=graph.node_pos,
             timestep=timestep,
-            batch_idx=node_batch_idx,
+            batch_idx=graph.node_batch,
             generator=generator,
         )
 
-        pred_delta = self.model.backward_process(
+        if graph.image_cond is not None:
+            # Convert noisy canonical positions back to pixel space.
+            noisy_kpt_pixel = (
+                (noisy_node_pos.view(graph.B, graph.N, graph.K, 2) + 1) / 2
+                * graph.img_wh[:, None, None, :]
+            )  # (B, N, 14, 2)
+            graph.image_cond = self.get_local_spatial_condition(
+                sample, graph, kpt_pixel=noisy_kpt_pixel
+            )
+            if stage == "train":
+                self._augment_image_cond(graph)
+
+        outputs = denoise_and_decode(
+            self.model, sample, graph, timestep,
+            generator=generator,
             noisy_node_pos=noisy_node_pos,
-            edge_index=edge_index,
-            kpt_type_idx=node_type_idx,
-            batch_idx=node_batch_idx,
-            timestep=timestep,
-            image_cond=batch.get("image_cond"),
-            global_image_cond=batch.get("global_image_cond"),
         )
-
-        # Drop virtual root (index 0); invert normalisation back to pixel space
-        # canonical = (pixel − root) / scale  →  pixel = canonical * scale + root
-        joint_pred_canonical = (noisy_node_pos - pred_delta).view(B, N, K, 2)[
-            :, :, 1:
-        ]  # (B, N, 14, 2)
-        joint_pred_pixel = (
-            joint_pred_canonical * scale[:, None, None, None] + root_pos[:, :, None]
-        )  # (B, N, 14, 2)
-
-        gt_pixel = batch.get("gt_keypoints", batch["keypoints"])  # (B, N, 14, 2)
-        gt_canonical = (gt_pixel - root_pos[:, :, None]) / scale[:, None, None, None]  # (B, N, 14, 2)
-
-        outputs = {
-            "pred_pixel": joint_pred_pixel,
-            "pred_canonical": joint_pred_canonical,
-            "gt_pixel": gt_pixel,
-            "gt_canonical": gt_canonical,
-            "timestep": timestep,
-        }
-
-        losses = self.get_loss(batch, outputs)
-        return losses, outputs, B
+        losses = self.get_loss(sample, graph, outputs)
+        return losses, outputs, sample, graph
 
     def training_step(self, batch: dict, batch_idx: int) -> Tensor:
-        losses, _outputs, B = self._step(batch, stage="train")
-        log_kwargs = dict(batch_size=B, on_step=True, on_epoch=True)
+        losses, _, sample, graph = self._step(batch, stage="train")
+        log_kwargs = dict(batch_size=graph.B, on_step=True, on_epoch=True)
         self.log("train/loss", losses["loss"], prog_bar=True, **log_kwargs)
         for name, value in losses.items():
             if name != "loss":
@@ -1325,29 +1420,13 @@ class PoseDiffusionModule(pl.LightningModule):
 
     def validation_step(self, batch: dict, batch_idx: int) -> None:
         gen = torch.Generator(device=self.device).manual_seed(batch_idx)
-        losses, outputs, B = self._step(batch, stage="val", generator=gen)
-        gt_pixel = outputs["gt_pixel"]
-        visibility = batch["visibility"]
-        log_kwargs = dict(batch_size=B, on_step=False, on_epoch=True)
-        self.log("val/loss", losses["loss"], prog_bar=True, **log_kwargs)
-        for name, value in losses.items():
-            if name != "loss":
-                self.log(f"val/{name}", value, **log_kwargs)
-        self.log("val/mpjpe_px", compute_mpjpe(outputs["pred_pixel"], gt_pixel, visibility), **log_kwargs)
-        self.log("val/pck_20px", compute_pck(outputs["pred_pixel"], gt_pixel, visibility, threshold_px=20.0), **log_kwargs)
+        losses, outputs, sample, graph = self._step(batch, stage="val", generator=gen)
+        _log_eval_step(self, losses, outputs, sample, graph, prefix="val", on_step=False)
 
     def test_step(self, batch: dict, batch_idx: int) -> None:
         gen = torch.Generator(device=self.device).manual_seed(batch_idx)
-        losses, outputs, B = self._step(batch, stage="test", generator=gen)
-        gt_pixel = outputs["gt_pixel"]
-        visibility = batch["visibility"]
-        log_kwargs = dict(batch_size=B, on_step=False, on_epoch=True)
-        self.log("test/loss", losses["loss"], prog_bar=True, **log_kwargs)
-        for name, value in losses.items():
-            if name != "loss":
-                self.log(f"test/{name}", value, **log_kwargs)
-        self.log("test/mpjpe_px", compute_mpjpe(outputs["pred_pixel"], gt_pixel, visibility), **log_kwargs)
-        self.log("test/pck_20px", compute_pck(outputs["pred_pixel"], gt_pixel, visibility, threshold_px=20.0), **log_kwargs)
+        losses, outputs, sample, graph = self._step(batch, stage="test", generator=gen)
+        _log_eval_step(self, losses, outputs, sample, graph, prefix="test", on_step=False)
 
     def on_validation_epoch_end(self) -> None:
         if self._val_metric is None or self._val_pred_cache is None:
@@ -1358,48 +1437,12 @@ class PoseDiffusionModule(pl.LightningModule):
             return
         if (self.current_epoch + 1) % self._ap_eval_interval != 0:
             return
-        step_counts = self._ap_step_counts
-        if step_counts:
-            for n in step_counts:
-                self._run_ap_eval(
-                    self._val_pred_cache,
-                    self._val_metric,
-                    desc=f"val AP@{n} [epoch {self.current_epoch}]",
-                    num_steps=n,
-                )
-                results = self._val_metric.compute()
-                for key, val in results.items():
-                    self.log(f"val/{key}@{n}", val, prog_bar=(key == "coco/AP"), sync_dist=True)
-        else:
-            self._run_ap_eval(
-                self._val_pred_cache,
-                self._val_metric,
-                desc=f"val AP [epoch {self.current_epoch}]",
-            )
-            results = self._val_metric.compute()
-            for key, val in results.items():
-                self.log(f"val/{key}", val, prog_bar=(key == "coco/AP"), sync_dist=True)
+        _run_and_log_ap_eval(self, self._val_pred_cache, self._val_metric, prefix="ap-val", epoch=self.current_epoch, log_prog_bar=True)
 
     def on_test_epoch_end(self) -> None:
         if self._test_metric is None or self._test_pred_cache is None:
             return
-        step_counts = self._ap_step_counts
-        if step_counts:
-            for n in step_counts:
-                self._run_ap_eval(
-                    self._test_pred_cache,
-                    self._test_metric,
-                    desc=f"test AP@{n}",
-                    num_steps=n,
-                )
-                results = self._test_metric.compute()
-                for key, val in results.items():
-                    self.log(f"test/{key}@{n}", val, sync_dist=True)
-        else:
-            self._run_ap_eval(self._test_pred_cache, self._test_metric)
-            results = self._test_metric.compute()
-            for key, val in results.items():
-                self.log(f"test/{key}", val, sync_dist=True)
+        _run_and_log_ap_eval(self, self._test_pred_cache, self._test_metric, prefix="ap-test")
 
     def configure_optimizers(self):
         # Weight matrices get weight decay; 1-D tensors (biases, norms, embeddings) do not.
