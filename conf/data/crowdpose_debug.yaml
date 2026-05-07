@@ -1,0 +1,12 @@
+# Debug data preset — tiny subset of CrowdPose for fast smoke runs.
+# ~0.1% of full splits (≈12 train images on standard CrowdPose).
+# Override on the CLI to control subset size:  data.subset_frac=0.01
+
+defaults:
+  - crowdpose
+  - _self_
+
+batch_size: 2
+num_workers: 0
+ap_batch_size: 2
+subset_frac: 0.001

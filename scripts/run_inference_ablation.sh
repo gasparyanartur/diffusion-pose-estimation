@@ -3,7 +3,9 @@
 # Runs the sweep twice: standard DDIM and raw-refiner (single-pass).
 #
 # Usage:
-#   scripts/run_inference_ablation.sh <checkpoint> <pred_cache> <ann_file>
+#   scripts/run_inference_ablation.sh <checkpoint> [pred_cache] [ann_file]
+#
+# Defaults to the test split. Override pred_cache and ann_file to use val.
 #
 # Results:
 #   results/inference-ablation/ddim/<task_id>.json   (DDIM mode)
@@ -11,9 +13,13 @@
 #   results/inference-ablation/ddim/results.csv
 #   results/inference-ablation/raw/results.csv
 #
-# Example:
+# Example (test split):
 #   scripts/run_inference_ablation.sh \
-#       results/sweeps/arch-message-passing/task_1/20260316_003813/checkpoints/epoch140-running_loss_5=0.0155.ckpt \
+#       results/pose_estimator_training/legacy_repro/.../checkpoints/best.ckpt
+#
+# Example (val split):
+#   scripts/run_inference_ablation.sh \
+#       results/pose_estimator_training/legacy_repro/.../checkpoints/best.ckpt \
 #       results/cache/rtmpose-m_crowdpose_val_predictions.pkl \
 #       data/crowdpose/annotations/crowdpose_val.json
 
@@ -23,14 +29,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SWEEP_FILE="${PROJECT_ROOT}/sweeps/inference-ablation.sweep"
 
-if [[ $# -lt 3 ]]; then
-    echo "Usage: $0 <checkpoint> <pred_cache> <ann_file>" >&2
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <checkpoint> [pred_cache] [ann_file]" >&2
     exit 1
 fi
 
 CHECKPOINT="$1"
-PRED_CACHE="$2"
-ANN_FILE="$3"
+PRED_CACHE="${2:-${PROJECT_ROOT}/results/cache/rtmpose-m_crowdpose_test_predictions.pkl}"
+ANN_FILE="${3:-${PROJECT_ROOT}/data/crowdpose/annotations/crowdpose_test.json}"
 
 TOTAL=$(grep -v '^\s*#' "$SWEEP_FILE" | grep -cv '^\s*$' || true)
 echo "Inference ablation: ${TOTAL} tasks × 2 modes (ddim, raw)"

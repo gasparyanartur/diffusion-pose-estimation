@@ -1,0 +1,51 @@
+# DiffusionTrainingModuleConfig — full training preset.
+#
+# All fields except `augmentations` and `losses` map 1-to-1 to attributes
+# of DiffusionTrainingModuleConfig. Override on the command line:
+#   training_module.lr=3e-4 training_module.augmentations.aug_jitter=false
+
+_target_: src.training.DiffusionTrainingModuleConfig
+
+# optimiser / schedule
+lr: 1e-3
+weight_decay: 1e-4
+cosine_lr: true
+lr_warmup_epochs: 0
+lr_min_frac: 1e-1
+cfg_guidance_scale: 1.0
+
+# AP / inference
+num_inference_steps: 5
+ap_eval_interval: 100
+ap_step_counts: [1, 2, 3]
+start_inference_noise_frac: 0.4
+raw_refiner: false
+disable_noise: false
+
+# trainer-level
+max_epochs: 200
+seed: 42
+grad_clip: 1.0
+early_stop_patience: 0
+log_every_n_steps: 50
+compile: false
+running_loss_window: 5
+resume: null
+
+augmentations:
+  aug_jitter: true
+  p_jitter_px: 4.0
+  aug_joint_drop: true
+  p_joint_drop: 0.1
+  aug_pose_drop: true
+  p_pose_drop: 0.1
+  aug_joint_rand: true
+  p_joint_rand: 0.1
+  aug_img_drop: true
+  p_img_drop: 0.1
+
+losses:
+  use_joint_loss: true
+  w_joint_loss: 1.0
+  use_bone_loss: true
+  w_bone_loss: 1.0

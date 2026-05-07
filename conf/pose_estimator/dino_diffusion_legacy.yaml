@@ -1,0 +1,49 @@
+# Legacy SOTA pose-estimator preset (matches commit 1451292).
+#
+# DINO conditioning via cross-attention over precomputed convnext-small features,
+# medium-sized graph diffusion decoder.  Use together with
+# `training_module=diffusion_legacy` to reproduce the pre-refactor SOTA setup.
+
+feature_extractor:
+  _target_: src.features.CachedDinoFeatureExtractorConfig
+  model_name: facebook/dinov3-convnext-small-pretrain-lvd1689m
+  cache_paths:
+    - results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/train
+    - results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/val
+    - results/cache/crowdpose/facebook_dinov3-convnext-small-pretrain-lvd1689m/test
+
+feature_embedder:
+  _target_: src.embedders.CrossAttentionEmbedderConfig
+  spatial_dim: 96
+  hidden_dim: 768
+  out_dim: 256          # = decoder.dim_vis
+  inner_dim: 256
+  num_heads: 4
+  dropout_rate: 0.1
+  global_out_dim: 128   # projects 768-d pooled vector → 128-d for decoder
+
+decoder:
+  _target_: src.decoders.GraphDiffusionDecoderConfig
+  num_train_steps: 100
+  sigma_min: 0.002
+  sigma_max: 0.5
+  hidden_dim: 256
+  dim_pos: 256
+  dim_time: 128
+  dim_edge: 64
+  dim_vis: 256
+  dim_global_image_cond: 128   # receives projected global from embedder.global_out_dim
+  dropout_rate: 0.1
+  num_keypoints: 14
+
+  denoise_network:
+    _target_: src.decoders.GraphDenoiseNetworkConfig
+    hidden_dim: 256
+    num_layers: 4
+    num_heads: 2
+    dim_edge: 64
+    dim_vis: 256
+    dim_global: 128            # = decoder.dim_time (output of global_cond_mlp)
+    out_dim: 2
+    dropout_rate: 0.1
+    attn_dropout_rate: 0.1

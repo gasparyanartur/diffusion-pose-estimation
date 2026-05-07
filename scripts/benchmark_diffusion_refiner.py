@@ -14,13 +14,13 @@ Results are written as JSON to:
 
 Usage (single run):
     python scripts/benchmark_diffusion_refiner.py \\
-        --checkpoint results/.../checkpoints/best.ckpt \\
+        --checkpoint results/.../checkpoints/last.ckpt \\
         --pred-cache results/cache/rtmpose-m_crowdpose_val_predictions.pkl \\
         --ann-file   data/crowdpose/annotations/crowdpose_val.json \\
-        --steps 4 --noise-frac 0.4 --passes 2 --task-id 1
+        --steps 1 --noise-frac 0.2 --passes 1 --task-id 1
 
 Override Hydra run directory:
-    ... --run-dir results/diffusion_training/my_run/20260313_120000
+    ... --run-dir results/pose_estimator_training/my_run/20260505_120000
 """
 
 from __future__ import annotations
@@ -39,7 +39,23 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from src.metrics import KeypointAPMetric
-from src.model import KeypointDiffusionConfig, KeypointDiffusionModel, PoseDiffusionModule
+from src.pose_estimator import PoseEstimatorConfig
+from src.training.training_module import PoseEstimatorTrainingModule
+
+
+# ---------------------------------------------------------------------------
+# Path inference
+# ---------------------------------------------------------------------------
+
+
+def _infer_run_dir(checkpoint_path: Path) -> Path:
+    """Standard layout: <run_dir>/checkpoints/<name>.ckpt."""
+    return checkpoint_path.parent.parent
+
+
+def _infer_run_name(checkpoint_path: Path) -> str:
+    """Layout: results/.../<run_name>/<ts>/checkpoints/<name>.ckpt."""
+    return checkpoint_path.parent.parent.parent.name
 
 
 # ---------------------------------------------------------------------------
@@ -47,20 +63,11 @@ from src.model import KeypointDiffusionConfig, KeypointDiffusionModel, PoseDiffu
 # ---------------------------------------------------------------------------
 
 
-def _infer_run_dir(checkpoint_path: Path) -> Path:
-    """Infer the Hydra run directory.
-
-    Assumes the standard layout: <run_dir>/checkpoints/<name>.ckpt.
-    """
-    return checkpoint_path.parent.parent
-
-
-def _infer_run_name(checkpoint_path: Path) -> str:
-    """Infer the run name from the checkpoint path.
-
-    Assumes: results/diffusion_training/<run_name>/<ts>/checkpoints/<name>.ckpt
-    """
-    return checkpoint_path.parent.parent.parent.name
+def _override_dino_cache(pose_estimator_cfg: Any, dino_cache: str) -> None:
+    """Replace cache_paths on a CachedDinoFeatureExtractorConfig before build()."""
+    fe = pose_estimator_cfg.feature_extractor
+    if hasattr(fe, "cache_paths"):
+        fe.cache_paths = [dino_cache]
 
 
 def load_module(
@@ -71,8 +78,8 @@ def load_module(
     dino_cache_override: str | None,
     batch_size: int,
     device: torch.device,
-) -> PoseDiffusionModule:
-    """Reconstruct a PoseDiffusionModule from a checkpoint and its Hydra config."""
+) -> PoseEstimatorTrainingModule:
+    """Reconstruct a PoseEstimatorTrainingModule from a checkpoint and its Hydra config."""
     hydra_config_path = run_dir / ".hydra" / "config.yaml"
     if not hydra_config_path.exists():
         raise FileNotFoundError(
@@ -81,44 +88,22 @@ def load_module(
         )
 
     cfg = OmegaConf.load(hydra_config_path)
-    model_config = KeypointDiffusionConfig(**OmegaConf.to_container(cfg.model, resolve=True))
-    model = KeypointDiffusionModel(config=model_config, num_keypoints=14)
+    pose_cfg = PoseEstimatorConfig.from_hydra_config(cfg.pose_estimator)
+    if dino_cache_override is not None:
+        _override_dino_cache(pose_cfg, dino_cache_override)
+    pose_estimator = pose_cfg.build()
 
-    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    hp: dict[str, Any] = ckpt["hyper_parameters"]
-
-    # CLI --dino-cache overrides all three split caches at once.
-    dino_cache_train = dino_cache_override or hp.get("dino_cache_train")
-    dino_cache_val   = dino_cache_override or hp.get("dino_cache_val")
-    dino_cache_test  = dino_cache_override or hp.get("dino_cache_test")
-
-    module = PoseDiffusionModule(
-        model=model,
-        lr=hp["lr"],
-        weight_decay=hp["weight_decay"],
-        lr_T_max=hp.get("lr_T_max"),
-        lr_warmup_epochs=hp.get("lr_warmup_epochs", 0),
-        lr_min_frac=hp.get("lr_min_frac", 1e-2),
-        cfg_guidance_scale=hp.get("cfg_guidance_scale", 1.0),
+    module = PoseEstimatorTrainingModule.load_from_checkpoint(
+        checkpoint_path,
+        pose_estimator=pose_estimator,
         val_ann_file=ann_file,
         test_ann_file=ann_file,
         val_pred_cache=pred_cache,
         test_pred_cache=pred_cache,
-        num_inference_steps=hp.get("num_inference_steps"),
         ap_batch_size=batch_size,
-        start_inference_noise_frac=hp.get("start_inference_noise_frac", 0.4),
-        raw_refiner=hp.get("raw_refiner", False),
-        dino_model_name=hp.get("dino_model_name"),
-        dino_neighborhood_radius=hp.get("dino_neighborhood_radius", 1),
-        dino_cache_train=dino_cache_train,
-        dino_cache_val=dino_cache_val,
-        dino_cache_test=dino_cache_test,
-        dino_conditioner_type=hp.get("dino_conditioner_type", "simple"),
-        dino_inner_dim=hp.get("dino_inner_dim", 256),
-        dino_num_heads=hp.get("dino_num_heads", 4),
+        map_location="cpu",
     )
 
-    module.load_state_dict(ckpt["state_dict"])
     module.to(device)
     module.eval()
     return module
@@ -130,7 +115,7 @@ def load_module(
 
 
 def run_eval(
-    module: PoseDiffusionModule,
+    module: PoseEstimatorTrainingModule,
     pred_cache: str,
     ann_file: str,
     ddim_steps: int,
@@ -152,7 +137,7 @@ def run_eval(
         "passes": passes,
         "guidance_scale": module.cfg_guidance_scale,
         "raw_refiner": module._raw_refiner,
-        "use_message_passing": module.model.config.use_message_passing,
+        "disable_noise": module._disable_noise,
         **{k: round(float(v), 4) for k, v in ap.items()},
     }
 
@@ -176,24 +161,23 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--run-dir", type=Path, default=None,
                    help="Hydra run directory containing .hydra/config.yaml. "
                         "Default: checkpoint.parent.parent.")
-    p.add_argument("--steps", type=int, default=5,
-                   help="DDIM denoising steps per refinement pass. (default: 5)")
-    p.add_argument("--noise-frac", type=float, default=0.4,
-                   help="Start noise fraction. (default: 0.4)")
+    p.add_argument("--steps", type=int, default=1,
+                   help="DDIM denoising steps per refinement pass. (default: 1)")
+    p.add_argument("--noise-frac", type=float, default=0.2,
+                   help="Start noise fraction. (default: 0.2)")
     p.add_argument("--passes", type=int, default=1,
                    help="Number of iterative refinement passes. (default: 1)")
     p.add_argument("--task-id", type=int, default=1,
                    help="Task ID used as the output filename. (default: 1)")
     p.add_argument("--dino-cache", default=None,
-                   help="Override DINO patch cache path (applied to all splits).")
+                   help="Override DINO feature cache path (single dir applied to "
+                        "the feature extractor's cache_paths).")
     p.add_argument("--batch-size", type=int, default=64,
                    help="Batch size for AP evaluation. (default: 64)")
-    p.add_argument("--zero-delta", action="store_true", default=False,
-                   help="Force delta=0 at all times (identity refinement; sanity check).")
     p.add_argument("--disable-noise", action="store_true", default=False,
                    help="Skip noise injection; DDIM starts from clean detector output.")
     p.add_argument("--raw-refiner", action="store_true", default=False,
-                   help="Skip noise; force 1 DDIM step (pure single-pass denoising). "
+                   help="Skip noise; force 1 step (pure single-pass denoising). "
                         "Overrides the checkpoint value.")
     p.add_argument("--cfg-guidance-scale", type=float, default=None,
                    help="CFG guidance scale. Overrides the checkpoint value. "
@@ -238,17 +222,13 @@ def main() -> None:
         device=device,
     )
 
-    if args.zero_delta:
-        module.model.config.zero_delta = True
-        print("zero_delta=True: model outputs identity (delta=0).")
-
     if args.disable_noise:
         module._disable_noise = True
-        print("disable_noise=True: DDIM starts from clean detector output (no noise injected).")
+        print("disable_noise=True: DDIM starts from clean detector output (no noise).")
 
     if args.raw_refiner:
         module._raw_refiner = True
-        print("raw_refiner=True: single backward pass, no DDIM noise (pure single-pass denoising).")
+        print("raw_refiner=True: single backward pass, no DDIM noise.")
 
     if args.cfg_guidance_scale is not None:
         module.cfg_guidance_scale = args.cfg_guidance_scale
