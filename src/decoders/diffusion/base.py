@@ -149,17 +149,32 @@ class BaseDiffusionDecoder(BaseDecoder):
     # ------------------------------------------------------------------
     def forward(
         self,
-        graph: PoseGraphBatch,
         embeddings: dict[str, Tensor],
+        graph: PoseGraphBatch | None = None,
         initial_keypoints: Tensor | None = None,
-    ) -> Tensor:
-        """Run DDIM sampling. ``initial_keypoints`` are canonical-space, ``(M, 2)``."""
-        return self.ddim_sample(
+        **kwargs: Any,
+    ) -> dict[str, Tensor]:
+        """Run DDIM sampling. ``initial_keypoints`` are canonical-space, ``(M, 2)``.
+
+        Returns a dict with ``keypoints`` reshaped to ``(B, N, K, 2)`` in canonical
+        ``(-1, 1)`` space. Diffusion decoders score every slot/joint as 1.0 (no
+        per-slot confidence to report); set-prediction decoders override these.
+        """
+        if graph is None:
+            raise ValueError("BaseDiffusionDecoder.forward requires graph")
+        flat = self.ddim_sample(
             graph=graph,
             embeddings=embeddings,
             num_nodes=graph.num_nodes,
             x_init=initial_keypoints,
         )
+        B, N, K = graph.B, graph.N, graph.K
+        keypoints = flat.view(B, N, K, 2)
+        return {
+            "keypoints": keypoints,
+            "scores": keypoints.new_ones(B, N),
+            "keypoint_scores": keypoints.new_ones(B, N, K),
+        }
 
 
 def _zero_embeddings(embeddings: dict[str, Tensor]) -> dict[str, Tensor]:

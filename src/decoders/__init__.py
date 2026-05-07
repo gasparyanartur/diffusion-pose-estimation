@@ -15,6 +15,7 @@ from src.decoders.diffusion import (
     GraphDiffusionDecoder,
     GraphDiffusionDecoderConfig,
 )
+from src.decoders.pose_slot import PoseSlotDecoder, PoseSlotDecoderConfig
 
 __all__ = [
     "BaseDecoder",
@@ -29,4 +30,6 @@ __all__ = [
     "GraphDiffusionDecoderConfig",
     "MlpDenoiseNetwork",
     "MlpDenoiseNetworkConfig",
+    "PoseSlotDecoder",
+    "PoseSlotDecoderConfig",
 ]

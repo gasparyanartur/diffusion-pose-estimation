@@ -1,0 +1,21 @@
+# Set-prediction PoseEstimator: plain CNN backbone + spatial-attention adapter
+# + slot head. Mirrors the configuration used in the backbone benchmark notebook.
+
+feature_extractor:
+  _target_: src.features.CNNFeatureExtractorConfig
+  out_channels: 128
+
+feature_embedder:
+  _target_: src.embedders.SpatialAttentionEmbedderConfig
+  in_channels: 128
+  feature_dim: 256
+  num_heads: 8
+  feature_key: spatial
+
+decoder:
+  _target_: src.decoders.PoseSlotDecoderConfig
+  in_dim: 256
+  num_slots: 20
+  num_keypoints: 14
+  hidden_dim: 512
+  feature_key: feature

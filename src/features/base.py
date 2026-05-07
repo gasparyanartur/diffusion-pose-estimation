@@ -26,10 +26,19 @@ class BaseFeatureExtractor(nn.Module):
     Subclasses must implement :meth:`forward` returning a dict whose keys are
     documented per-extractor. The dict is the input to a
     :class:`~src.embedders.BaseFeatureEmbedder`.
+
+    Forward accepts both ``image`` (raw pixel tensor for online extractors) and
+    ``image_ids`` (cache lookup keys); concrete subclasses validate which one
+    they require.
     """
 
     @abstractmethod
-    def forward(self, image_ids: list[int]) -> dict[str, Any]:
+    def forward(
+        self,
+        image: torch.Tensor | None = None,
+        image_ids: list[int] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         ...
 
 

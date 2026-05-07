@@ -1,21 +1,24 @@
 """PoseEstimator: feature extractor → embedder → decoder.
 
-Three-stage pipeline that produces predicted keypoints from images and an
-optional initial keypoint state.
+Three-stage pipeline that produces predicted keypoints (and per-slot /
+per-keypoint scores) from images and optional refinement state.
 
-Stages:
-  1. Feature extractor: image_ids → raw feature dict (e.g. DINO maps).
-  2. Feature embedder: raw features + per-joint pixel coords → per-node embeddings.
-  3. Decoder: embeddings + optional initial keypoints → predicted keypoints.
+Set prediction (default):
+  image -> features -> embeddings -> decoder dict
+    {"keypoints":[B,N,K,2], "scores":[B,N], "keypoint_scores":[B,N,K]}
 
-Pose estimation is the base task. Refinement is the special case where
-``initial_keypoints`` is provided (e.g. detector output).
+Refinement:
+  image (or image_ids) + initial_keypoints + graph -> same dict.
+
+Keypoints are always returned in canonical ``(-1, 1)`` image space; see
+``docs/assumptions.md``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import torch
 from torch import Tensor, nn
 
 from src.base_config import BaseConfig
@@ -41,14 +44,15 @@ class PoseEstimator(nn.Module):
 
     def encode(
         self,
-        graph: PoseGraphBatch,
-        image_ids: list[int],
-        kpt_pixel: Tensor,        # (B, N, K, 2) pixel-space (x, y)
-        img_hw: Tensor,           # (B, 2) original image (H, W)
+        image: Tensor | None = None,
+        image_ids: list[int] | None = None,
+        kpt_pixel: Tensor | None = None,
+        img_hw: Tensor | None = None,
         joint_mask: Tensor | None = None,
+        **kwargs: Any,
     ) -> dict[str, Tensor]:
         """Run extractor + embedder, returning the embedding dict for the decoder."""
-        features = self.feature_extractor(image_ids)
+        features = self.feature_extractor(image=image, image_ids=image_ids)
         return self.feature_embedder(
             features=features,
             kpt_pixel=kpt_pixel,
@@ -58,15 +62,27 @@ class PoseEstimator(nn.Module):
 
     def forward(
         self,
-        graph: PoseGraphBatch,
-        image_ids: list[int],
-        kpt_pixel: Tensor,
-        img_hw: Tensor,
+        image: Tensor | None = None,
+        image_ids: list[int] | None = None,
+        kpt_pixel: Tensor | None = None,
+        img_hw: Tensor | None = None,
         initial_keypoints: Tensor | None = None,
+        graph: PoseGraphBatch | None = None,
         joint_mask: Tensor | None = None,
-    ) -> Tensor:
-        embeddings = self.encode(graph, image_ids, kpt_pixel, img_hw, joint_mask)
-        return self.decoder(graph, embeddings, initial_keypoints=initial_keypoints)
+        **kwargs: Any,
+    ) -> dict[str, Tensor]:
+        embeddings = self.encode(
+            image=image,
+            image_ids=image_ids,
+            kpt_pixel=kpt_pixel,
+            img_hw=img_hw,
+            joint_mask=joint_mask,
+        )
+        return self.decoder(
+            embeddings=embeddings,
+            graph=graph,
+            initial_keypoints=initial_keypoints,
+        )
 
 
 class PoseEstimatorConfig(BaseConfig):

@@ -67,10 +67,15 @@ class BilinearSampleEmbedder(BaseFeatureEmbedder):
     def forward(
         self,
         features: dict[str, Any],
-        kpt_pixel: Tensor,
-        img_hw: Tensor,
+        kpt_pixel: Tensor | None = None,
+        img_hw: Tensor | None = None,
         joint_mask: Tensor | None = None,  # noqa: ARG002
+        **kwargs: Any,
     ) -> dict[str, Tensor]:
+        if kpt_pixel is None or img_hw is None:
+            raise ValueError(
+                "BilinearSampleEmbedder requires kpt_pixel and img_hw"
+            )
         spatial = features["spatial"]
         semantic = features["semantic"]
         spatial_feats = _sample_at_keypoints(spatial, kpt_pixel, img_hw)    # (B, N, K, C_s)

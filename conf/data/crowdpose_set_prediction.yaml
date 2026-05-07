@@ -1,0 +1,22 @@
+# CrowdPose set-prediction preset (resized images + canonical (-1, 1) targets).
+_target_: src.data.CrowdPoseDataConfig
+
+root: data
+train_ann: crowdpose/annotations/crowdpose_train.json
+val_ann: crowdpose/annotations/crowdpose_val.json
+test_ann: crowdpose/annotations/crowdpose_test.json
+img_dir: crowdpose/images
+
+# Set-format batches: SetPoseDataset + set_pose_collate
+target_format: set
+image_h: 256
+image_w: 192
+
+# Prediction caches not used in set-prediction (AP runs over the dataset itself)
+val_pred_cache: null
+test_pred_cache: null
+
+batch_size: 32
+num_workers: 4
+ap_batch_size: 32
+num_keypoints: 14

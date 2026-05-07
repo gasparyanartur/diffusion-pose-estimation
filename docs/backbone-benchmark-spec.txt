@@ -1,0 +1,423 @@
+Backbone Benchmark Specification
+File: backbone-benchmark-spec.txt
+
+Purpose
+-------
+Build a single benchmark for comparing frozen visual backbones and feature-embedding variants for multi-person 2D human pose estimation.
+
+The benchmark is not meant to produce a competitive pose estimator. It is a weak-head probe. The goal is to rank backbone/embedding choices under the same small prediction head, loss, training budget, and evaluation protocol.
+
+Primary question:
+    Given the same weak pose head, which backbone/feature embedding provides the best information for predicting multi-person human keypoints, visibility, and person-level pose instances?
+
+Backbone variants to compare
+----------------------------
+At minimum support these variants:
+
+1. DINO stage-1 features
+2. DINO stage-4 features
+3. DINO stage-1 + stage-4 fused features
+4. DINO stage-1 + stage-4 + our embedding module
+5. Pure CNN encoder
+
+The implementation should make it easy to add new backbone variants later.
+
+Core design rule
+----------------
+Keep the head as weak and identical as possible across all backbone variants.
+
+Only add architectural components if they are necessary to remove a confound between backbones.
+
+Allowed motivated components:
+
+1. 1x1 projection to fixed channel dimension D
+   Motivation: different backbones/stages have different channel counts. This equalizes probe capacity.
+
+2. Fixed spatial feature size H_probe x W_probe
+   Motivation: different stages have different spatial resolutions. The MLP input size must be consistent across variants.
+
+3. 2-layer MLP prediction head
+   Motivation: provides a simple fixed-capacity decoder without turning the benchmark into a full pose-estimation architecture.
+
+Not allowed unless explicitly requested:
+
+- Heatmap head
+- GNN/refiner
+- Transformer decoder
+- Cross-attention head
+- Iterative refinement
+- Diffusion
+- Test-time augmentation
+- Multi-stage pose assembly
+- Any architecture that makes this closer to a full pose-estimation method than a backbone probe
+
+Dataset/task
+------------
+Use full multi-person images with ground-truth 2D poses.
+
+Each image contains zero or more people. Each person has up to 17 keypoints, using the dataset's standard keypoint format.
+
+Each keypoint has:
+
+- x coordinate
+- y coordinate
+- visibility/annotation flag
+
+Use the standard convention:
+
+- v = 0: not labeled / unavailable. Ignore for coordinate and visibility loss.
+- v = 1: labeled but not physically visible / occluded.
+- v = 2: labeled and physically visible.
+
+Model input
+-----------
+Input:
+    image
+
+Pipeline:
+    image
+    -> frozen backbone / feature extractor
+    -> optional feature embedding module under test
+    -> fixed projection/resizing block
+    -> weak pose-slot head
+
+Backbone freezing
+-----------------
+Freeze backbones that come from a pretrained, externally-provided source whose representation we want to probe (e.g. DINO).
+
+Do not freeze backbones that are being trained from scratch as part of this benchmark (e.g. the pure CNN baseline). Freezing a randomly-initialized network would not produce a meaningful probe.
+
+For embedding modules under test, train the embedding module if the benchmark is explicitly comparing trainable embeddings. Otherwise freeze it.
+
+The training/evaluation script must clearly log which modules are frozen and which modules are trainable for every variant.
+
+Feature normalization
+---------------------
+Each backbone variant should output a feature map or feature tensor.
+
+Before the MLP head:
+
+1. Project features to common dimension D using a 1x1 conv or linear projection.
+2. Resize or pool spatial features to fixed H_probe x W_probe.
+3. Flatten into a vector.
+4. Feed to the MLP prediction head.
+
+Suggested defaults:
+
+- D = 256
+- H_probe = 16
+- W_probe = 12 or 16, depending on input aspect ratio handling
+- hidden_dim = 1024 or 2048
+
+These are defaults, not fixed requirements. The important requirement is that all backbone variants use exactly the same values.
+
+Prediction head
+---------------
+Use a fixed number of pose slots N.
+
+Each slot predicts one possible person.
+
+For each image, the model outputs:
+
+    pred_objectness: [N]
+    pred_keypoints:  [N, 17, 2]
+    pred_visibility: [N, 17]
+
+Where:
+
+- pred_objectness[n] is the probability that slot n contains a person.
+- pred_keypoints[n, j] is the predicted (x, y) coordinate for joint j of slot n.
+- pred_visibility[n, j] is the predicted probability that joint j is physically visible.
+
+Use N larger than the expected number of people per image.
+
+Suggested default:
+    N = 20
+
+Coordinate convention
+---------------------
+Pick one coordinate convention and use it consistently.
+
+Recommended:
+
+- Predict normalized image coordinates in [0, 1].
+- Convert to pixel coordinates only for OKS/evaluation.
+
+Alternative:
+
+- Predict pixel coordinates directly.
+
+The implementation must document which convention is used.
+
+Ground-truth formatting
+-----------------------
+For each image, create:
+
+    gt_keypoints:  [P, 17, 2]
+    gt_visibility: [P, 17]
+    gt_labeled:    [P, 17]
+
+Where P is the number of ground-truth people in the image.
+
+Definitions:
+
+    gt_labeled[p, j] = 1 if v in {1, 2}, else 0
+    gt_visibility[p, j] = 1 if v == 2, else 0
+
+Coordinate loss and OKS should only use gt_labeled == 1.
+Visibility loss should only use gt_labeled == 1.
+
+Matching
+--------
+Use Hungarian matching between predicted pose slots and ground-truth people.
+
+For each predicted slot n and GT person p, compute:
+
+    cost(n, p) = lambda_oks * (1 - OKS(n, p)) + lambda_obj * objectness_cost(n, p)
+
+Objectness cost can be simple negative log probability:
+
+    objectness_cost(n, p) = -log(sigmoid(pred_objectness[n]))
+
+Suggested default:
+
+    lambda_oks = 1.0
+    lambda_obj = 0.1
+
+The exact values should be logged and kept fixed across all backbone variants.
+
+OKS definition
+--------------
+Use the dataset-standard OKS definition where possible.
+
+For person p and predicted slot n:
+
+    OKS = sum_j exp(-d_j^2 / (2 * s_p^2 * k_j^2)) * valid_j / sum_j valid_j
+
+Where:
+
+    d_j     = Euclidean distance between predicted and GT joint j
+    s_p     = object/person scale used by the dataset evaluation protocol
+    k_j     = joint-specific OKS sigma
+    valid_j = 1 if GT joint j is labeled, else 0
+
+If the dataset evaluator provides an OKS implementation, use that implementation to avoid mismatch with AP computation.
+
+Training loss
+-------------
+After Hungarian matching, compute losses:
+
+1. OKS coordinate loss for matched slots
+
+    L_oks = 1 - OKS
+
+2. Objectness loss for all slots
+
+    matched slots: objectness target = 1
+    unmatched slots: objectness target = 0
+
+    L_obj = BCEWithLogits(pred_objectness, target_objectness)
+
+3. Visibility loss for matched slots and labeled joints only
+
+    target visibility = 1 if v == 2
+    target visibility = 0 if v == 1
+    ignore if v == 0
+
+    L_vis = BCEWithLogits(pred_visibility, target_visibility)
+
+Total loss:
+
+    L = L_oks + lambda_obj_loss * L_obj + lambda_vis_loss * L_vis
+
+Suggested defaults:
+
+    lambda_obj_loss = 1.0
+    lambda_vis_loss = 0.5
+
+Keep these fixed across all variants.
+
+Evaluation metrics
+------------------
+Primary metric:
+
+    Pose AP using OKS, with the dataset-standard evaluator.
+
+Also report:
+
+    AP50
+    AP75
+    mean OKS over matched predictions
+    AP(E), AP(M), AP(H) if using CrowdPose-style difficulty splits
+    visibility accuracy
+    visibility AUROC
+    visibility F1
+    missed-person rate
+    duplicate-person rate
+    per-joint OKS
+
+Metric definitions
+------------------
+Mean OKS:
+    Average OKS over matched predicted/GT pairs.
+
+Missed-person rate:
+    Fraction of GT people not matched by a predicted slot above a chosen confidence/OKS threshold.
+
+Duplicate-person rate:
+    Fraction of images where multiple high-confidence slots match the same GT person or substantially overlap the same pose.
+
+Visibility metrics:
+    Compute only for matched slots and labeled joints where v in {1, 2}.
+    Binary target: visible = 1 if v == 2, else 0.
+
+Confidence for AP
+-----------------
+For pose AP, each predicted pose needs a score.
+
+Use:
+
+    pose_score = sigmoid(objectness_logit) * mean_j sigmoid(visibility_logit_j) over predicted/labeled joints
+
+Alternatively, use objectness alone:
+
+    pose_score = sigmoid(objectness_logit)
+
+Pick one and keep it fixed across all backbone variants.
+
+Recommended default:
+    pose_score = sigmoid(objectness_logit)
+
+Motivation:
+    This keeps AP focused on pose-slot confidence and avoids mixing visibility calibration into the pose score.
+
+Training protocol
+-----------------
+Use the exact same protocol for all backbone variants:
+
+- same train/val split
+- same image resolution
+- same augmentations
+- same optimizer
+- same learning rate
+- same batch size
+- same number of epochs/steps
+- same random seeds if possible
+- same head architecture
+- same matching/loss weights
+- same evaluation code
+
+Log all hyperparameters.
+
+Minimum implementation requirements
+-----------------------------------
+Implement:
+
+1. Backbone wrapper interface
+
+    class BackboneWrapper:
+        def forward(image) -> feature_map
+
+2. Feature adapter
+
+    feature_map -> fixed [B, D, H_probe, W_probe]
+
+3. Pose-slot MLP head
+
+    fixed feature tensor -> N pose slots
+
+4. Hungarian matcher based on OKS
+
+5. Loss computation
+
+6. Dataset/evaluator integration
+
+7. Experiment runner for multiple backbone variants
+
+8. Results table exporter
+
+Suggested output table
+----------------------
+For each backbone variant, save a row with:
+
+    backbone_name
+    trainable_modules
+    num_trainable_params
+    feature_shape_before_adapter
+    feature_shape_after_adapter
+    AP
+    AP50
+    AP75
+    mean_OKS
+    AP_E
+    AP_M
+    AP_H
+    visibility_acc
+    visibility_AUROC
+    visibility_F1
+    missed_person_rate
+    duplicate_person_rate
+
+Ablation rules
+--------------
+Only run ablations that help interpret backbone quality.
+
+Useful ablations:
+
+1. stage-1 vs stage-4
+   Motivation: compare high-resolution local features vs low-resolution semantic features.
+
+2. stage-1 + stage-4 fusion
+   Motivation: test whether combining spatial detail and semantic context improves weak-head pose prediction.
+
+3. raw fused features vs learned embedding
+   Motivation: test whether the proposed embedding adds useful information beyond raw backbone features.
+
+Avoid ablations that change the head into a stronger pose estimator.
+
+Non-goals
+---------
+This benchmark is not intended to:
+
+- beat RTMPose/ViTPose/ED-Pose/etc.
+- implement a production-quality pose detector
+- test diffusion/refinement
+- test GNN message passing
+- test heatmap decoding
+- optimize pose-estimation architecture
+- introduce complex decoding tricks
+
+Acceptance criteria
+-------------------
+The implementation is acceptable if:
+
+1. It can train/evaluate at least two backbone variants with the same head.
+2. It produces pose AP using OKS.
+3. It logs mean OKS and visibility metrics.
+4. It uses Hungarian matching for variable-number people.
+5. It freezes pretrained backbones (e.g. DINO) by default, while leaving from-scratch backbones (e.g. the CNN baseline) trainable, and logs the frozen/trainable status of every module.
+6. It saves a comparable results table across variants.
+7. The head architecture is identical across variants except for the necessary fixed adapter.
+8. No heatmaps, GNNs, attention decoders, or refinement modules are introduced.
+
+Implementation priority
+-----------------------
+Priority 1:
+    Dataset loading, GT formatting, fixed adapter, MLP head, Hungarian OKS matching, loss, training loop.
+
+Priority 2:
+    Dataset-standard AP evaluator, visibility metrics, result table.
+
+Priority 3:
+    Multiple backbone wrappers and stage-1/stage-4/fusion variants.
+
+Priority 4:
+    Clean experiment config files and reproducible runs.
+
+Notes for implementation
+------------------------
+Keep the code modular enough that the backbone can be swapped without touching the loss, matcher, head, or evaluator.
+
+The benchmark should answer one question cleanly:
+
+    Under a fixed weak pose-slot head, which backbone/embedding gives the best multi-person pose prediction signal?

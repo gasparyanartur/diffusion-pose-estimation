@@ -100,7 +100,16 @@ class CachedDinoFeatureExtractor(BaseFeatureExtractor):
                 )
         return self._cache[image_id]
 
-    def forward(self, image_ids: list[int]) -> dict[str, Any]:
+    def forward(
+        self,
+        image: Tensor | None = None,
+        image_ids: list[int] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if image_ids is None:
+            raise ValueError(
+                "CachedDinoFeatureExtractor requires image_ids; got None"
+            )
         device = self._infer_device()
         spatial: list[Tensor] = []
         semantic: list[Tensor] = []

@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 from abc import ABC
 from pathlib import Path
+from typing import Literal
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
 from src.data.datasets import PoseDataset
+from src.data.set_pose_dataset import SetPoseDataset, set_pose_collate
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +51,9 @@ class CrowdPoseDataModule(PoseDataModule):
         num_keypoints: int = 14,
         subset_frac: float = 1.0,
         pin_memory: bool = False,
+        target_format: Literal["refinement", "set"] = "refinement",
+        image_h: int = 256,
+        image_w: int = 192,
     ) -> None:
         super().__init__()
         self.train_ann_path = Path(train_ann)
@@ -63,6 +68,9 @@ class CrowdPoseDataModule(PoseDataModule):
         self.num_keypoints = num_keypoints
         self.subset_frac = subset_frac
         self.pin_memory = pin_memory
+        self.target_format = target_format
+        self.image_h = image_h
+        self.image_w = image_w
 
         self._train_ds: PoseDataset | None = None
         self._val_ds: PoseDataset | None = None
@@ -110,6 +118,18 @@ class CrowdPoseDataModule(PoseDataModule):
         )
 
     def _make_loader(self, ds: PoseDataset, shuffle: bool, drop_last: bool) -> DataLoader:
+        if self.target_format == "set":
+            wrapped = SetPoseDataset(ds, image_h=self.image_h, image_w=self.image_w)
+            return DataLoader(
+                wrapped,
+                batch_size=self.batch_size,
+                shuffle=shuffle,
+                drop_last=drop_last,
+                num_workers=self.num_workers,
+                collate_fn=set_pose_collate,
+                pin_memory=self.pin_memory,
+                persistent_workers=(self.num_workers > 0),
+            )
         return ds.create_dataloader(
             batch_size=self.batch_size,
             shuffle=shuffle,

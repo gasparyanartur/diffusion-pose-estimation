@@ -7,6 +7,10 @@ from src.embedders.cross_attention import (
     CrossAttentionEmbedderConfig,
 )
 from src.embedders.none import NoneEmbedder, NoneEmbedderConfig
+from src.embedders.spatial_attention import (
+    SpatialAttentionEmbedder,
+    SpatialAttentionEmbedderConfig,
+)
 
 __all__ = [
     "BaseFeatureEmbedder",
@@ -17,4 +21,6 @@ __all__ = [
     "CrossAttentionEmbedderConfig",
     "NoneEmbedder",
     "NoneEmbedderConfig",
+    "SpatialAttentionEmbedder",
+    "SpatialAttentionEmbedderConfig",
 ]

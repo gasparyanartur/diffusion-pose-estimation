@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from pathlib import Path
+from typing import Literal
 
 from hydra.utils import to_absolute_path
 from pydantic import field_validator
@@ -45,6 +46,10 @@ class CrowdPoseDataConfig(DataConfig):
     val_pred_cache: str | None = None
     test_pred_cache: str | None = None
 
+    target_format: Literal["refinement", "set"] = "refinement"
+    image_h: int = 256
+    image_w: int = 192
+
     def build(self, pin_memory: bool = False) -> CrowdPoseDataModule:
         root = Path(to_absolute_path(self.root))
         return CrowdPoseDataModule(
@@ -60,4 +65,7 @@ class CrowdPoseDataConfig(DataConfig):
             num_keypoints=self.num_keypoints,
             subset_frac=self.subset_frac,
             pin_memory=pin_memory,
+            target_format=self.target_format,
+            image_h=self.image_h,
+            image_w=self.image_w,
         )

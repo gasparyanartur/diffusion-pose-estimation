@@ -1,0 +1,32 @@
+# Hydra root config for scripts/benchmark_backbone.py
+#
+# Permanent set-prediction architecture: CNN -> spatial-attention embedder
+# -> pose-slot decoder, trained with Hungarian-matched OKS+L1+objectness+
+# visibility loss, evaluated with KeypointAPMetric (CrowdPose AP/AR E/M/H).
+#
+# Defaults can be swapped from the command line. Examples:
+#
+#   python scripts/benchmark_backbone.py
+#   python scripts/benchmark_backbone.py training_module.max_epochs=100
+#   python scripts/benchmark_backbone.py skip_training=true \
+#       training_module.resume=results/.../checkpoints/last.ckpt
+
+defaults:
+  - pose_estimator: cnn_set_prediction
+  - training_module: set_prediction
+  - data: crowdpose_set_prediction
+  - hardware: auto
+  - _self_
+
+run_name: backbone_benchmark
+out_dir: results/backbone_benchmark
+
+# When true, skip trainer.fit and only run trainer.test on the checkpoint at
+# `training_module.resume`. Use `+skip_training=true` on the command line.
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false
