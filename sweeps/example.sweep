@@ -1,0 +1,27 @@
+# Sweep: learning-rate, decoder-depth, and image-conditioning ablation.
+#
+# Each non-blank, non-comment line is one training run.
+# Parameters are standard Hydra overrides, passed directly to
+# scripts/train_pose_refinement.py.
+#
+# Run task N (1-based):
+#   scripts/run_sweep.sh scripts/train_pose_refinement.py sweeps/example.sweep N
+#
+# Run all tasks sequentially:
+#   for i in $(seq 1 $(grep -cve '^\s*#\|^\s*$' sweeps/example.sweep)); do
+#       scripts/run_sweep.sh scripts/train_pose_refinement.py sweeps/example.sweep $i
+#   done
+
+# --- learning-rate sweep on default pose estimator (no image conditioning) ---
+pose_estimator=default train.lr=1e-3
+pose_estimator=default train.lr=3e-4
+pose_estimator=default train.lr=1e-4
+
+# --- decoder depth ablation ---
+pose_estimator=default pose_estimator.decoder.denoise_network.num_layers=2
+pose_estimator=default pose_estimator.decoder.denoise_network.num_layers=4
+pose_estimator=default pose_estimator.decoder.denoise_network.num_layers=6
+
+# --- image-conditioning ablation: no DINO vs bilinear-sampled DINO ---
+pose_estimator=default       train.lr=3e-4
+pose_estimator=dino_bilinear train.lr=3e-4

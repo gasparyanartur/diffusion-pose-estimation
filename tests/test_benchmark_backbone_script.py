@@ -47,7 +47,7 @@ def test_script_imports_cleanly():
 def test_benchmark_config_composes_with_set_prediction_defaults():
     cfg = _compose()
     # conf/benchmark_backbone.yaml wires backbone: cnn + training_module: backbone_probe.
-    assert cfg.backbone._target_.endswith("CNNFeatureExtractorConfig")
+    assert cfg.backbone._target_.endswith("ResNetFeatureExtractorConfig")
     assert cfg.training_module._target_.endswith("BackboneProbeConfig")
     assert cfg.data._target_.endswith("CrowdPoseDataConfig")
     assert cfg.data.target_format == "set"

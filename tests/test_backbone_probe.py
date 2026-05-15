@@ -30,14 +30,14 @@ SIGMAS = torch.from_numpy(CROWDPOSE_SIGMAS).float()
 
 
 def _make_probe_module(N: int = 20, feature_dim: int = 256) -> BackboneProbeModule:
-    from src.decoders.pose_slot import PoseSlotDecoder
     backbone = CNNFeatureExtractor(out_channels=128)
-    head = ProbeHead(in_channels=128, feature_dim=feature_dim, pool_h=8, pool_w=8, num_heads=4, conv_depth=1)
-    decoder = PoseSlotDecoder(in_dim=feature_dim, num_slots=N, num_keypoints=K, hidden_dim=256)
+    head = ProbeHead(
+        in_channels=128, feature_dim=feature_dim, target_size=8,
+        num_heads=4, num_conv_layers=1, num_slots=N, num_keypoints=K, hidden_dim=64,
+    )
     return BackboneProbeModule(
         backbone=backbone,
         probe_head=head,
-        slot_decoder=decoder,
         weights=SetPredictionLossWeights(),
         lr=1e-3,
     )
@@ -68,38 +68,66 @@ def _fake_pred(B: int = 2, N: int = 20) -> dict[str, torch.Tensor]:
 
 
 # ---------------------------------------------------------------------------
+# ConvNeXtBlock
+# ---------------------------------------------------------------------------
+
+
+def test_convnext_block_dropout_does_not_change_shape():
+    from src.training.backbone_probe import ConvNeXtBlock
+    block = ConvNeXtBlock(dim=32, ffn_mult=4, dropout=0.5)
+    x = torch.rand(2, 32, 8, 8)
+    out = block(x)
+    assert out.shape == x.shape
+
+
+# ---------------------------------------------------------------------------
 # ProbeHead
 # ---------------------------------------------------------------------------
 
 
 def test_probe_head_output_shape():
-    head = ProbeHead(in_channels=128, feature_dim=256, pool_h=16, pool_w=16, num_heads=8)
+    head = ProbeHead(in_channels=128, feature_dim=256, target_size=16, num_heads=8)
     feat = {"spatial": torch.rand(3, 128, 32, 24)}
     out = head(feat)
-    assert out.shape == (3, 256), f"Expected [3,256], got {out.shape}"
+    assert out["keypoints"].shape == (3, head.num_slots, head.num_keypoints, 2)
+    assert out["scores"].shape == (3, head.num_slots)
 
 
 def test_probe_head_varied_input_sizes():
-    """ProbeHead must handle any spatial resolution via adaptive pooling."""
-    head = ProbeHead(in_channels=64, feature_dim=128, pool_h=8, pool_w=8, num_heads=4, conv_depth=1)
+    """ProbeHead must handle any spatial resolution."""
+    head = ProbeHead(in_channels=64, feature_dim=128, target_size=8, num_heads=4, num_conv_layers=1)
     for h, w in [(12, 10), (40, 30), (7, 7)]:
         feat = {"spatial": torch.rand(2, 64, h, w)}
         out = head(feat)
-        assert out.shape == (2, 128), f"Failed for input {h}×{w}"
+        assert out["scores"].shape == (2, head.num_slots), f"Failed for input {h}×{w}"
 
 
-def test_probe_head_conv_depth_zero():
-    """conv_depth=0 should still work (skip conv blocks entirely)."""
-    head = ProbeHead(in_channels=32, feature_dim=64, pool_h=4, pool_w=4, num_heads=4, conv_depth=0)
+def test_probe_head_zero_conv_layers():
+    """num_conv_layers=0 should still work (skip conv blocks, go straight to attention)."""
+    head = ProbeHead(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=0)
     out = head({"spatial": torch.rand(1, 32, 10, 10)})
-    assert out.shape == (1, 64)
+    assert out["scores"].shape == (1, head.num_slots)
+
+
+def test_probe_head_large_input_pools_down():
+    """Input larger than target_size should be progressively pooled down."""
+    head = ProbeHead(in_channels=64, feature_dim=128, target_size=8, num_conv_layers=5, num_heads=4)
+    out = head({"spatial": torch.rand(2, 64, 64, 64)})
+    assert out["scores"].shape == (2, head.num_slots)
+
+
+def test_probe_head_small_input_no_extra_pool():
+    """Input already at target_size: no pooling should occur."""
+    head = ProbeHead(in_channels=32, feature_dim=64, target_size=16, num_conv_layers=3, num_heads=4)
+    out = head({"spatial": torch.rand(2, 32, 8, 8)})
+    assert out["scores"].shape == (2, head.num_slots)
 
 
 def test_probe_head_gradient_flows():
-    head = ProbeHead(in_channels=32, feature_dim=64, pool_h=4, pool_w=4, num_heads=4, conv_depth=1)
+    head = ProbeHead(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1)
     feat = {"spatial": torch.rand(2, 32, 8, 8, requires_grad=False)}
     out = head(feat)
-    loss = out.sum()
+    loss = out["scores"].sum() + out["keypoints"].sum() + out["vis_logits"].sum()
     loss.backward()
     # All head params should have gradients
     for name, p in head.named_parameters():
@@ -128,6 +156,56 @@ def test_backbone_probe_training_step_runs():
     assert torch.isfinite(loss)
 
 
+def test_backbone_probe_training_step_with_augmentation():
+    """training_step should still produce a finite loss when augmentation is active."""
+    backbone = CNNFeatureExtractor(out_channels=128)
+    head = ProbeHead(
+        in_channels=128, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1,
+        num_slots=20, num_keypoints=K, hidden_dim=64, proj_dropout=0.3,
+    )
+    module = BackboneProbeModule(
+        backbone=backbone, probe_head=head,
+        weights=SetPredictionLossWeights(), lr=1e-3,
+        noise_std=0.05, brightness=0.3, contrast=0.3, saturation=0.2,
+    )
+    batch = _fake_batch(B=2)
+    loss = module.training_step(batch, batch_idx=0)
+    assert torch.isfinite(loss)
+
+
+def test_pose_slot_decoder_mlp_dropout_shape():
+    """mlp_dropout should not change output shapes."""
+    from src.decoders.pose_slot import PoseSlotDecoder
+    decoder = PoseSlotDecoder(in_dim=64, num_slots=10, num_keypoints=K, hidden_dim=64, mlp_dropout=0.5)
+    decoder.eval()
+    out = decoder({"feature": torch.rand(3, 64)})
+    assert out["keypoints"].shape == (3, 10, K, 2)
+    assert out["scores"].shape == (3, 10)
+
+
+# ---------------------------------------------------------------------------
+# Augmentation functions
+# ---------------------------------------------------------------------------
+
+
+def test_augmentations_gaussian_noise_shape_and_clamp():
+    from src.training.augmentations import add_gaussian_noise
+    img = torch.rand(4, 3, 32, 32)
+    out = add_gaussian_noise(img, std=0.1)
+    assert out.shape == img.shape
+    assert out.dtype == img.dtype
+    assert out.min() >= 0.0
+    assert out.max() <= 1.0
+
+
+def test_augmentations_color_jitter_shape():
+    from src.training.augmentations import color_jitter
+    img = torch.rand(4, 3, 32, 32)
+    out = color_jitter(img, brightness=0.3, contrast=0.3, saturation=0.2)
+    assert out.shape == img.shape
+    assert out.dtype == img.dtype
+
+
 def test_backbone_probe_validation_step_runs():
     module = _make_probe_module(N=20)
     batch = _fake_batch(B=2)
@@ -143,12 +221,13 @@ def test_backbone_probe_configure_optimizers():
 
 
 def test_backbone_probe_gt_sanity_check_shapes():
-    from src.decoders.pose_slot import PoseSlotDecoder
     backbone = CNNFeatureExtractor(out_channels=128)
-    head = ProbeHead(in_channels=128, feature_dim=64, pool_h=4, pool_w=4, num_heads=4)
-    decoder = PoseSlotDecoder(in_dim=64, num_slots=10, num_keypoints=K, hidden_dim=64)
+    head = ProbeHead(
+        in_channels=128, feature_dim=64, target_size=4, num_heads=4,
+        num_slots=10, num_keypoints=K, hidden_dim=64,
+    )
     module = BackboneProbeModule(
-        backbone=backbone, probe_head=head, slot_decoder=decoder, gt_sanity_check=True,
+        backbone=backbone, probe_head=head, gt_sanity_check=True,
     )
     batch = _fake_batch(B=2, P_max=3)
     pred = module._forward(batch)
@@ -176,15 +255,14 @@ def test_backbone_probe_config_build():
     backbone = CNNFeatureExtractor(out_channels=128)
     probe_cfg = BackboneProbeConfig(
         feature_dim=64,
-        pool_h=4,
-        pool_w=4,
+        target_size=4,
         num_heads=4,
         hidden_dim=64,
         num_slots=5,
     )
     module = probe_cfg.build(backbone, data_module)
     assert isinstance(module, BackboneProbeModule)
-    assert module.slot_decoder.num_slots == 5
+    assert module.probe_head.num_slots == 5
     assert module.probe_head.feature_dim == 64
 
 

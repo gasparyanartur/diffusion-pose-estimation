@@ -111,7 +111,7 @@ def test_set_prediction_hydra_compose():
     data_cfg = DataConfig.from_hydra_config(cfg.data)
     assert isinstance(data_cfg, CrowdPoseDataConfig)
     assert data_cfg.target_format == "set"
-    assert data_cfg.image_h == 256
+    assert data_cfg.image_h is None
 
 
 def test_set_prediction_config_build_with_real_data_module():

@@ -31,8 +31,9 @@ class PoseSlotDecoder(BaseDecoder):
         in_dim: int,
         num_slots: int = 20,
         num_keypoints: int = 14,
-        hidden_dim: int = 512,
+        hidden_dim: int = 256,
         feature_key: str = "feature",
+        mlp_dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.num_slots = num_slots
@@ -43,6 +44,7 @@ class PoseSlotDecoder(BaseDecoder):
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.ReLU(inplace=True),
+            nn.Dropout(mlp_dropout),
             nn.Linear(hidden_dim, out_dim),
         )
 
@@ -76,8 +78,9 @@ class PoseSlotDecoderConfig(BaseDecoderConfig):
     in_dim: int = 256
     num_slots: int = 20
     num_keypoints: int = 14
-    hidden_dim: int = 512
+    hidden_dim: int = 256
     feature_key: str = "feature"
+    mlp_dropout: float = 0.0
 
     def build(self) -> PoseSlotDecoder:
         return PoseSlotDecoder(

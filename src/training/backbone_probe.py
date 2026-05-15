@@ -8,9 +8,10 @@ Pipeline
       ↓  ProbeHead (fixed across all backbone variants)
          1. 1×1 conv projection  →  [B, D, H', W']
          2. sinusoidal 2D PE added at full resolution
-         3. conv_depth × (3×3 conv + BN + ReLU)
-         4. adaptive avg-pool   →  [B, D, pool_h, pool_w]
-         5. sinusoidal 2D PE + single self-attention + LayerNorm
+         3. num_conv_layers × ConvNeXtBlock(D) with conditional AvgPool2d(2,2)
+            (pool applied after a block only when max(H,W) > target_size)
+         4. flatten → [B, H*W, D], add sinusoidal 2D PE
+         5. num_attn_layers × TransformerBlock (pre-norm, MHSA + FFN)
          6. mean-pool over tokens  →  [B, D]
       ↓  PoseSlotDecoder (fixed)
          Linear(D, 1024) → ReLU → Linear(1024, N*(1 + K*2 + K))
@@ -18,7 +19,7 @@ Pipeline
 
 The backbone is the only component that varies between benchmark variants.
 ProbeHead and PoseSlotDecoder are constructed internally and kept identical
-across all variants.
+across all variants regardless of input spatial resolution.
 """
 
 from __future__ import annotations
@@ -31,9 +32,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.decoders.pose_slot import PoseSlotDecoder
 from src.embedders.spatial_attention import make_2d_sinusoidal_pe
 from src.features.base import BaseFeatureExtractor
+from src.training.augmentations import add_gaussian_noise, color_jitter
 from src.metrics import CROWDPOSE_SIGMAS, KeypointAPMetric, canonical_to_pixel
 from src.training.diagnostics import compute_probe_diagnostics
 from src.training.losses import (
@@ -47,90 +48,223 @@ from src.vis import save_prediction_plot
 
 
 # ---------------------------------------------------------------------------
+# Building blocks
+# ---------------------------------------------------------------------------
+
+
+class ConvNeXtBlock(nn.Module):
+    """Depthwise ConvNeXt-style block.
+
+    DWConv(7×7) → LayerNorm → Linear(D→ffn_mult*D) → GELU → Linear(ffn_mult*D→D) → Dropout + residual
+    """
+
+    def __init__(self, dim: int, ffn_mult: int = 4, dropout: float = 0.5) -> None:
+        super().__init__()
+        self.dw_conv = nn.Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.norm = nn.LayerNorm(dim)
+        self.pw1 = nn.Linear(dim, dim * ffn_mult)
+        self.act = nn.GELU()
+        self.pw2 = nn.Linear(dim * ffn_mult, dim)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: Tensor) -> Tensor:
+        residual = x
+        x = self.dw_conv(x)              # [B, D, H, W]
+        x = x.permute(0, 2, 3, 1)       # [B, H, W, D]
+        x = self.norm(x)
+        x = self.act(self.pw1(x))
+        x = self.drop(x)
+        x = self.pw2(x)
+        x = x.permute(0, 3, 1, 2)       # [B, D, H, W]
+        return x + residual
+
+
+class TransformerBlock(nn.Module):
+    """Pre-norm transformer block: MHSA + Add, FFN + Add."""
+
+    def __init__(self, dim: int, num_heads: int, ffn_mult: int = 4, attn_dropout: float = 0.0, ffn_dropout: float = 0.5) -> None:
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=attn_dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * ffn_mult),
+            nn.GELU(),
+            nn.Dropout(ffn_dropout),
+            nn.Linear(dim * ffn_mult, dim),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        normed = self.norm1(x)
+        attn_out, _ = self.attn(normed, normed, normed)
+        x = x + attn_out
+        x = x + self.ffn(self.norm2(x))
+        return x
+
+
+# ---------------------------------------------------------------------------
 # ProbeHead
 # ---------------------------------------------------------------------------
 
 
 class ProbeHead(nn.Module):
-    """Fixed projection + pool + attention head.
+    """Self-contained spatial feature map → pose prediction dict.
 
-    Takes a spatial feature map of arbitrary channel count and spatial size,
-    and produces a single [B, feature_dim] vector.
+    Two-stage projection funnels backbone channels to a narrow conv_dim, where
+    the cheap ConvNeXt stack runs.  A readout_proj lifts to feature_dim before
+    the Transformer blocks.  After mean-pool, a shared linear projection feeds
+    three separate head linears (scores, keypoints, visibility).
 
-    Steps:
-        1x1 conv: in_channels → feature_dim
-        sinusoidal 2D PE added at full spatial resolution
-        conv_depth × (3×3 conv + BN + ReLU): feature_dim → feature_dim
-        adaptive avg-pool: → [B, feature_dim, pool_h, pool_w]
-        sinusoidal 2D PE + single self-attention + LayerNorm
-        mean-pool over tokens → [B, feature_dim]
+        proj1(1×1): in_ch → proj_dim
+        proj2(1×1): proj_dim → conv_dim
+        + sinusoidal 2D PE at conv_dim
+        num_conv_layers × ConvNeXtBlock(conv_dim, dropout=conv_dropout)
+            [if max(H, W) > target_size: AvgPool2d(2,2)]
+        readout_proj(1×1): conv_dim → feature_dim
+        flatten → [B, H*W, feature_dim]
+        + sinusoidal 2D PE at feature_dim
+        num_attn_layers × TransformerBlock(feature_dim)
+        mean-pool → [B, feature_dim]
+        shared_proj: Linear(feature_dim → hidden_dim) + ReLU + Dropout(mlp_dropout)
+        scores_head:    Linear(hidden_dim → num_slots)
+        keypoints_head: Linear(hidden_dim → num_slots * num_keypoints * 2)
+        vis_head:       Linear(hidden_dim → num_slots * num_keypoints)
+
+    Returns a pred dict with keys:
+        keypoints       [B, N, K, 2]  canonical (−1, 1)
+        scores          [B, N]
+        scores_logits   [B, N]
+        keypoint_scores [B, N, K]
+        vis_logits      [B, N, K]
 
     Args:
-        in_channels:  channel count from the backbone (varies per variant).
-        feature_dim:  fixed internal dimension D.  Must be divisible by 4.
-        pool_h:       height after adaptive pool.
-        pool_w:       width after adaptive pool.
-        num_heads:    attention heads.
-        conv_depth:   number of 3×3 conv blocks after the 1×1 projection.
-                      0 means skip the conv blocks entirely.
-        feature_key:  key in the backbone feature dict to consume.
+        in_channels:     backbone output channels (varies per variant).
+        feature_dim:     readout/attention dimension D.  Must be divisible by 4.
+        proj_dim:        intermediate wide projection (adapter width).
+        conv_dim:        narrow working dimension for the ConvNeXt stack.
+                         Must be divisible by 4.
+        target_size:     spatial size below which no further pooling is applied.
+        num_conv_layers: number of ConvNeXtBlocks. 0 skips them entirely.
+        num_attn_layers: number of TransformerBlocks in the readout.
+        num_heads:       attention heads (feature_dim must be divisible by num_heads).
+        ffn_mult:        hidden expansion factor in both ConvNeXt and Transformer FFNs.
+        conv_dropout:    dropout inside each ConvNeXtBlock.
+        attn_dropout:    dropout inside MultiheadAttention.
+        ffn_dropout:     dropout inside Transformer FFN.
+        num_slots:       number of pose slots N.
+        num_keypoints:   keypoints per slot K.
+        hidden_dim:      shared projection width before the three head linears.
+        mlp_dropout:     dropout after shared_proj.
+        proj_dropout:    dropout inside shared_proj.
+        feature_key:     key in the backbone feature dict to consume.
     """
 
     def __init__(
         self,
         in_channels: int,
         feature_dim: int = 256,
-        pool_h: int = 32,
-        pool_w: int = 32,
-        num_heads: int = 8,
-        conv_depth: int = 1,
+        proj_dim: int = 768,
+        conv_dim: int = 96,
+        target_size: int = 16,
+        num_conv_layers: int = 5,
+        num_attn_layers: int = 2,
+        num_heads: int = 4,
+        ffn_mult: int = 4,
+        conv_dropout: float = 0.5,
+        attn_dropout: float = 0.3,
+        ffn_dropout: float = 0.5,
+        num_slots: int = 20,
+        num_keypoints: int = 14,
+        hidden_dim: int = 256,
+        proj_dropout: float = 0.2,
         feature_key: str = "spatial",
     ) -> None:
         super().__init__()
         if feature_dim % 4 != 0:
             raise ValueError(f"feature_dim must be divisible by 4; got {feature_dim}")
+        if conv_dim % 4 != 0:
+            raise ValueError(f"conv_dim must be divisible by 4; got {conv_dim}")
+        if feature_dim % num_heads != 0:
+            raise ValueError(f"feature_dim must be divisible by num_heads; got {feature_dim} % {num_heads}")
 
         self.feature_key = feature_key
-        self.pool_h = pool_h
-        self.pool_w = pool_w
         self.feature_dim = feature_dim
+        self.conv_dim = conv_dim
+        self.target_size = target_size
+        self.num_slots = num_slots
+        self.num_keypoints = num_keypoints
 
-        # 1×1 projection (channel adapter — the only backbone-dependent part)
-        self.proj = nn.Conv2d(in_channels, feature_dim, kernel_size=1)
+        self.proj1 = nn.Conv2d(in_channels, proj_dim, kernel_size=1)
+        self.act = nn.ReLU(inplace=True)
+        self.proj2 = nn.Conv2d(proj_dim, conv_dim, kernel_size=1)
+        self.conv_layers = nn.ModuleList([
+            ConvNeXtBlock(conv_dim, ffn_mult, conv_dropout) for _ in range(num_conv_layers)
+        ])
+        self.readout_proj = nn.Conv2d(conv_dim, feature_dim, kernel_size=1)
+        self.attn_layers = nn.ModuleList([
+            TransformerBlock(feature_dim, num_heads, ffn_mult, attn_dropout=attn_dropout, ffn_dropout=ffn_dropout)
+            for _ in range(num_attn_layers)
+        ])
 
-        # optional conv blocks
-        conv_blocks: list[nn.Module] = []
-        for _ in range(conv_depth):
-            conv_blocks += [
-                nn.Conv2d(feature_dim, feature_dim, kernel_size=3, padding=1, bias=False),
-                nn.BatchNorm2d(feature_dim),
-                nn.ReLU(inplace=True),
-            ]
-        self.conv_blocks = nn.Sequential(*conv_blocks)
+        self.shared_proj = nn.Sequential(
+            nn.LayerNorm(feature_dim),
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(proj_dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+        )
+        self.scores_head    = nn.Linear(hidden_dim, num_slots)
+        self.keypoints_head = nn.Linear(hidden_dim, num_slots * num_keypoints * 2)
+        self.vis_head       = nn.Linear(hidden_dim, num_slots * num_keypoints)
 
-        # attention
-        self.attn = nn.MultiheadAttention(feature_dim, num_heads, batch_first=True)
-        self.norm = nn.LayerNorm(feature_dim)
-
-        # cached PE for the fixed pooled grid (moves with the module via register_buffer)
-        pe_pool = make_2d_sinusoidal_pe(pool_h, pool_w, feature_dim, device=torch.device("cpu"))
-        self.register_buffer("_pe_pool", pe_pool)  # [pool_h*pool_w, D]
-
-    def forward(self, features: dict[str, Tensor]) -> Tensor:
-        feat = features[self.feature_key]                    # [B, C, H', W']
-        x = self.proj(feat)                                  # [B, D, H', W']
+    def forward(self, features: dict[str, Tensor]) -> dict[str, Tensor]:
+        feat = features[self.feature_key]          # [B, C, H, W]
+        x = self.proj2(self.act(self.proj1(feat))) # [B, conv_dim, H, W]
         _, _, H, W = x.shape
-        pe_spatial = make_2d_sinusoidal_pe(
-            H, W, self.feature_dim, x.device, x.dtype,
-        )  # [H'*W', D]
-        x = x + pe_spatial.view(H, W, self.feature_dim).permute(2, 0, 1).unsqueeze(0)
-        x = self.conv_blocks(x)                              # [B, D, H', W']
-        x = F.adaptive_avg_pool2d(x, (self.pool_h, self.pool_w))  # [B, D, ph, pw]
-        tokens = x.flatten(2).permute(0, 2, 1)              # [B, ph*pw, D]
-        tokens = tokens + self._pe_pool.to(dtype=x.dtype).unsqueeze(0)
-        attn_out, _ = self.attn(tokens, tokens, tokens)
-        tokens = self.norm(tokens + attn_out)
-        return tokens.mean(dim=1)                            # [B, D]
+        pe = make_2d_sinusoidal_pe(H, W, self.conv_dim, x.device, x.dtype)
+        x = x + pe.view(H, W, self.conv_dim).permute(2, 0, 1).unsqueeze(0)
+
+        for block in self.conv_layers:
+            x = block(x)
+            _, _, H, W = x.shape
+            if max(H, W) > self.target_size:
+                x = F.avg_pool2d(x, 2)
+
+        x = self.readout_proj(x)                   # [B, feature_dim, H, W]
+        _, _, H, W = x.shape
+        tokens = x.flatten(2).permute(0, 2, 1)    # [B, H*W, feature_dim]
+        pe = make_2d_sinusoidal_pe(H, W, self.feature_dim, x.device, x.dtype)
+        tokens = tokens + pe.unsqueeze(0)
+
+        for block in self.attn_layers:
+            tokens = block(tokens)
+
+        g = self.shared_proj(tokens.mean(dim=1))   # [B, hidden_dim]
+        B = g.shape[0]
+        N, K = self.num_slots, self.num_keypoints
+
+        scores_logits = self.scores_head(g)                            # [B, N]
+        kpt_logits    = self.keypoints_head(g).view(B, N, K, 2)       # [B, N, K, 2]
+        vis_logits    = self.vis_head(g).view(B, N, K)                 # [B, N, K]
+
+        return {
+            "keypoints":       torch.sigmoid(kpt_logits) * 2.0 - 1.0,
+            "scores":          torch.sigmoid(scores_logits),
+            "scores_logits":   scores_logits,
+            "keypoint_scores": torch.sigmoid(vis_logits),
+            "vis_logits":      vis_logits,
+        }
+
+
+        tokens = x.flatten(2).permute(0, 2, 1)    # [B, H*W, feature_dim]
+        pe = make_2d_sinusoidal_pe(H, W, self.feature_dim, x.device, x.dtype)
+        tokens = tokens + pe.unsqueeze(0)
+
+        for block in self.attn_layers:
+            tokens = block(tokens)
+
+        return tokens.mean(dim=1)                  # [B, feature_dim]
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +281,6 @@ class BackboneProbeModule(pl.LightningModule):
     Args:
         backbone:               feature extractor being benchmarked.
         probe_head:             ProbeHead instance (fixed across runs).
-        slot_decoder:           PoseSlotDecoder instance (fixed across runs).
         weights:                loss component multipliers.
         lr / weight_decay:      AdamW hyperparameters.
         lr_T_max:               cosine annealing period (None = no cosine).
@@ -168,7 +301,6 @@ class BackboneProbeModule(pl.LightningModule):
         self,
         backbone: BaseFeatureExtractor,
         probe_head: ProbeHead,
-        slot_decoder: PoseSlotDecoder,
         weights: SetPredictionLossWeights | None = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
@@ -184,11 +316,14 @@ class BackboneProbeModule(pl.LightningModule):
         plot_dir: str | None = None,
         max_plot_images: int = 5,
         max_persons: int | None = None,
+        noise_std: float = 0.0,
+        brightness: float = 0.0,
+        contrast: float = 0.0,
+        saturation: float = 0.0,
     ) -> None:
         super().__init__()
-        self.backbone     = backbone
-        self.probe_head   = probe_head
-        self.slot_decoder = slot_decoder
+        self.backbone   = backbone
+        self.probe_head = probe_head
 
         resolved_weights = weights or SetPredictionLossWeights()
         self.weights = resolved_weights
@@ -204,6 +339,10 @@ class BackboneProbeModule(pl.LightningModule):
         self.plot_dir = plot_dir
         self.max_plot_images = max_plot_images
         self._plots_saved = 0
+        self.noise_std = noise_std
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
 
         sigmas = torch.from_numpy(CROWDPOSE_SIGMAS).float()
         self._loss = SetPredictionLoss(resolved_weights, sigmas)
@@ -211,25 +350,25 @@ class BackboneProbeModule(pl.LightningModule):
         self._val_metric  = KeypointAPMetric(val_ann_file,  max_persons=max_persons) if val_ann_file  else None
         self._test_metric = KeypointAPMetric(test_ann_file, max_persons=max_persons) if test_ann_file else None
 
-        self.save_hyperparameters(ignore=["backbone", "probe_head", "slot_decoder"])
+        self.save_hyperparameters(ignore=["backbone", "probe_head"])
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def on_fit_start(self) -> None:
-        frozen, trainable = [], []
-        for name, param in self.named_parameters():
-            (frozen if not param.requires_grad else trainable).append(name)
         import logging
+        from pytorch_lightning.utilities.model_summary import ModelSummary
         log = logging.getLogger(__name__)
-        log.info("Trainable parameters (%d):", len(trainable))
-        for name in trainable:
-            log.info("  + %s", name)
-        if frozen:
-            log.info("Frozen parameters (%d):", len(frozen))
-            for name in frozen:
-                log.info("  - %s", name)
+        summary = ModelSummary(self, max_depth=3)
+        log.info("Model summary:\n%s", summary)
+
+    def on_train_epoch_start(self) -> None:
+        opt = self.optimizers()
+        if isinstance(opt, list):
+            opt = opt[0]
+        lr = opt.param_groups[0]["lr"]
+        self.log("train/lr", lr, prog_bar=False, on_step=False, on_epoch=True)
 
     # ------------------------------------------------------------------
     # Forward
@@ -240,8 +379,7 @@ class BackboneProbeModule(pl.LightningModule):
             return self._make_gt_pred(batch)
         image = batch["image"].to(self.device)
         features = self.backbone(image=image)
-        global_feat = self.probe_head(features)            # [B, D]
-        return self.slot_decoder({"feature": global_feat})
+        return self.probe_head(features)
 
     def _make_gt_pred(self, batch: dict) -> dict[str, Tensor]:
         """GT-filled predictions for AP sanity-checking."""
@@ -249,7 +387,7 @@ class BackboneProbeModule(pl.LightningModule):
         gt_vis = batch["gt_visible"].to(self.device)     # [B, P_max, K]
         mask   = batch["person_mask"].to(self.device)    # [B, P_max]
         B, P_max, K = gt_kp.shape[:3]
-        N = self.slot_decoder.num_slots
+        N = self.probe_head.num_slots
 
         kp_out  = torch.full((B, N, K, 2), -1.0, device=self.device)
         vis_out = torch.zeros(B, N, K, device=self.device)
@@ -285,6 +423,12 @@ class BackboneProbeModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     def training_step(self, batch: dict, batch_idx: int) -> Tensor:
+        image = batch["image"]
+        if self.noise_std > 0:
+            image = add_gaussian_noise(image, self.noise_std)
+        if self.brightness > 0 or self.contrast > 0 or self.saturation > 0:
+            image = color_jitter(image, self.brightness, self.contrast, self.saturation)
+        batch = {**batch, "image": image}
         pred   = self._forward(batch)
         losses = self._compute_loss(pred, batch)
         B = batch["image"].shape[0]

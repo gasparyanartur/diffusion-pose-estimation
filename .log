@@ -1,3 +1,32 @@
+[2026-05-16] ProbeHead self-contained: 2-stage projection + built-in decoder heads; no PoseSlotDecoder dependency
+
+- Added 2-stage proj: proj1(in_ch→768, 1×1) + ReLU + proj2(768→96, 1×1) before ConvNeXt stack
+- Added separate attn_dropout / ffn_dropout params to TransformerBlock
+- Fixed doubled attn_layers loop bug (N×N → N blocks); param count 3.9M → 2.47M
+- Rewrote ProbeHead.forward to return pred dict directly:
+    shared_proj: Linear(feature_dim→hidden_dim) + ReLU + Dropout(mlp_dropout)
+    scores_head:    Linear(hidden_dim → num_slots)
+    keypoints_head: Linear(hidden_dim → num_slots*num_keypoints*2)
+    vis_head:       Linear(hidden_dim → num_slots*num_keypoints)
+    returns {keypoints[B,N,K,2], scores[B,N], scores_logits[B,N], keypoint_scores[B,N,K], vis_logits[B,N,K]}
+- BackboneProbeModule: removed slot_decoder param; _forward calls probe_head directly; _make_gt_pred reads num_slots from probe_head
+- BackboneProbeConfig.build(): no longer creates PoseSlotDecoder; passes num_slots/num_keypoints/hidden_dim/mlp_dropout to ProbeHead
+- Updated conf/training_module/backbone_probe.yaml: added proj_dim=768, conv_dim=96, ffn_dropout=0.5
+- Updated tests: all ProbeHead shape/gradient tests migrated to dict output; slot_decoder removed from all construction sites; 164/164 pass
+
+[2026-05-15] ProbeHead redesign: ConvNeXt blocks + conditional pool + Transformer
+
+- Added ConvNeXtBlock: DWConv(7x7,groups=D) + LN + pw Linear(D->ffn_mult*D) + GELU + pw Linear(ffn_mult*D->D) + residual
+- Added TransformerBlock: pre-norm MHSA + Add, pre-norm FFN(D->ffn_mult*D->D, Dropout) + Add
+- Rewrote ProbeHead: proj(1x1) + ConvNeXt stack with conditional AvgPool2d(2,2) + Transformer readout + mean-pool
+  - Removed: proj_dim, pool_h, pool_w, conv_depth, conv_dropout, final_proj, _pe_pool buffer
+  - Added: target_size, num_conv_layers, num_attn_layers, ffn_mult
+  - Parameter-identical for any backbone spatial resolution
+- Updated BackboneProbeConfig: removed old params, added new params, updated build()
+- Updated conf/training_module/backbone_probe.yaml to match new config schema
+- Updated tests: removed proj_dim/pool/conv_depth tests; added test_probe_head_large_input_pools_down,
+  test_probe_head_small_input_no_extra_pool, test_probe_head_zero_conv_layers; all 163 tests pass
+
 [2026-05-14] Refactor losses.py into nn.Module hierarchy
 
 - src/training/losses.py: rewrote all loss logic as nn.Module subclasses — OKSLoss, ObjectnessLoss, VisibilityLoss, RankingLoss, SetPredictionLoss. Removed set_prediction_loss and set_prediction_loss_per_image free functions. sigmas registered as buffer in SetPredictionLoss.

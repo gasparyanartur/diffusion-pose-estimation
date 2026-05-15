@@ -291,7 +291,7 @@ Task IDs are 1-based and count only non-blank, non-comment lines:
 
 ```bash
 # Run the first task in the sweep
-bash scripts/run_sweep.sh sweeps/my_sweep.sweep 1
+bash scripts/run_sweep.sh scripts/train_pose_refinement.py sweeps/my_sweep.sweep 1
 ```
 
 Output is written to `results/sweeps/<sweep_name>/task_<task_id>/`.  
@@ -302,7 +302,7 @@ results are saved to `test_results.json` in that directory.
 
 ```bash
 for i in $(seq 1 $(grep -cve '^\s*#\|^\s*$' sweeps/my_sweep.sweep)); do
-    bash scripts/run_sweep.sh sweeps/my_sweep.sweep $i
+    bash scripts/run_sweep.sh scripts/train_pose_refinement.py sweeps/my_sweep.sweep $i
 done
 ```
 

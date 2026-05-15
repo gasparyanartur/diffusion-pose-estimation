@@ -1,0 +1,27 @@
+# Inference-parameter ablation for the diffusion refiner (main model).
+# OFAT design, 9 tasks. Baseline: steps=1, noise-frac=0.2, passes=1, cfg=1.0
+#
+# Run DDIM mode (standard):
+#   scripts/run_inference_ablation.sh \
+#       results/sweeps/arch-message-passing/task_1/20260316_003813/checkpoints/epoch140-running_loss_5=0.0155.ckpt \
+#       results/cache/rtmpose-m_crowdpose_val_predictions.pkl \
+#       data/crowdpose/annotations/crowdpose_val.json
+#
+# Or drive a single task manually:
+#   scripts/run_benchmark_sweep.sh sweeps/inference-ablation.sweep <task_id> \
+#       <checkpoint> <pred_cache> <ann_file> [--out-dir <dir>] [--raw-refiner]
+
+# baseline
+--steps 1 --noise-frac 0.2 --passes 1 --cfg-guidance-scale 1.0
+# steps
+--steps 2 --noise-frac 0.2 --passes 1 --cfg-guidance-scale 1.0
+--steps 3 --noise-frac 0.2 --passes 1 --cfg-guidance-scale 1.0
+# noise-frac
+--steps 1 --noise-frac 0.1 --passes 1 --cfg-guidance-scale 1.0
+--steps 1 --noise-frac 0.4 --passes 1 --cfg-guidance-scale 1.0
+# passes
+--steps 1 --noise-frac 0.2 --passes 2 --cfg-guidance-scale 1.0
+--steps 1 --noise-frac 0.2 --passes 3 --cfg-guidance-scale 1.0
+# cfg-guidance-scale
+--steps 1 --noise-frac 0.2 --passes 1 --cfg-guidance-scale 2.0
+--steps 1 --noise-frac 0.2 --passes 1 --cfg-guidance-scale 3.0

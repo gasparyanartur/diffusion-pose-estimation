@@ -19,8 +19,8 @@ max_persons: null
 val_pred_cache: null
 test_pred_cache: null
 
-batch_size: 256
+batch_size: 128
 num_workers: 8
-prefetch_factor: 32
+prefetch_factor: 2
 ap_batch_size: 32
 num_keypoints: 14

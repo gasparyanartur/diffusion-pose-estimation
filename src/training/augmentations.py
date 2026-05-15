@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import torchvision.transforms.v2 as TFv2
 from torch import Tensor
 
 
@@ -49,3 +50,42 @@ def image_dropout(image_cond: Tensor, p: float) -> None:
         torch.full((image_cond.shape[0],), p, device=image_cond.device)
     ).bool()
     image_cond[drop] = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Image augmentations (pixel space, no spatial transforms)
+# ---------------------------------------------------------------------------
+
+
+def add_gaussian_noise(image: Tensor, std: float) -> Tensor:
+    """Add i.i.d. Gaussian noise to a float [0,1] image batch, clamped to [0,1].
+
+    Args:
+        image: float tensor [..., C, H, W] in [0, 1].
+        std:   noise standard deviation.
+    """
+    return (image + torch.randn_like(image) * std).clamp_(0.0, 1.0)
+
+
+def color_jitter(
+    image: Tensor,
+    brightness: float,
+    contrast: float,
+    saturation: float,
+) -> Tensor:
+    """Apply random ColorJitter to a float [0,1] image batch [B, C, H, W].
+
+    Uses torchvision.transforms.v2 which supports batched tensors.
+
+    Args:
+        image:      float [B, C, H, W] in [0, 1].
+        brightness: max brightness jitter factor (symmetric around 1).
+        contrast:   max contrast jitter factor.
+        saturation: max saturation jitter factor.
+    """
+    jitter = TFv2.ColorJitter(
+        brightness=brightness,
+        contrast=contrast,
+        saturation=saturation,
+    )
+    return jitter(image)

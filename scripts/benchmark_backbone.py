@@ -108,10 +108,10 @@ def main(cfg: DictConfig) -> None:
 
     n_backbone = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
     n_head     = sum(p.numel() for p in module.probe_head.parameters() if p.requires_grad)
-    n_decoder  = sum(p.numel() for p in module.slot_decoder.parameters() if p.requires_grad)
+    n_total    = sum(p.numel() for p in module.parameters() if p.requires_grad)
     log.info("Backbone      : %s  (%s trainable params)", type(backbone).__name__, f"{n_backbone:,}")
     log.info("ProbeHead     : %s trainable params", f"{n_head:,}")
-    log.info("SlotDecoder   : %s trainable params", f"{n_decoder:,}")
+    log.info("Total         : %s trainable params", f"{n_total:,}")
     log.info("DataModule    : %s  (batch=%d)", type(data_module).__name__, data_cfg.batch_size)
     log.info("val_ap_every  : %d epochs", probe_cfg.val_ap_every_n_epochs)
 

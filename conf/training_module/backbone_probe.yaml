@@ -4,8 +4,8 @@
 # Only 'backbone' and 'probe' groups vary between benchmark runs.
 _target_: src.training.training_config.BackboneProbeConfig
 
-lr: 1e-3
-weight_decay: 1e-4
+lr: 4e-4
+weight_decay: 5e-4
 cosine_lr: true
 lr_warmup_epochs: 1
 lr_min_frac: 1e-1
@@ -19,15 +19,28 @@ gt_sanity_check: false
 
 # ProbeHead
 feature_dim: 256
-pool_h: 16
-pool_w: 16
-num_heads: 8
-conv_depth: 1
+proj_dim: 768
+conv_dim: 96
+target_size: 16
+num_conv_layers: 5
+num_attn_layers: 2
+num_heads: 4
+ffn_mult: 2
+conv_dropout: 0.1
+attn_dropout: 0.3
+ffn_dropout: 0.5
 feature_key: spatial
 
 # PoseSlotDecoder
-hidden_dim: 512
+hidden_dim: 256
 num_slots: 20
+proj_dropout: 0.2
+
+# Augmentation (pixel-space only, no spatial transforms)
+noise_std: 0.05
+brightness: 0.3
+contrast: 0.3
+saturation: 0.2
 
 # Periodic AP evaluation
 val_ap_every_n_epochs: 10
