@@ -7,10 +7,10 @@ _target_: src.training.training_config.BackboneProbeConfig
 lr: 1e-3
 weight_decay: 1e-4
 cosine_lr: true
-lr_warmup_epochs: 0
+lr_warmup_epochs: 1
 lr_min_frac: 1e-1
 
-max_epochs: 50
+max_epochs: 100
 seed: 42
 grad_clip: 5.0
 log_every_n_steps: 50
@@ -33,7 +33,7 @@ num_slots: 20
 val_ap_every_n_epochs: 10
 
 weights:
-  oks: 1.0
+  oks: 2.0
   obj: 1.0
   vis: 0.5
   rank: 1.0

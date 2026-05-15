@@ -259,16 +259,132 @@ def test_ranking_loss_decreases_when_matched_outscores_unmatched():
 
 
 # ---------------------------------------------------------------------------
+# resize_and_pad_to_square
+# ---------------------------------------------------------------------------
+
+
+def test_resize_and_pad_to_square_landscape():
+    from src.data.data_module import resize_and_pad_to_square
+    import torchvision.transforms.functional as TF
+    from torchvision.transforms import InterpolationMode
+
+    # 3 × 40 × 80  (landscape) → longest side 80 → scale 0.5 → 20 × 40 padded to 40 × 40
+    img = torch.rand(3, 40, 80)
+    out, mask = resize_and_pad_to_square(img, size=40)
+
+    assert out.shape == (3, 40, 40)
+    assert mask.shape == (40, 40)
+    # real region occupies top half; bottom is padded
+    assert mask[:20, :40].all()
+    assert not mask[20:, :].any()
+    # padded region is zero
+    assert out[:, 20:, :].eq(0).all()
+    # real region matches a direct resize of the original
+    expected = TF.resize(img, [20, 40], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    assert torch.equal(out[:, :20, :40], expected)
+
+
+def test_resize_and_pad_to_square_portrait():
+    from src.data.data_module import resize_and_pad_to_square
+    import torchvision.transforms.functional as TF
+    from torchvision.transforms import InterpolationMode
+
+    # 3 × 80 × 40  (portrait) → longest side 80 → scale 0.5 → 40 × 20 padded to 40 × 40
+    img = torch.rand(3, 80, 40)
+    out, mask = resize_and_pad_to_square(img, size=40)
+
+    assert out.shape == (3, 40, 40)
+    assert mask.shape == (40, 40)
+    assert mask[:40, :20].all()
+    assert not mask[:, 20:].any()
+    assert out[:, :, 20:].eq(0).all()
+    # real region matches a direct resize of the original
+    expected = TF.resize(img, [40, 20], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    assert torch.equal(out[:, :40, :20], expected)
+
+
+def test_resize_and_pad_to_square_already_square():
+    from src.data.data_module import resize_and_pad_to_square
+    import torchvision.transforms.functional as TF
+    from torchvision.transforms import InterpolationMode
+
+    img = torch.rand(3, 64, 64)
+    out, mask = resize_and_pad_to_square(img, size=64)
+
+    assert out.shape == (3, 64, 64)
+    assert mask.all()   # no padding at all
+    # content matches a direct resize (no-op at same size)
+    expected = TF.resize(img, [64, 64], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    assert torch.equal(out, expected)
+
+
+def test_resize_and_pad_to_square_batch_all_square():
+    from src.data.data_module import resize_and_pad_to_square
+
+    # Mix of aspect ratios; all outputs must be size × size squares
+    imgs = [
+        torch.rand(3, 40, 80),   # landscape
+        torch.rand(3, 80, 40),   # portrait
+        torch.rand(3, 64, 64),   # square
+        torch.rand(3, 30, 50),   # landscape, different size
+    ]
+    size = 40
+    outputs = [resize_and_pad_to_square(img, size=size) for img in imgs]
+
+    for i, (out, mask) in enumerate(outputs):
+        assert out.shape == (3, size, size), f"image {i}: expected ({3}, {size}, {size}), got {tuple(out.shape)}"
+        assert mask.shape == (size, size),   f"image {i}: mask shape {tuple(mask.shape)}"
+
+
+# ---------------------------------------------------------------------------
+# compute_person_scale
+# ---------------------------------------------------------------------------
+
+
+def test_compute_person_scale_normal():
+    from src.data.datasets import compute_person_scale
+
+    # One person, 2 labeled joints at canonical (-1,-1) and (1,1) → extent = 2.0
+    kp = torch.tensor([[[- 1.0, -1.0], [1.0, 1.0]]])   # [1, 2, 2]
+    labeled = torch.ones(1, 2)
+    scale = compute_person_scale(kp, labeled)
+    assert scale.shape == (1,)
+    assert abs(scale[0].item() - 2.0) < 1e-5
+
+
+def test_compute_person_scale_falls_back_for_single_joint():
+    from src.data.datasets import compute_person_scale
+
+    kp = torch.tensor([[[0.5, 0.5], [0.0, 0.0]]])   # [1, 2, 2]
+    labeled = torch.tensor([[1.0, 0.0]])              # only one labeled joint
+    scale = compute_person_scale(kp, labeled, floor=0.1)
+    assert abs(scale[0].item() - 0.1) < 1e-5
+
+
+def test_compute_person_scale_multi_person():
+    from src.data.datasets import compute_person_scale
+
+    # P=2; person 0 has 2 labeled joints, person 1 has none
+    kp = torch.tensor([
+        [[-0.5, 0.0], [0.5, 0.0]],   # extent = 1.0
+        [[0.0,  0.0], [0.0, 0.0]],
+    ])   # [2, 2, 2]
+    labeled = torch.tensor([[1.0, 1.0], [0.0, 0.0]])
+    scale = compute_person_scale(kp, labeled, floor=0.1)
+    assert abs(scale[0].item() - 1.0) < 1e-5
+    assert abs(scale[1].item() - 0.1) < 1e-5
+
+
+# ---------------------------------------------------------------------------
 # set-format collate
 # ---------------------------------------------------------------------------
 
 
 def test_set_pose_collate_pads_to_p_max():
-    from src.data.set_pose_dataset import set_pose_collate
+    from src.data.datasets import set_pose_collate
 
     sample_a = {
-        "raw_jpeg": b"fake_jpeg_a",
-        "target_hw": torch.tensor([8, 8], dtype=torch.long),
+        "image": torch.zeros(3, 8, 8, dtype=torch.uint8),
         "gt_keypoints": torch.rand(2, K, 2),
         "gt_labeled": torch.ones(2, K),
         "gt_visible": torch.ones(2, K),
@@ -278,8 +394,7 @@ def test_set_pose_collate_pads_to_p_max():
         "img_hw": torch.tensor([100.0, 200.0]),
     }
     sample_b = {
-        "raw_jpeg": b"fake_jpeg_b",
-        "target_hw": torch.tensor([8, 8], dtype=torch.long),
+        "image": torch.zeros(3, 8, 8, dtype=torch.uint8),
         "gt_keypoints": torch.rand(1, K, 2),
         "gt_labeled": torch.ones(1, K),
         "gt_visible": torch.ones(1, K),
@@ -289,8 +404,7 @@ def test_set_pose_collate_pads_to_p_max():
         "img_hw": torch.tensor([120.0, 220.0]),
     }
     batch = set_pose_collate([sample_a, sample_b])
-    assert batch["raw_jpeg"] == [b"fake_jpeg_a", b"fake_jpeg_b"]
-    assert batch["target_hw"].tolist() == [8, 8]
+    assert isinstance(batch["image"], list) and len(batch["image"]) == 2
     assert batch["gt_keypoints"].shape == (2, 2, K, 2)
     assert batch["person_mask"].tolist() == [[1.0, 1.0], [1.0, 0.0]]
     # padded slot in second image is zero
@@ -299,11 +413,10 @@ def test_set_pose_collate_pads_to_p_max():
 
 
 def test_set_pose_collate_handles_zero_person_image():
-    from src.data.set_pose_dataset import set_pose_collate
+    from src.data.datasets import set_pose_collate
 
     s = {
-        "raw_jpeg": b"fake",
-        "target_hw": torch.tensor([8, 8], dtype=torch.long),
+        "image": torch.zeros(3, 8, 8, dtype=torch.uint8),
         "gt_keypoints": torch.zeros(0, K, 2),
         "gt_labeled": torch.zeros(0, K),
         "gt_visible": torch.zeros(0, K),
@@ -328,7 +441,7 @@ def test_set_pose_dataset_canonical_mapping(tmp_path, monkeypatch):
     from PIL import Image
 
     from src.data.datasets import PoseDataset
-    from src.data.set_pose_dataset import SetPoseDataset
+    from src.data.datasets import SetPoseDataset
 
     img_path = tmp_path / "img.png"
     Image.new("RGB", (200, 100)).save(img_path)
@@ -346,13 +459,13 @@ def test_set_pose_dataset_canonical_mapping(tmp_path, monkeypatch):
         ),
     }]
     base = PoseDataset(samples=samples, num_keypoints=K)
-    ds = SetPoseDataset(base, image_h=64, image_w=128)
+    ds = SetPoseDataset(base)
     out = ds[0]
     kp = out["gt_keypoints"][0]  # [K, 2]
     assert torch.allclose(kp[0], torch.tensor([0.0, 0.0]), atol=1e-5)
     assert torch.allclose(kp[1], torch.tensor([-1.0, -1.0]), atol=1e-5)
     assert torch.allclose(kp[2], torch.tensor([1.0, 1.0]), atol=1e-5)
-    assert isinstance(out["raw_jpeg"], bytes)
-    assert out["target_hw"].tolist() == [64, 128]
+    assert isinstance(out["image"], torch.Tensor)
+    assert out["image"].dtype == torch.uint8
     assert out["gt_labeled"][0, :3].tolist() == [1.0, 1.0, 1.0]
     assert out["gt_visible"][0, :3].tolist() == [1.0, 1.0, 1.0]

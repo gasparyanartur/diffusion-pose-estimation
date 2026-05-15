@@ -14,16 +14,38 @@ from typing import Literal
 
 import pytorch_lightning as pl
 import torch
-import torchvision.io as tvio
 import torchvision.transforms.functional as TF
 from torch import Tensor
 from torchvision.transforms import InterpolationMode
 from torch.utils.data import DataLoader
 
-from src.data.datasets import PoseDataset
-from src.data.set_pose_dataset import SetPoseDataset, set_pose_collate
+from src.data.datasets import PoseDataset, SetPoseDataset, set_pose_collate
 
 log = logging.getLogger(__name__)
+
+
+def resize_and_pad_to_square(img: Tensor, size: int, mask_value: float = 0.0) -> tuple[Tensor, Tensor]:
+    """Resize longest side to `size`, pad the shorter side to make a square.
+
+    Args:
+        img:  float [3, H, W]
+        size: target side length
+        mask_value: value to fill the padding area
+
+    Returns:
+        image:        [3, size, size]  float, zero-padded
+        padding_mask: [size, size]    1 = real pixel, 0 = padding
+    """
+    _, h, w = img.shape
+    scale = size / max(h, w)
+    new_h = round(h * scale)
+    new_w = round(w * scale)
+    img = TF.resize(img, [new_h, new_w], interpolation=InterpolationMode.BICUBIC, antialias=True)
+    # pad right and bottom to reach size × size
+    padded = TF.pad(img, [0, 0, size - new_w, size - new_h], fill=mask_value)
+    mask = torch.zeros(size, size, dtype=torch.float32, device=img.device)
+    mask[:new_h, :new_w] = 1.0
+    return padded, mask
 
 
 class PoseDataModule(pl.LightningDataModule, ABC):
@@ -58,9 +80,10 @@ class CrowdPoseDataModule(PoseDataModule):
         pin_memory: bool = False,
         prefetch_factor: int = 2,
         target_format: Literal["refinement", "set"] = "refinement",
-        image_h: int = 256,
-        image_w: int = 192,
+        image_h: int | None = 256,
+        image_w: int | None = 192,
         max_persons: int | None = None,
+        max_size: int | None = 512,
     ) -> None:
         super().__init__()
         self.train_ann_path = Path(train_ann)
@@ -80,6 +103,7 @@ class CrowdPoseDataModule(PoseDataModule):
         self.image_h = image_h
         self.image_w = image_w
         self.max_persons = max_persons
+        self.max_size = max_size
 
         self._train_ds: PoseDataset | None = None
         self._val_ds: PoseDataset | None = None
@@ -143,6 +167,16 @@ class CrowdPoseDataModule(PoseDataModule):
             self.max_persons, split, n_full, n_keep,
         )
 
+    def _resolve_target_size(self) -> tuple[int, int] | None:
+        h, w = self.image_h, self.image_w
+        if h is None and w is None:
+            return None
+        if h is None:
+            h = w
+        if w is None:
+            w = h
+        return (h, w)  # type: ignore[return-value]
+
     def _worker_kwargs(self) -> dict:
         """Keyword arguments shared by all DataLoader constructions."""
         kwargs: dict = {
@@ -156,7 +190,7 @@ class CrowdPoseDataModule(PoseDataModule):
 
     def _make_loader(self, ds: PoseDataset, shuffle: bool, drop_last: bool) -> DataLoader:
         if self.target_format == "set":
-            wrapped = SetPoseDataset(ds, image_h=self.image_h, image_w=self.image_w)
+            wrapped = SetPoseDataset(ds)
             return DataLoader(
                 wrapped,
                 batch_size=self.batch_size,
@@ -174,44 +208,30 @@ class CrowdPoseDataModule(PoseDataModule):
             pin_memory=self.pin_memory,
         )
 
-    def transfer_batch_to_device(self, batch: dict, device, dataloader_idx: int) -> dict:
-        """Move batch to device, excluding raw_jpeg bytes to avoid byte-by-byte iteration.
-
-        Lightning's apply_to_collection treats bytes as a Sequence and iterates
-        byte-by-byte (~3.2M calls per batch at bs=32), causing ~5s overhead.
-        Pop raw_jpeg before the transfer and restore it afterwards.
-        """
-        raw_jpeg = batch.pop("raw_jpeg", None)
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        if raw_jpeg is not None:
-            batch["raw_jpeg"] = raw_jpeg
-        return batch
-
     def on_after_batch_transfer(self, batch: dict, dataloader_idx: int) -> dict:
-        """Decode raw JPEG bytes on GPU, resize, and normalize in one batched step."""
-        if "raw_jpeg" not in batch:
+        """Resize and normalize the per-sample uint8 images as a GPU batch."""
+        if "image" not in batch or not isinstance(batch["image"], list):
             return batch
 
-        raw_list: list[bytes] = batch.pop("raw_jpeg")
-        target_h, target_w = batch.pop("target_hw").tolist()
-        # Infer device from a tensor that was already transferred.
-        device = batch["img_hw"].device
-
-        decoded: list[Tensor] = []
-        for raw in raw_list:
-            # bytearray gives a writable buffer — avoids a PyTorch read-only warning.
-            t = torch.frombuffer(bytearray(raw), dtype=torch.uint8)
-            img = tvio.decode_jpeg(t, device=device)  # uint8 [C, H, W] on device
+        imgs: list[Tensor] = batch.pop("image")  # list of uint8 [C, H, W] on device
+        target_size = self._resolve_target_size()
+        normalized = []
+        for img in imgs:
             if img.shape[0] == 1:
-                img = img.expand(3, -1, -1)           # grayscale → 3-channel
-            img = TF.resize(
-                img, [target_h, target_w],
-                interpolation=InterpolationMode.BILINEAR,
-                antialias=False,
-            )
-            decoded.append(img)
+                img = img.expand(3, -1, -1)       # grayscale → 3-channel
+            normalized.append(img.float().div_(255.0))
 
-        batch["image"] = torch.stack(decoded).float().div_(255.0)  # [B, 3, H, W]
+        if target_size is not None:
+            batch["image"] = torch.stack([
+                TF.resize(img, list(target_size), interpolation=InterpolationMode.BILINEAR, antialias=True)
+                for img in normalized
+            ])  # [B, 3, H, W]
+        elif self.max_size is not None:
+            pairs = [resize_and_pad_to_square(img, self.max_size) for img in normalized]
+            batch["image"]        = torch.stack([p for p, _ in pairs])   # [B, 3, S, S]
+            batch["padding_mask"] = torch.stack([m for _, m in pairs])   # [B, S, S]
+        else:
+            batch["image"] = normalized
         return batch
 
     def train_dataloader(self) -> DataLoader:

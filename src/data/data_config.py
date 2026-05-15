@@ -48,9 +48,10 @@ class CrowdPoseDataConfig(DataConfig):
     test_pred_cache: str | None = None
 
     target_format: Literal["refinement", "set"] = "refinement"
-    image_h: int = 256
-    image_w: int = 192
+    image_h: int | None = 256
+    image_w: int | None = 192
     max_persons: int | None = None
+    max_size: int | None = 512
 
     def build(self, pin_memory: bool = False) -> CrowdPoseDataModule:
         root = Path(to_absolute_path(self.root))
@@ -72,4 +73,5 @@ class CrowdPoseDataConfig(DataConfig):
             image_h=self.image_h,
             image_w=self.image_w,
             max_persons=self.max_persons,
+            max_size=self.max_size,
         )

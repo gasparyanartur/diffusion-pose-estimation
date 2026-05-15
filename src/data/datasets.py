@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import torch
+import torchvision.io as tvio
+from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from src.base_config import BaseConfig
 from src.data.io import load_gt_annotations, read_image
 from src.data.sampler import SceneGraphSampler
-from src.data.transforms import keypoints_from_coco_anns
+from src.data.transforms import keypoints_from_coco_anns, pixel_to_canonical, visibility_flags
 
 
 def _collate_with_images(batch: list[dict]) -> dict:
@@ -216,6 +218,104 @@ class PredictionDataset(PoseDataset):
             }
         kpts, vis = keypoints_from_coco_anns(gt_anns, self.num_keypoints)
         return {"keypoints": kpts, "visibility": vis}
+
+
+# ---------------------------------------------------------------------------
+# Set-prediction dataset
+# ---------------------------------------------------------------------------
+
+
+def compute_person_scale(
+    keypoints_canonical: Tensor,  # [P, K, 2]
+    labeled: Tensor,              # [P, K]
+    floor: float = 0.1,
+) -> Tensor:
+    """Per-person scale [P] from labeled-keypoint extent in canonical space."""
+    mask = labeled.bool()                          # [P, K]
+    enough = mask.sum(dim=1) >= 2                  # [P]
+    kp_max = keypoints_canonical.masked_fill(~mask.unsqueeze(-1), float("-inf")).amax(dim=1)  # [P, 2]
+    kp_min = keypoints_canonical.masked_fill(~mask.unsqueeze(-1), float("inf")).amin(dim=1)   # [P, 2]
+    extent = (kp_max - kp_min).amax(dim=1)         # [P]
+    return torch.where(enough, extent.clamp(min=floor / 2.0), torch.full_like(extent, floor))
+
+
+class SetPoseDataset(Dataset):
+    """Set-format wrapper around :class:`PoseDataset`.
+
+    Reads images via workers; maps keypoints to canonical space.
+    Resize and normalize happen on the GPU in ``on_after_batch_transfer``.
+    """
+
+    def __init__(self, base: PoseDataset) -> None:
+        self.base = base
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, idx: int) -> dict:
+        sample = self.base.samples[idx]
+
+        image = tvio.read_image(sample["img_path"])  # uint8 [C, H, W]
+        _, original_h, original_w = image.shape
+
+        keypoints_canon = pixel_to_canonical(
+            sample["keypoints"], original_h, original_w,
+        )  # [P, K, 2]
+        labeled, visible = visibility_flags(sample["visibility"].float())
+        person_scale = compute_person_scale(keypoints_canon, labeled)
+
+        return {
+            "image":        image,
+            "gt_keypoints": keypoints_canon,
+            "gt_labeled":   labeled,
+            "gt_visible":   visible,
+            "person_scale": person_scale,
+            "image_id":     int(sample["image_id"]),
+            "img_path":     sample["img_path"],
+            "img_hw":       torch.tensor([original_h, original_w], dtype=torch.float32),
+        }
+
+
+def set_pose_collate(batch: list[dict]) -> dict:
+    """Pad people to per-batch P_max, emit person_mask.
+
+    Images are kept as a list of uint8 tensors (variable spatial size).
+    Resize and normalize happen on the GPU in ``on_after_batch_transfer``.
+    """
+    images = [s["image"] for s in batch]  # list[Tensor] uint8 [C, H, W] variable size
+    P_max = max(s["gt_keypoints"].shape[0] for s in batch)
+    P_max = max(P_max, 1)
+    K = batch[0]["gt_keypoints"].shape[1]
+    B = len(batch)
+
+    gt_keypoints = torch.zeros(B, P_max, K, 2)
+    gt_labeled   = torch.zeros(B, P_max, K)
+    gt_visible   = torch.zeros(B, P_max, K)
+    person_scale = torch.zeros(B, P_max)
+    person_mask  = torch.zeros(B, P_max)
+    img_hw       = torch.zeros(B, 2)
+
+    for i, s in enumerate(batch):
+        P = s["gt_keypoints"].shape[0]
+        if P > 0:
+            gt_keypoints[i, :P] = s["gt_keypoints"]
+            gt_labeled[i, :P]   = s["gt_labeled"]
+            gt_visible[i, :P]   = s["gt_visible"]
+            person_scale[i, :P] = s["person_scale"]
+            person_mask[i, :P]  = 1.0
+        img_hw[i] = s["img_hw"]
+
+    return {
+        "image":        images,
+        "gt_keypoints": gt_keypoints,
+        "gt_labeled":   gt_labeled,
+        "gt_visible":   gt_visible,
+        "person_scale": person_scale,
+        "person_mask":  person_mask,
+        "img_hw":       img_hw,
+        "image_id":     torch.tensor([s["image_id"] for s in batch], dtype=torch.long),
+        "img_path":     [s["img_path"] for s in batch],
+    }
 
 
 # ---------------------------------------------------------------------------

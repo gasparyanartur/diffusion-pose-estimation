@@ -1,6 +1,6 @@
 """PyTorch-Lightning module for set-prediction pose estimators.
 
-Pairs with set-format DataModule batches (see ``src.data.set_pose_dataset``).
+Pairs with set-format DataModule batches (see ``src.data.datasets.SetPoseDataset``).
 The pose estimator must produce decoder output keys:
     keypoints       [B, N, K, 2]   canonical (-1, 1)
     scores_logits   [B, N]

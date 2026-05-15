@@ -11,7 +11,7 @@
 #       training_module.resume=results/.../checkpoints/last.ckpt
 
 defaults:
-  - backbone: cnn
+  - backbone: resnet18
   - training_module: backbone_probe
   - data: crowdpose_set_prediction
   - hardware: auto
