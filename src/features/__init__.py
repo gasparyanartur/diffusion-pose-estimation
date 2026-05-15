@@ -7,6 +7,7 @@ from src.features.cached_dino import (
 )
 from src.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
 from src.features.none import NoneFeatureExtractor, NoneFeatureExtractorConfig
+from src.features.resnet import ResNetFeatureExtractor, ResNetFeatureExtractorConfig
 
 __all__ = [
     "BaseFeatureExtractor",
@@ -17,4 +18,6 @@ __all__ = [
     "CachedDinoFeatureExtractorConfig",
     "NoneFeatureExtractor",
     "NoneFeatureExtractorConfig",
+    "ResNetFeatureExtractor",
+    "ResNetFeatureExtractorConfig",
 ]

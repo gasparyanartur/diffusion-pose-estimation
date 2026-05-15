@@ -16,13 +16,13 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from src.base_config import BaseConfig
 from src.data.io import load_gt_annotations, read_image
 from src.data.sampler import SceneGraphSampler
+from src.data.transforms import keypoints_from_coco_anns
 
 
 def _collate_with_images(batch: list[dict]) -> dict:
@@ -68,6 +68,12 @@ class PoseDataset(Dataset):
             )
             for img in data.get("images", [])
         }
+        # Original image sizes from COCO metadata — avoids opening the file at runtime.
+        image_sizes: dict[int, tuple[int, int]] = {
+            img["id"]: (int(img["height"]), int(img["width"]))
+            for img in data.get("images", [])
+            if "height" in img and "width" in img
+        }
 
         by_image: dict[int, list[dict]] = defaultdict(list)
         for ann in data["annotations"]:
@@ -76,14 +82,13 @@ class PoseDataset(Dataset):
 
         samples = []
         for image_id, anns in by_image.items():
-            kpts = np.array(
-                [a["keypoints"] for a in anns], dtype=np.float32
-            ).reshape(len(anns), num_keypoints, 3)
+            kpts, vis = keypoints_from_coco_anns(anns, num_keypoints)
             samples.append({
                 "image_id":   image_id,
                 "img_path":   image_paths.get(image_id, ""),
-                "keypoints":  torch.from_numpy(kpts[:, :, :2]),
-                "visibility": torch.from_numpy(kpts[:, :, 2]),
+                "img_hw":     image_sizes.get(image_id),  # (H, W) or None if missing
+                "keypoints":  kpts,
+                "visibility": vis,
             })
 
         return cls(samples=samples, num_keypoints=num_keypoints)
@@ -109,7 +114,6 @@ class PoseDataset(Dataset):
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=(num_workers > 0),
-            **kwargs,
         )
 
     def __len__(self) -> int:
@@ -210,12 +214,8 @@ class PredictionDataset(PoseDataset):
                 "keypoints":  torch.zeros(0, self.num_keypoints, 2, dtype=torch.float32),
                 "visibility": torch.zeros(0, self.num_keypoints,    dtype=torch.float32),
             }
-        kpts_flat = np.array([a["keypoints"] for a in gt_anns], dtype=np.float32)
-        kpts = kpts_flat.reshape(len(gt_anns), self.num_keypoints, 3)
-        return {
-            "keypoints":  torch.from_numpy(kpts[:, :, :2]),
-            "visibility": torch.from_numpy(kpts[:, :, 2]),
-        }
+        kpts, vis = keypoints_from_coco_anns(gt_anns, self.num_keypoints)
+        return {"keypoints": kpts, "visibility": vis}
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ IMPORTANT: The code should be beautiful. Apply aesthetic sense to the structure 
 - Avoid unnecessary abbreviations.
 - Avoid one-letter variable names except for very local conventional cases.
 - Name things so the code is understandable while skimming.
+- Do not shorten names to the point of losing clarity.
 
 ## Tensor shape comments
 

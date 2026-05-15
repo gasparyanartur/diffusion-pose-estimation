@@ -137,10 +137,11 @@ def test_cnn_set_prediction_hydra_config_builds_and_runs():
     estimator = pose_cfg.build()
     image = torch.rand(2, 3, 256, 192)
     out = estimator(image=image, image_ids=[0, 1])
+    N = estimator.decoder.num_slots
     # PoseEstimator forwards the decoder's dict back; downstream consumers
     # rely on `keypoints` being canonical (-1, 1).
-    assert out["keypoints"].shape == (2, 20, 14, 2)
-    assert out["scores"].shape == (2, 20)
+    assert out["keypoints"].shape == (2, N, 14, 2)
+    assert out["scores"].shape == (2, N)
     assert (out["keypoints"] >= -1).all() and (out["keypoints"] <= 1).all()
 
 

@@ -1,0 +1,52 @@
+[2026-05-14] Refactor losses.py into nn.Module hierarchy
+
+- src/training/losses.py: rewrote all loss logic as nn.Module subclasses — OKSLoss, ObjectnessLoss, VisibilityLoss, RankingLoss, SetPredictionLoss. Removed set_prediction_loss and set_prediction_loss_per_image free functions. sigmas registered as buffer in SetPredictionLoss.
+- src/training/set_prediction_module.py: replaced inline loss call with self._loss (SetPredictionLoss). Updated all log key references to explicit names: oks_loss, objectness_loss, visibility_loss, ranking_loss.
+- src/training/__init__.py: replaced set_prediction_loss export with SetPredictionLoss.
+- tests/test_set_prediction.py: rewrote all loss tests for new class-based API.
+- All 127 tests pass.
+
+---
+
+[2026-05-15] BackboneProbeModule + diagnostics + periodic AP (clean-break benchmark refactor)
+
+- src/training/diagnostics.py: new module — compute_probe_diagnostics() returns per-batch
+  diagnostic scalars: missed_person_rate, duplicate_person_rate, vis_accuracy, vis_f1,
+  per_joint_oks_{j:02d} (14 values). Hungarian-match based.
+- src/training/backbone_probe.py: new module — ProbeHead (1×1 conv → conv blocks →
+  adaptive avg-pool → sinusoidal 2D PE + self-attention + LN → mean-pool → [B,D]) and
+  BackboneProbeModule (Lightning module: backbone → ProbeHead → PoseSlotDecoder).
+  Supports val_ap_every_n_epochs cadence (default=10), gt_sanity_check, per-step diagnostics.
+- src/training/training_config.py: added BackboneProbeConfig with .build(backbone, data).
+- src/training/__init__.py: exported BackboneProbeModule, ProbeHead, BackboneProbeConfig,
+  compute_probe_diagnostics.
+- conf/backbone/cnn.yaml: new Hydra config group for backbone selection.
+- conf/training_module/backbone_probe.yaml: new training_module config for BackboneProbeConfig.
+- conf/benchmark_backbone.yaml: replaced pose_estimator group with backbone group; now
+  uses backbone: cnn + training_module: backbone_probe.
+- scripts/benchmark_backbone.py: rewritten to use BaseFeatureExtractorConfig + BackboneProbeConfig.
+  Logs separate param counts (backbone / probe_head / decoder).
+- tests/test_backbone_probe.py: 15 new tests covering ProbeHead shapes, gradients,
+  BackboneProbeModule forward/train/val, BackboneProbeConfig.build(), and all diagnostics paths.
+- tests/test_benchmark_backbone_script.py: updated to reflect new config group (backbone vs
+  pose_estimator) and BackboneProbeModule.
+- 142/142 tests passing.
+
+---
+
+[2026-05-14] Fix set-prediction loss: pos_weight + ranking loss + remove L1
+
+- src/training/losses.py: removed L1 from SetPredictionLossWeights and loss computation;
+  added dynamic pos_weight = (N-P)/max(P,1) capped at 20 to objectness BCE;
+  added pairwise RankNet ranking loss over matched vs unmatched slots.
+- src/training/training_config.py: removed l1 field, added rank field to
+  SetPredictionLossWeightsConfig and to_dataclass().
+- src/training/set_prediction_module.py: removed l1 from train/val log loops, added rank.
+- conf/training_module/set_prediction.yaml: removed l1 weight, added rank: 1.0.
+- conf/pose_estimator/cnn_set_prediction.yaml: restored num_slots: 20.
+- conf/data/crowdpose_set_prediction.yaml: set max_persons: null (full dataset, option kept).
+- docs/backbone-benchmark-spec.txt: updated Training loss section with new formula.
+- tests/test_set_prediction.py: fixed smoke test (l1 → oks+rank), added
+  test_pos_weight_balances_objectness_gradient, test_ranking_loss_zero_when_no_gt,
+  test_ranking_loss_decreases_when_matched_outscores_unmatched.
+- 127/127 tests passing.

@@ -27,24 +27,13 @@ Output keys (after ``set_pose_collate``):
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
 from src.data.datasets import PoseDataset
-from src.data.io import read_image_pil
-
-
-def _load_and_resize_image(
-    img_path: str, target_h: int, target_w: int,
-) -> tuple[Tensor, int, int]:
-    pil = read_image_pil(img_path)
-    original_w, original_h = pil.size
-    pil = pil.resize((target_w, target_h))
-    arr = np.asarray(pil, dtype=np.float32) / 255.0
-    image = torch.from_numpy(arr).permute(2, 0, 1).contiguous()
-    return image, original_h, original_w
+from src.data.io import read_image_size
+from src.data.transforms import pixel_to_canonical, visibility_flags
 
 
 def compute_person_scale(
@@ -86,24 +75,28 @@ class SetPoseDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         sample = self.base.samples[idx]
-        image, original_h, original_w = _load_and_resize_image(
-            sample["img_path"], self.image_h, self.image_w,
-        )
 
-        keypoints_pixel = sample["keypoints"].float().clone()       # [P, K, 2]
-        visibility_raw = sample["visibility"].float().clone()        # [P, K] {0,1,2}
+        # Get original image size from COCO metadata (no I/O).
+        # Fall back to reading the file header (cached) if metadata is absent.
+        stored_hw = sample.get("img_hw")
+        if stored_hw is not None:
+            original_h, original_w = stored_hw
+        else:
+            original_h, original_w = read_image_size(sample["img_path"])
 
-        # canonical = pixel / [W, H] * 2 - 1
-        keypoints_canon = keypoints_pixel.clone()
-        keypoints_canon[..., 0] = keypoints_pixel[..., 0] / float(original_w) * 2.0 - 1.0
-        keypoints_canon[..., 1] = keypoints_pixel[..., 1] / float(original_h) * 2.0 - 1.0
+        # Read raw JPEG bytes — decode happens on GPU in on_after_batch_transfer.
+        with open(sample["img_path"], "rb") as fh:
+            raw_jpeg = fh.read()  # Python bytes; not a tensor; won't be device-transferred
 
-        labeled = (visibility_raw > 0).float()
-        visible = (visibility_raw == 2).float()
+        keypoints_canon = pixel_to_canonical(
+            sample["keypoints"], original_h, original_w,
+        )  # [P, K, 2]
+        labeled, visible = visibility_flags(sample["visibility"].float())
         person_scale = compute_person_scale(keypoints_canon, labeled)
 
         return {
-            "image": image,
+            "raw_jpeg": raw_jpeg,
+            "target_hw": torch.tensor([self.image_h, self.image_w], dtype=torch.long),
             "gt_keypoints": keypoints_canon,
             "gt_labeled": labeled,
             "gt_visible": visible,
@@ -115,8 +108,13 @@ class SetPoseDataset(Dataset):
 
 
 def set_pose_collate(batch: list[dict]) -> dict:
-    """Stack images, pad people to per-batch P_max, emit person_mask."""
-    images = torch.stack([s["image"] for s in batch], dim=0)
+    """Collect raw JPEG bytes, pad people to per-batch P_max, emit person_mask.
+
+    Images are NOT decoded here; decoding happens on GPU in
+    ``CrowdPoseDataModule.on_after_batch_transfer``.
+    """
+    raw_jpegs = [s["raw_jpeg"] for s in batch]   # list[bytes] — not moved to device
+    target_hw = batch[0]["target_hw"]             # Tensor([H, W])
     P_max = max(s["gt_keypoints"].shape[0] for s in batch)
     P_max = max(P_max, 1)
     K = batch[0]["gt_keypoints"].shape[1]
@@ -140,7 +138,8 @@ def set_pose_collate(batch: list[dict]) -> dict:
         img_hw[i] = s["img_hw"]
 
     return {
-        "image": images,
+        "raw_jpeg": raw_jpegs,
+        "target_hw": target_hw,
         "gt_keypoints": gt_keypoints,
         "gt_labeled": gt_labeled,
         "gt_visible": gt_visible,

@@ -15,6 +15,7 @@ import pytorch_lightning as pl
 from pydantic import Field
 
 from src.base_config import BaseConfig
+from src.training.backbone_probe import BackboneProbeModule, ProbeHead
 from src.training.losses import SetPredictionLossWeights
 from src.training.set_prediction_module import SetPredictionTrainingModule
 from src.training.training_module import (
@@ -25,6 +26,7 @@ from src.training.training_module import (
 
 if TYPE_CHECKING:
     from src.data.data_module import PoseDataModule
+    from src.features.base import BaseFeatureExtractor
     from src.pose_estimator import PoseEstimator
 
 
@@ -104,19 +106,19 @@ class DiffusionTrainingModuleConfig(TrainingModuleConfig):
 class SetPredictionLossWeightsConfig(BaseConfig):
     """Pydantic mirror of :class:`SetPredictionLossWeights`."""
 
-    l1: float = 5.0
     oks: float = 1.0
     obj: float = 1.0
     vis: float = 0.5
+    rank: float = 1.0
     matcher_lambda_oks: float = 1.0
     matcher_lambda_obj: float = 0.1
 
     def to_dataclass(self) -> SetPredictionLossWeights:
         return SetPredictionLossWeights(
-            l1=self.l1,
             oks=self.oks,
             obj=self.obj,
             vis=self.vis,
+            rank=self.rank,
             matcher_lambda_oks=self.matcher_lambda_oks,
             matcher_lambda_obj=self.matcher_lambda_obj,
         )
@@ -138,6 +140,7 @@ class SetPredictionTrainingModuleConfig(TrainingModuleConfig):
     log_every_n_steps: int = 50
     compile: bool = False
     resume: str | None = None
+    gt_sanity_check: bool = False
 
     weights: SetPredictionLossWeightsConfig = Field(
         default_factory=SetPredictionLossWeightsConfig,
@@ -160,4 +163,92 @@ class SetPredictionTrainingModuleConfig(TrainingModuleConfig):
             test_ann_file=str(data.test_ann_path),
             num_keypoints=data.num_keypoints,
             grad_clip=self.grad_clip,
+            gt_sanity_check=self.gt_sanity_check,
+            max_persons=getattr(data, "max_persons", None),
         )
+
+
+class BackboneProbeConfig(BaseConfig):
+    """Builds :class:`BackboneProbeModule`.
+
+    The probe head and slot decoder are constructed internally from the
+    parameters below; ``backbone`` is passed in from the calling script.
+    """
+
+    # optimiser / schedule
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    cosine_lr: bool = True
+    lr_warmup_epochs: int = 0
+    lr_min_frac: float = 1e-1
+
+    # trainer
+    max_epochs: int = 50
+    seed: int = 42
+    grad_clip: float = 5.0
+    log_every_n_steps: int = 50
+    resume: str | None = None
+    gt_sanity_check: bool = False
+
+    # probe head
+    feature_dim: int = 256
+    pool_h: int = 32
+    pool_w: int = 32
+    num_heads: int = 8
+    conv_depth: int = 1
+    feature_key: str = "spatial"
+
+    # slot decoder
+    hidden_dim: int = 512
+    num_slots: int = 20
+
+    # evaluation
+    val_ap_every_n_epochs: int = 10
+
+    # loss
+    weights: SetPredictionLossWeightsConfig = Field(
+        default_factory=SetPredictionLossWeightsConfig,
+    )
+
+    def build(
+        self,
+        backbone: "BaseFeatureExtractor",
+        data: "PoseDataModule",
+    ) -> BackboneProbeModule:
+        from src.decoders.pose_slot import PoseSlotDecoder
+
+        probe_head = ProbeHead(
+            in_channels=backbone.out_channels,
+            feature_dim=self.feature_dim,
+            pool_h=self.pool_h,
+            pool_w=self.pool_w,
+            num_heads=self.num_heads,
+            conv_depth=self.conv_depth,
+            feature_key=self.feature_key,
+        )
+        slot_decoder = PoseSlotDecoder(
+            in_dim=self.feature_dim,
+            num_slots=self.num_slots,
+            num_keypoints=data.num_keypoints,
+            hidden_dim=self.hidden_dim,
+            feature_key="feature",
+        )
+        return BackboneProbeModule(
+            backbone=backbone,
+            probe_head=probe_head,
+            slot_decoder=slot_decoder,
+            weights=self.weights.to_dataclass(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_warmup_epochs=self.lr_warmup_epochs,
+            lr_min_frac=self.lr_min_frac,
+            val_ann_file=str(data.val_ann_path),
+            test_ann_file=str(data.test_ann_path),
+            num_keypoints=data.num_keypoints,
+            grad_clip=self.grad_clip,
+            val_ap_every_n_epochs=self.val_ap_every_n_epochs,
+            gt_sanity_check=self.gt_sanity_check,
+            max_persons=getattr(data, "max_persons", None),
+        )
+

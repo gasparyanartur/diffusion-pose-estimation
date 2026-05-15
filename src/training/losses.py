@@ -2,9 +2,19 @@
 
 Two families:
   * Refinement losses (joint/bone): per-(B,N,K) tensors with paired predictions.
-  * Set-prediction losses (OKS-based Hungarian matching): per-image, no pairing.
+  * Set-prediction losses (OKS-based Hungarian matching): nn.Module components
+    composed by SetPredictionLoss.
 
-Set-prediction inputs use canonical (-1, 1) coordinates. See `docs/assumptions.md`.
+Set-prediction inputs use canonical (-1, 1) coordinates. See ``docs/project.md``.
+
+Output dict keys from SetPredictionLoss.forward:
+    total              weighted sum of all component losses
+    oks_loss           1 - mean OKS over matched slots
+    objectness_loss    BCE with dynamic pos_weight over all slots
+    visibility_loss    BCE over matched slots and labeled joints
+    ranking_loss       pairwise RankNet loss on objectness logits
+    mean_oks           mean OKS over matched slots (detached diagnostic)
+    matched            total matched count across the batch
 """
 
 from __future__ import annotations
@@ -12,13 +22,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from scipy.optimize import linear_sum_assignment
 from torch import Tensor
+from torch_linear_assignment import assignment_to_indices, batch_linear_assignment
 
 
 # ---------------------------------------------------------------------------
-# Refinement losses
+# Refinement losses (free functions — no state)
 # ---------------------------------------------------------------------------
 
 
@@ -53,20 +64,8 @@ def compute_bone_loss(
 
 
 # ---------------------------------------------------------------------------
-# Set-prediction losses (Hungarian matching + OKS)
+# Set-prediction utilities (free functions — pure math, no state)
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class SetPredictionLossWeights:
-    """Multipliers for the components of `set_prediction_loss`."""
-
-    l1: float = 5.0
-    oks: float = 1.0
-    obj: float = 1.0
-    vis: float = 0.5
-    matcher_lambda_oks: float = 1.0
-    matcher_lambda_obj: float = 0.1
 
 
 def compute_oks(
@@ -76,13 +75,9 @@ def compute_oks(
     person_scale: Tensor,     # [P]       canonical-space scale
     sigmas: Tensor,           # [K]
     eps: float = 1e-6,
-) -> Tensor:
-    """OKS matrix [N, P] between every predicted slot and every GT person.
-
-    All inputs share the same coordinate space; sigmas are unitless multipliers
-    applied to person_scale.
-    """
-    N, _, _ = pred_keypoints.shape
+) -> Tensor:                  # [N, P]
+    """OKS matrix between every predicted slot and every GT person."""
+    N = pred_keypoints.shape[0]
     P = gt_keypoints.shape[0]
     if P == 0 or N == 0:
         return pred_keypoints.new_zeros(N, P)
@@ -101,14 +96,13 @@ def compute_oks(
 
 
 def hungarian_match(
-    oks: Tensor,                     # [N, P]
-    objectness_logits: Tensor,       # [N]
+    oks: Tensor,               # [N, P]
+    objectness_logits: Tensor, # [N]
     lambda_oks: float = 1.0,
     lambda_obj: float = 0.1,
 ) -> tuple[Tensor, Tensor]:
     """Min-cost bipartite assignment of slots to GT people.
 
-    Cost = lambda_oks * (1 - oks) + lambda_obj * (-log_sigmoid(objectness)).
     Returns ``(slot_idx, gt_idx)`` of length ``min(N, P)``.
     """
     N, P = oks.shape
@@ -118,154 +112,262 @@ def hungarian_match(
         return empty, empty
     obj_cost = -F.logsigmoid(objectness_logits)[:, None].expand(N, P)
     cost = lambda_oks * (1.0 - oks) + lambda_obj * obj_cost
-    row, col = linear_sum_assignment(cost.detach().cpu().numpy())
-    return (
-        torch.as_tensor(row, dtype=torch.long, device=device),
-        torch.as_tensor(col, dtype=torch.long, device=device),
-    )
+    assignment = batch_linear_assignment(cost.detach().unsqueeze(0))  # [1, N, P]
+    row, col = assignment_to_indices(assignment)                       # [1, M], [1, M]
+    return row[0], col[0]
 
 
-def set_prediction_loss_per_image(
-    pred_objectness: Tensor,    # [N]
-    pred_keypoints: Tensor,     # [N, K, 2]  canonical
-    pred_vis_logits: Tensor,    # [N, K]
-    gt_keypoints: Tensor,       # [P, K, 2]  canonical
-    gt_labeled: Tensor,         # [P, K]     {0, 1}
-    gt_visible: Tensor,         # [P, K]     {0, 1}
-    person_scale: Tensor,       # [P]
-    sigmas: Tensor,             # [K]
-    weights: SetPredictionLossWeights,
-) -> dict[str, Tensor]:
-    """Set-prediction loss for one image.
+# ---------------------------------------------------------------------------
+# Loss weight config
+# ---------------------------------------------------------------------------
 
-    Persons with no labeled joints are dropped before matching.
+
+@dataclass
+class SetPredictionLossWeights:
+    """Multipliers for the components of ``SetPredictionLoss``."""
+
+    oks: float = 1.0
+    obj: float = 1.0
+    vis: float = 0.5
+    rank: float = 1.0
+    matcher_lambda_oks: float = 1.0
+    matcher_lambda_obj: float = 0.1
+
+
+# ---------------------------------------------------------------------------
+# Per-component loss modules
+# ---------------------------------------------------------------------------
+
+
+class OKSLoss(nn.Module):
+    """1 - mean OKS over matched slots."""
+
+    def forward(self, matched_oks: Tensor, matched_count: int) -> Tensor:
+        if matched_count == 0:
+            return matched_oks.new_zeros(())
+        return (1.0 - matched_oks).mean()
+
+
+class ObjectnessLoss(nn.Module):
+    """BCE with dynamic pos_weight to compensate slot imbalance.
+
+    pos_weight = (N - P) / max(P, 1), capped at 20.
     """
-    N = pred_objectness.shape[0]
-    device = pred_objectness.device
 
-    if gt_keypoints.shape[0] > 0:
-        person_has_label = gt_labeled.sum(dim=-1) > 0
-        gt_keypoints = gt_keypoints[person_has_label]
-        gt_labeled = gt_labeled[person_has_label]
-        gt_visible = gt_visible[person_has_label]
-        person_scale = person_scale[person_has_label]
-    P = gt_keypoints.shape[0]
+    _max_pos_weight: float = 20.0
 
-    objectness_target = torch.zeros(N, device=device)
-    matched_oks = pred_objectness.new_zeros(())
-    l1_loss = pred_objectness.new_zeros(())
-    vis_loss = pred_objectness.new_zeros(())
-    matched_count = 0
-
-    if P > 0:
-        oks = compute_oks(
-            pred_keypoints, gt_keypoints, gt_labeled, person_scale, sigmas,
+    def forward(
+        self,
+        pred_objectness: Tensor,   # [N]
+        objectness_target: Tensor, # [N]
+        matched_count: int,
+    ) -> Tensor:
+        N = pred_objectness.shape[0]
+        pos_weight_val = min(
+            (N - matched_count) / max(matched_count, 1),
+            self._max_pos_weight,
         )
-        slot_idx, gt_idx = hungarian_match(
-            oks, pred_objectness,
-            lambda_oks=weights.matcher_lambda_oks,
-            lambda_obj=weights.matcher_lambda_obj,
+        pos_weight = pred_objectness.new_tensor([pos_weight_val])
+        return F.binary_cross_entropy_with_logits(
+            pred_objectness, objectness_target, pos_weight=pos_weight,
         )
-        if slot_idx.numel() > 0:
-            objectness_target[slot_idx] = 1.0
-            matched_oks = oks[slot_idx, gt_idx]
-            matched_count = slot_idx.numel()
-
-            matched_kp = pred_keypoints[slot_idx]
-            matched_gt_kp = gt_keypoints[gt_idx]
-            matched_labeled = gt_labeled[gt_idx]
-            labeled_count = matched_labeled.sum()
-            if labeled_count > 0:
-                l1 = (matched_kp - matched_gt_kp).abs().sum(dim=-1)  # [M, K]
-                l1_loss = (l1 * matched_labeled).sum() / labeled_count
-
-                matched_vis_logits = pred_vis_logits[slot_idx]
-                matched_vis_target = gt_visible[gt_idx]
-                vis_bce = F.binary_cross_entropy_with_logits(
-                    matched_vis_logits, matched_vis_target.float(),
-                    reduction="none",
-                )
-                vis_loss = (vis_bce * matched_labeled).sum() / labeled_count
-
-    obj_loss = F.binary_cross_entropy_with_logits(pred_objectness, objectness_target)
-    oks_loss = (
-        (1.0 - matched_oks).mean() if matched_count > 0
-        else pred_objectness.new_zeros(())
-    )
-    mean_oks = (
-        matched_oks.mean().detach() if matched_count > 0
-        else pred_objectness.new_zeros(())
-    )
-
-    return {
-        "oks": oks_loss,
-        "l1": l1_loss,
-        "obj": obj_loss,
-        "vis": vis_loss,
-        "mean_oks": mean_oks,
-        "matched_count": torch.tensor(float(matched_count), device=device),
-    }
 
 
-def set_prediction_loss(
-    pred: dict[str, Tensor],
-    targets: dict[str, Tensor],
-    sigmas: Tensor,
-    weights: SetPredictionLossWeights,
-) -> dict[str, Tensor]:
-    """Batched set-prediction loss.
+class VisibilityLoss(nn.Module):
+    """BCE over matched slots and labeled joints only."""
 
-    ``pred`` (from a set-prediction decoder):
-        - ``scores_logits``: [B, N]
-        - ``keypoints``:     [B, N, K, 2] canonical
-        - ``vis_logits``:    [B, N, K]
+    def forward(
+        self,
+        pred_vis_logits: Tensor,  # [M, K]
+        gt_visible: Tensor,       # [M, K]  {0, 1}
+        gt_labeled: Tensor,       # [M, K]  {0, 1}
+    ) -> Tensor:
+        labeled_count = gt_labeled.sum()
+        if labeled_count == 0:
+            return pred_vis_logits.new_zeros(())
+        bce = F.binary_cross_entropy_with_logits(
+            pred_vis_logits, gt_visible.float(), reduction="none",
+        )
+        return (bce * gt_labeled).sum() / labeled_count
 
-    ``targets`` (from set-format collate):
-        - ``gt_keypoints``:  [B, P_max, K, 2] canonical
-        - ``gt_labeled``:    [B, P_max, K]
-        - ``gt_visible``:    [B, P_max, K]
-        - ``person_scale``:  [B, P_max]
-        - ``person_mask``:   [B, P_max]
+
+class RankingLoss(nn.Module):
+    """Pairwise RankNet loss: matched slots should outscore unmatched slots.
+
+    For each (matched slot i, unmatched slot j) pair:
+        loss_ij = -log sigmoid(logit_i - logit_j)
     """
-    obj_logits = pred["scores_logits"]
-    pred_kp = pred["keypoints"]
-    pred_vis = pred["vis_logits"]
-    B = obj_logits.shape[0]
-    device = obj_logits.device
 
-    accum_keys = ("oks", "l1", "obj", "vis", "mean_oks")
-    accum: dict[str, list[Tensor]] = {k: [] for k in accum_keys}
-    matched_total = 0
-    for b in range(B):
-        P = int(targets["person_mask"][b].sum().item())
-        per = set_prediction_loss_per_image(
-            obj_logits[b],
-            pred_kp[b],
-            pred_vis[b],
-            targets["gt_keypoints"][b, :P].to(device),
-            targets["gt_labeled"][b, :P].to(device),
-            targets["gt_visible"][b, :P].to(device),
-            targets["person_scale"][b, :P].to(device),
-            sigmas,
-            weights,
+    def forward(
+        self,
+        pred_objectness: Tensor,  # [N]
+        slot_idx: Tensor,         # [M] indices of matched slots
+        unmatched_idx: Tensor,    # [U] indices of unmatched slots
+    ) -> Tensor:
+        if slot_idx.numel() == 0 or unmatched_idx.numel() == 0:
+            return pred_objectness.new_zeros(())
+        logit_matched   = pred_objectness[slot_idx]    # [M]
+        logit_unmatched = pred_objectness[unmatched_idx]  # [U]
+        diff = logit_matched[:, None] - logit_unmatched[None, :]  # [M, U]
+        return -F.logsigmoid(diff).mean()
+
+
+# ---------------------------------------------------------------------------
+# Composed SetPredictionLoss
+# ---------------------------------------------------------------------------
+
+
+class SetPredictionLoss(nn.Module):
+    """Full set-prediction loss: matching + per-component losses.
+
+    Registers ``sigmas`` as a buffer so it moves with ``.to(device)``.
+
+    Args:
+        weights: loss component multipliers.
+        sigmas:  per-keypoint OKS sigma values, shape ``[K]``.
+
+    forward inputs
+    --------------
+    pred:
+        scores_logits  [B, N]
+        keypoints      [B, N, K, 2]  canonical (-1, 1)
+        vis_logits     [B, N, K]
+    targets:
+        gt_keypoints   [B, P_max, K, 2]  canonical
+        gt_labeled     [B, P_max, K]
+        gt_visible     [B, P_max, K]
+        person_scale   [B, P_max]
+        person_mask    [B, P_max]
+
+    forward outputs
+    ---------------
+    total            weighted sum
+    oks_loss         1 - mean OKS over matched slots
+    objectness_loss  BCE with dynamic pos_weight
+    visibility_loss  BCE over matched labeled joints
+    ranking_loss     pairwise RankNet on objectness logits
+    mean_oks         mean OKS (detached diagnostic)
+    matched          total matched count across batch
+    """
+
+    def __init__(self, weights: SetPredictionLossWeights, sigmas: Tensor) -> None:
+        super().__init__()
+        self.weights = weights
+        self.register_buffer("sigmas", sigmas)
+        self._oks_loss        = OKSLoss()
+        self._objectness_loss = ObjectnessLoss()
+        self._visibility_loss = VisibilityLoss()
+        self._ranking_loss    = RankingLoss()
+
+    def forward(
+        self,
+        pred: dict[str, Tensor],
+        targets: dict[str, Tensor],
+    ) -> dict[str, Tensor]:
+        obj_logits = pred["scores_logits"]
+        pred_kp    = pred["keypoints"]
+        pred_vis   = pred["vis_logits"]
+        B          = obj_logits.shape[0]
+        device     = obj_logits.device
+
+        component_keys = ("oks_loss", "objectness_loss", "visibility_loss", "ranking_loss", "mean_oks")
+        accum: dict[str, list[Tensor]] = {k: [] for k in component_keys}
+        matched_total = 0
+
+        for b in range(B):
+            P = int(targets["person_mask"][b].sum().item())
+            per = self._forward_single(
+                obj_logits[b],
+                pred_kp[b],
+                pred_vis[b],
+                targets["gt_keypoints"][b, :P].to(device),
+                targets["gt_labeled"][b, :P].to(device),
+                targets["gt_visible"][b, :P].to(device),
+                targets["person_scale"][b, :P].to(device),
+            )
+            for k in component_keys:
+                accum[k].append(per[k])
+            matched_total += per["matched_count"]
+
+        components = {k: torch.stack(accum[k]).mean() for k in component_keys}
+        w = self.weights
+        total = (
+            w.oks  * components["oks_loss"]
+            + w.obj  * components["objectness_loss"]
+            + w.vis  * components["visibility_loss"]
+            + w.rank * components["ranking_loss"]
         )
-        for k in accum_keys:
-            accum[k].append(per[k])
-        matched_total += int(per["matched_count"].item())
+        return {
+            "total":            total,
+            "oks_loss":         components["oks_loss"],
+            "objectness_loss":  components["objectness_loss"],
+            "visibility_loss":  components["visibility_loss"],
+            "ranking_loss":     components["ranking_loss"],
+            "mean_oks":         components["mean_oks"],
+            "matched":          torch.tensor(float(matched_total), device=device),
+        }
 
-    components = {k: torch.stack(accum[k]).mean() for k in accum_keys}
-    total = (
-        weights.l1 * components["l1"]
-        + weights.oks * components["oks"]
-        + weights.obj * components["obj"]
-        + weights.vis * components["vis"]
-    )
-    return {
-        "total": total,
-        "oks": components["oks"],
-        "l1": components["l1"],
-        "obj": components["obj"],
-        "vis": components["vis"],
-        "mean_oks": components["mean_oks"],
-        "matched": torch.tensor(float(matched_total), device=device),
-    }
+    def _forward_single(
+        self,
+        pred_objectness: Tensor,  # [N]
+        pred_keypoints: Tensor,   # [N, K, 2]
+        pred_vis_logits: Tensor,  # [N, K]
+        gt_keypoints: Tensor,     # [P, K, 2]
+        gt_labeled: Tensor,       # [P, K]
+        gt_visible: Tensor,       # [P, K]
+        person_scale: Tensor,     # [P]
+    ) -> dict[str, Tensor | int]:
+        N = pred_objectness.shape[0]
+        device = pred_objectness.device
+
+        # Drop persons with no labeled joints.
+        if gt_keypoints.shape[0] > 0:
+            has_label = gt_labeled.sum(dim=-1) > 0
+            gt_keypoints = gt_keypoints[has_label]
+            gt_labeled   = gt_labeled[has_label]
+            gt_visible   = gt_visible[has_label]
+            person_scale = person_scale[has_label]
+        P = gt_keypoints.shape[0]
+
+        objectness_target = torch.zeros(N, device=device)
+        matched_oks_vals  = pred_objectness.new_zeros(())
+        matched_count     = 0
+        slot_idx          = torch.zeros(0, dtype=torch.long, device=device)
+        unmatched_idx     = torch.arange(N, device=device)
+
+        if P > 0:
+            oks_matrix = compute_oks(
+                pred_keypoints, gt_keypoints, gt_labeled, person_scale, self.sigmas,
+            )
+            slot_idx, gt_idx = hungarian_match(
+                oks_matrix, pred_objectness,
+                lambda_oks=self.weights.matcher_lambda_oks,
+                lambda_obj=self.weights.matcher_lambda_obj,
+            )
+            if slot_idx.numel() > 0:
+                objectness_target[slot_idx] = 1.0
+                matched_oks_vals = oks_matrix[slot_idx, gt_idx]
+                matched_count    = slot_idx.numel()
+
+                matched_mask = torch.zeros(N, dtype=torch.bool, device=device)
+                matched_mask[slot_idx] = True
+                unmatched_idx = torch.arange(N, device=device)[~matched_mask]
+
+        mean_oks = matched_oks_vals.mean().detach() if matched_count > 0 else pred_objectness.new_zeros(())
+
+        vis_loss = pred_objectness.new_zeros(())
+        if matched_count > 0:
+            vis_loss = self._visibility_loss(
+                pred_vis_logits[slot_idx],
+                gt_visible[gt_idx],
+                gt_labeled[gt_idx],
+            )
+
+        return {
+            "oks_loss":         self._oks_loss(matched_oks_vals, matched_count),
+            "objectness_loss":  self._objectness_loss(pred_objectness, objectness_target, matched_count),
+            "visibility_loss":  vis_loss,
+            "ranking_loss":     self._ranking_loss(pred_objectness, slot_idx, unmatched_idx),
+            "mean_oks":         mean_oks,
+            "matched_count":    matched_count,
+        }

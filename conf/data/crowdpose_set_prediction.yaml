@@ -11,12 +11,14 @@ img_dir: crowdpose/images
 target_format: set
 image_h: 256
 image_w: 192
+max_persons: null
 
 # Prediction caches not used in set-prediction (AP runs over the dataset itself)
 val_pred_cache: null
 test_pred_cache: null
 
-batch_size: 32
-num_workers: 4
+batch_size: 256
+num_workers: 8
+prefetch_factor: 8
 ap_batch_size: 32
 num_keypoints: 14

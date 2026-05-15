@@ -211,12 +211,23 @@ After Hungarian matching, compute losses:
 
     L_oks = 1 - OKS
 
-2. Objectness loss for all slots
+2. Objectness loss for all slots, with dynamic positive-class weight
 
     matched slots: objectness target = 1
     unmatched slots: objectness target = 0
 
-    L_obj = BCEWithLogits(pred_objectness, target_objectness)
+    L_obj = BCEWithLogits(pred_objectness, target_objectness, pos_weight=w)
+
+    Dynamic pos_weight per image:
+
+        w = (N - P) / max(P, 1),  capped at 20.0
+
+    where N = num_slots and P = number of matched GT persons.
+
+    Motivation: with N=20 and P~3, there are ~17 negatives vs 3 positives.
+    Without reweighting, the model minimises L_obj by suppressing all slots
+    to 0, collapsing recall and AP. pos_weight equalises the total gradient
+    contribution from positive and negative slots regardless of crowd density.
 
 3. Visibility loss for matched slots and labeled joints only
 
@@ -226,14 +237,37 @@ After Hungarian matching, compute losses:
 
     L_vis = BCEWithLogits(pred_visibility, target_visibility)
 
+4. Pairwise ranking loss (RankNet) on objectness logits
+
+    For each matched slot i and each unmatched slot j:
+
+        L_rank_ij = -log sigmoid(logit_i - logit_j)
+
+    Aggregated:
+
+        L_rank = mean over all (i, j) pairs
+
+    When P = 0 or all slots are matched, L_rank = 0.
+
+    Motivation: standard BCE trains a binary classifier but does not
+    penalise misordering (e.g. an unmatched slot scoring higher than a
+    matched one). AP is ranking-sensitive: correct ordering of objectness
+    scores across slots directly improves AP. The pairwise formulation
+    provides a direct gradient signal for this ordering.
+
 Total loss:
 
-    L = L_oks + lambda_obj_loss * L_obj + lambda_vis_loss * L_vis
+    L = lambda_oks * L_oks
+      + lambda_obj * L_obj
+      + lambda_vis * L_vis
+      + lambda_rank * L_rank
 
 Suggested defaults:
 
-    lambda_obj_loss = 1.0
-    lambda_vis_loss = 0.5
+    lambda_oks  = 1.0
+    lambda_obj  = 1.0
+    lambda_vis  = 0.5
+    lambda_rank = 1.0
 
 Keep these fixed across all variants.
 

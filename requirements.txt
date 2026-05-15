@@ -190,3 +190,4 @@ xxhash==3.6.0
 yapf==0.43.0
 yarl==1.23.0
 zipp==3.23.0
+torch-linear-assignment

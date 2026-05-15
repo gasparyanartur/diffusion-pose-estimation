@@ -6,6 +6,7 @@ instead we verify:
   * the Hydra root config ``conf/benchmark_backbone.yaml`` composes
   * the composed config builds typed configs and a real LightningModule
   * the +skip_training flag is exposed as a top-level field
+  * _resolve_checkpoint expands ... wildcards correctly
 """
 
 from __future__ import annotations
@@ -18,8 +19,8 @@ import pytest
 from hydra import compose, initialize_config_dir
 
 from src.data import DataConfig
-from src.pose_estimator import PoseEstimatorConfig
-from src.training import SetPredictionTrainingModule, TrainingModuleConfig
+from src.features import BaseFeatureExtractorConfig
+from src.training import BackboneProbeConfig, BackboneProbeModule, TrainingModuleConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF_DIR = ROOT / "conf"
@@ -45,16 +46,9 @@ def test_script_imports_cleanly():
 
 def test_benchmark_config_composes_with_set_prediction_defaults():
     cfg = _compose()
-    # Defaults wired by conf/benchmark_backbone.yaml. The pose_estimator
-    # group has no top-level _target_; its three stages each carry one.
-    assert cfg.pose_estimator.feature_extractor._target_.endswith(
-        "CNNFeatureExtractorConfig"
-    )
-    assert cfg.pose_estimator.feature_embedder._target_.endswith(
-        "SpatialAttentionEmbedderConfig"
-    )
-    assert cfg.pose_estimator.decoder._target_.endswith("PoseSlotDecoderConfig")
-    assert cfg.training_module._target_.endswith("SetPredictionTrainingModuleConfig")
+    # conf/benchmark_backbone.yaml wires backbone: cnn + training_module: backbone_probe.
+    assert cfg.backbone._target_.endswith("CNNFeatureExtractorConfig")
+    assert cfg.training_module._target_.endswith("BackboneProbeConfig")
     assert cfg.data._target_.endswith("CrowdPoseDataConfig")
     assert cfg.data.target_format == "set"
     assert cfg.skip_training is False
@@ -67,13 +61,46 @@ def test_benchmark_config_skip_training_override():
 
 def test_benchmark_config_builds_module():
     cfg = _compose()
-    pose_cfg = PoseEstimatorConfig.from_hydra_config(cfg.pose_estimator)
-    tm_cfg = TrainingModuleConfig.from_hydra_config(cfg.training_module)
+    backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
+    tm_cfg = BackboneProbeConfig.from_hydra_config(cfg.training_module)
     data_cfg = DataConfig.from_hydra_config(cfg.data)
 
-    pose_estimator = pose_cfg.build()
+    backbone = backbone_cfg.build()
     data_module = data_cfg.build(pin_memory=False)
-    module = tm_cfg.build(pose_estimator, data=data_module)
+    module = tm_cfg.build(backbone, data=data_module)
 
-    assert isinstance(module, SetPredictionTrainingModule)
+    assert isinstance(module, BackboneProbeModule)
     assert module.num_keypoints == 14
+
+
+# ---------------------------------------------------------------------------
+# resolve_checkpoint tests
+# ---------------------------------------------------------------------------
+
+from src.utils import resolve_checkpoint
+
+
+def test_resolve_checkpoint_no_wildcard(tmp_path):
+    ckpt = tmp_path / "model.ckpt"
+    ckpt.write_text("x")
+    assert resolve_checkpoint(str(ckpt)) == str(ckpt)
+
+
+def test_resolve_checkpoint_wildcard_finds_most_recent(tmp_path):
+    import time
+
+    for ts in ["run_a", "run_b"]:
+        ckpt = tmp_path / ts / "checkpoints" / "last.ckpt"
+        ckpt.parent.mkdir(parents=True)
+        ckpt.write_text(ts)
+        time.sleep(0.02)  # ensure distinct mtime
+
+    pattern = str(tmp_path / "..." / "checkpoints" / "last.ckpt")
+    result = resolve_checkpoint(pattern)
+    assert "run_b" in result  # most-recently modified wins
+
+
+def test_resolve_checkpoint_wildcard_raises_when_no_match(tmp_path):
+    pattern = str(tmp_path / "..." / "nonexistent.ckpt")
+    with pytest.raises(FileNotFoundError):
+        resolve_checkpoint(pattern)
