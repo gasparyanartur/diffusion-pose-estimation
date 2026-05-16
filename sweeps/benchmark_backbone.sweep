@@ -11,3 +11,4 @@
 
 backbone=resnet18
 backbone=resnet34
+backbone=dino
