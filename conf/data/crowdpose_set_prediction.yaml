@@ -9,17 +9,14 @@ img_dir: crowdpose/images
 
 # Set-format batches: SetPoseDataset + set_pose_collate
 target_format: set
-#image_h: 256
-#image_w: 192
-image_h: null
-image_w: null
+max_size: 128
 max_persons: null
 
 # Prediction caches not used in set-prediction (AP runs over the dataset itself)
 val_pred_cache: null
 test_pred_cache: null
 
-batch_size: 128
+batch_size: 64
 num_workers: 8
 prefetch_factor: 2
 ap_batch_size: 32

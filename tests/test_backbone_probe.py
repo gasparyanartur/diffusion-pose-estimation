@@ -1,4 +1,4 @@
-"""Tests for ProbeHead, BackboneProbeModule, and compute_probe_diagnostics."""
+"""Tests for ConvProbe, QueryProbe, BackboneProbeModule, and compute_probe_diagnostics."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from src.features.cnn import CNNFeatureExtractor
-from src.training.backbone_probe import BackboneProbeModule, ProbeHead
+from src.training.backbone_probe import BackboneProbeModule, ConvProbe, QueryProbe
 from src.training.diagnostics import compute_probe_diagnostics
 from src.training.losses import SetPredictionLossWeights
 from src.metrics import CROWDPOSE_SIGMAS
@@ -31,7 +31,7 @@ SIGMAS = torch.from_numpy(CROWDPOSE_SIGMAS).float()
 
 def _make_probe_module(N: int = 20, feature_dim: int = 256) -> BackboneProbeModule:
     backbone = CNNFeatureExtractor(out_channels=128)
-    head = ProbeHead(
+    head = ConvProbe(
         in_channels=128, feature_dim=feature_dim, target_size=8,
         num_heads=4, num_conv_layers=1, num_slots=N, num_keypoints=K, hidden_dim=64,
     )
@@ -81,12 +81,68 @@ def test_convnext_block_dropout_does_not_change_shape():
 
 
 # ---------------------------------------------------------------------------
-# ProbeHead
+# CrossAttentionBlock
+# ---------------------------------------------------------------------------
+
+
+def test_cross_attention_block_shape():
+    from src.training.backbone_probe import CrossAttentionBlock
+    block = CrossAttentionBlock(dim=64, num_heads=4)
+    q  = torch.rand(2, 10, 64)
+    kv = torch.rand(2, 20, 64)
+    out = block(q, kv)
+    assert out.shape == (2, 10, 64)
+
+
+def test_cross_attention_block_single_kv_token():
+    """KV sequence length of 1 (used in joint→instance step) must not error."""
+    from src.training.backbone_probe import CrossAttentionBlock
+    block = CrossAttentionBlock(dim=64, num_heads=4)
+    q  = torch.rand(4, 14, 64)
+    kv = torch.rand(4, 1, 64)
+    out = block(q, kv)
+    assert out.shape == (4, 14, 64)
+
+
+# ---------------------------------------------------------------------------
+# QueryProbe
+# ---------------------------------------------------------------------------
+
+
+def test_query_probe_output_shapes():
+    head = QueryProbe(in_channels=128, feature_dim=64, num_heads=4, num_slots=10, num_keypoints=K)
+    feat = {"spatial": torch.rand(2, 128, 16, 12)}
+    out = head(feat)
+    assert out["keypoints"].shape == (2, 10, K, 2)
+    assert out["scores"].shape == (2, 10)
+    assert out["vis_logits"].shape == (2, 10, K)
+
+
+def test_query_probe_varied_input_sizes():
+    head = QueryProbe(in_channels=64, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
+    for h, w in [(8, 6), (16, 12), (32, 24)]:
+        out = head({"spatial": torch.rand(2, 64, h, w)})
+        assert out["scores"].shape == (2, 5), f"Failed for {h}x{w}"
+
+
+def test_query_probe_gradient_flows():
+    head = QueryProbe(in_channels=32, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
+    out = head({"spatial": torch.rand(2, 32, 8, 6, requires_grad=True)})
+    
+    loss = out["scores"].sum() + out["keypoints"].sum() + out["vis_logits"].sum()
+    loss.backward()
+    for name, p in head.named_parameters():
+        if p.requires_grad:
+            assert p.grad is not None, f"No grad for {name}"
+
+
+# ---------------------------------------------------------------------------
+# ConvProbe
 # ---------------------------------------------------------------------------
 
 
 def test_probe_head_output_shape():
-    head = ProbeHead(in_channels=128, feature_dim=256, target_size=16, num_heads=8)
+    head = ConvProbe(in_channels=128, feature_dim=256, target_size=16, num_heads=8)
     feat = {"spatial": torch.rand(3, 128, 32, 24)}
     out = head(feat)
     assert out["keypoints"].shape == (3, head.num_slots, head.num_keypoints, 2)
@@ -95,7 +151,7 @@ def test_probe_head_output_shape():
 
 def test_probe_head_varied_input_sizes():
     """ProbeHead must handle any spatial resolution."""
-    head = ProbeHead(in_channels=64, feature_dim=128, target_size=8, num_heads=4, num_conv_layers=1)
+    head = ConvProbe(in_channels=64, feature_dim=128, target_size=8, num_heads=4, num_conv_layers=1)
     for h, w in [(12, 10), (40, 30), (7, 7)]:
         feat = {"spatial": torch.rand(2, 64, h, w)}
         out = head(feat)
@@ -104,27 +160,27 @@ def test_probe_head_varied_input_sizes():
 
 def test_probe_head_zero_conv_layers():
     """num_conv_layers=0 should still work (skip conv blocks, go straight to attention)."""
-    head = ProbeHead(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=0)
+    head = ConvProbe(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=0)
     out = head({"spatial": torch.rand(1, 32, 10, 10)})
     assert out["scores"].shape == (1, head.num_slots)
 
 
 def test_probe_head_large_input_pools_down():
     """Input larger than target_size should be progressively pooled down."""
-    head = ProbeHead(in_channels=64, feature_dim=128, target_size=8, num_conv_layers=5, num_heads=4)
+    head = ConvProbe(in_channels=64, feature_dim=128, target_size=8, num_conv_layers=5, num_heads=4)
     out = head({"spatial": torch.rand(2, 64, 64, 64)})
     assert out["scores"].shape == (2, head.num_slots)
 
 
 def test_probe_head_small_input_no_extra_pool():
     """Input already at target_size: no pooling should occur."""
-    head = ProbeHead(in_channels=32, feature_dim=64, target_size=16, num_conv_layers=3, num_heads=4)
+    head = ConvProbe(in_channels=32, feature_dim=64, target_size=16, num_conv_layers=3, num_heads=4)
     out = head({"spatial": torch.rand(2, 32, 8, 8)})
     assert out["scores"].shape == (2, head.num_slots)
 
 
 def test_probe_head_gradient_flows():
-    head = ProbeHead(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1)
+    head = ConvProbe(in_channels=32, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1)
     feat = {"spatial": torch.rand(2, 32, 8, 8, requires_grad=False)}
     out = head(feat)
     loss = out["scores"].sum() + out["keypoints"].sum() + out["vis_logits"].sum()
@@ -159,7 +215,7 @@ def test_backbone_probe_training_step_runs():
 def test_backbone_probe_training_step_with_augmentation():
     """training_step should still produce a finite loss when augmentation is active."""
     backbone = CNNFeatureExtractor(out_channels=128)
-    head = ProbeHead(
+    head = ConvProbe(
         in_channels=128, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1,
         num_slots=20, num_keypoints=K, hidden_dim=64, proj_dropout=0.3,
     )
@@ -222,7 +278,7 @@ def test_backbone_probe_configure_optimizers():
 
 def test_backbone_probe_gt_sanity_check_shapes():
     backbone = CNNFeatureExtractor(out_channels=128)
-    head = ProbeHead(
+    head = ConvProbe(
         in_channels=128, feature_dim=64, target_size=4, num_heads=4,
         num_slots=10, num_keypoints=K, hidden_dim=64,
     )

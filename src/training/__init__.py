@@ -7,7 +7,7 @@ from src.training.augmentations import (
     keypoint_jitter,
     pose_dropout,
 )
-from src.training.backbone_probe import BackboneProbeModule, ProbeHead
+from src.training.backbone_probe import BackboneProbeModule, ConvProbe
 from src.training.diagnostics import compute_probe_diagnostics
 from src.training.losses import (
     SetPredictionLoss,
@@ -39,7 +39,7 @@ __all__ = [
     "DiffusionTrainingModuleConfig",
     "LossConfig",
     "PoseEstimatorTrainingModule",
-    "ProbeHead",
+    "ConvProbe",
     "SetPredictionLoss",
     "SetPredictionLossWeights",
     "SetPredictionLossWeightsConfig",

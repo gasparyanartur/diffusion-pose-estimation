@@ -1,0 +1,3 @@
+# Identity backbone: returns the preprocessed image (3 ch, 512x512) unchanged.
+# Use with QueryProbe (in_channels=3) to test memory footprint at full resolution.
+_target_: src.features.IdentityFeatureExtractorConfig

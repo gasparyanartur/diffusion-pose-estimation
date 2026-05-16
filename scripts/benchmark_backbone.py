@@ -46,7 +46,7 @@ from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
 from src.data import DataConfig
 from src.features import BaseFeatureExtractorConfig
-from src.training.training_config import BackboneProbeConfig
+from src.base_config import BaseConfig
 
 
 def _devices_arg(raw) -> int | str | list[int]:
@@ -88,7 +88,7 @@ def main(cfg: DictConfig) -> None:
     log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
     backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
-    probe_cfg    = BackboneProbeConfig.from_hydra_config(cfg.training_module)
+    probe_cfg    = BaseConfig.from_hydra_config(cfg.training_module)
     data_cfg     = DataConfig.from_hydra_config(cfg.data)
 
     pl.seed_everything(probe_cfg.seed, workers=True)

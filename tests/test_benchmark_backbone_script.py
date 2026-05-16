@@ -20,6 +20,7 @@ from hydra import compose, initialize_config_dir
 
 from src.data import DataConfig
 from src.features import BaseFeatureExtractorConfig
+from src.base_config import BaseConfig
 from src.training import BackboneProbeConfig, BackboneProbeModule, TrainingModuleConfig
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +63,7 @@ def test_benchmark_config_skip_training_override():
 def test_benchmark_config_builds_module():
     cfg = _compose()
     backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
-    tm_cfg = BackboneProbeConfig.from_hydra_config(cfg.training_module)
+    tm_cfg = BaseConfig.from_hydra_config(cfg.training_module)
     data_cfg = DataConfig.from_hydra_config(cfg.data)
 
     backbone = backbone_cfg.build()

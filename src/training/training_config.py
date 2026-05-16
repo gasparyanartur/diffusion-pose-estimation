@@ -15,7 +15,7 @@ import pytorch_lightning as pl
 from pydantic import Field
 
 from src.base_config import BaseConfig
-from src.training.backbone_probe import BackboneProbeModule, ProbeHead
+from src.training.backbone_probe import BackboneProbeModule, ConvProbe, QueryProbe
 from src.training.losses import SetPredictionLossWeights
 from src.training.set_prediction_module import SetPredictionTrainingModule
 from src.training.training_module import (
@@ -228,7 +228,7 @@ class BackboneProbeConfig(BaseConfig):
         backbone: "BaseFeatureExtractor",
         data: "PoseDataModule",
     ) -> BackboneProbeModule:
-        probe_head = ProbeHead(
+        probe_head = ConvProbe(
             in_channels=backbone.out_channels,
             feature_dim=self.feature_dim,
             proj_dim=self.proj_dim,
@@ -244,6 +244,114 @@ class BackboneProbeConfig(BaseConfig):
             num_slots=self.num_slots,
             num_keypoints=data.num_keypoints,
             hidden_dim=self.hidden_dim,
+            proj_dropout=self.proj_dropout,
+            feature_key=self.feature_key,
+        )
+        return BackboneProbeModule(
+            backbone=backbone,
+            probe_head=probe_head,
+            weights=self.weights.to_dataclass(),
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_warmup_epochs=self.lr_warmup_epochs,
+            lr_min_frac=self.lr_min_frac,
+            val_ann_file=str(data.val_ann_path),
+            test_ann_file=str(data.test_ann_path),
+            num_keypoints=data.num_keypoints,
+            grad_clip=self.grad_clip,
+            val_ap_every_n_epochs=self.val_ap_every_n_epochs,
+            gt_sanity_check=self.gt_sanity_check,
+            max_persons=getattr(data, "max_persons", None),
+            noise_std=self.noise_std,
+            brightness=self.brightness,
+            contrast=self.contrast,
+            saturation=self.saturation,
+        )
+
+
+class QueryBackboneProbeConfig(BaseConfig):
+    """Builds :class:`BackboneProbeModule` with a :class:`QueryProbe` head.
+
+    Uses DETR-style cross-attention instead of the ConvNeXt+pooling stack.
+    All other training settings (optimiser, schedule, augmentations) are
+    identical to :class:`BackboneProbeConfig`.
+    """
+
+    # optimiser / schedule
+    lr: float = 4e-4
+    weight_decay: float = 1e-3
+    cosine_lr: bool = True
+    lr_warmup_epochs: int = 1
+    lr_min_frac: float = 1e-1
+
+    # trainer
+    max_epochs: int = 100
+    seed: int = 42
+    grad_clip: float = 5.0
+    log_every_n_steps: int = 50
+    resume: str | None = None
+    gt_sanity_check: bool = False
+
+    # QueryProbe
+    feature_dim: int = 256
+    input_size: int | None = None
+    num_stem_layers: int = 2
+    stem_kernel_size: int = 3
+    stem_ffn_mult: float = 1.5
+    stem_dropout: float = 0.1
+    downsample_size: int = 32
+    num_slots: int = 20
+    num_heads: int = 4
+    ffn_mult: int = 2
+    attn_dropout: float = 0.0
+    ffn_dropout: float = 0.1
+    proj_dropout: float = 0.1
+    feature_key: str = "spatial"
+    predict_visibility: bool = False
+
+    # augmentation
+    noise_std: float = 0.05
+    brightness: float = 0.3
+    contrast: float = 0.3
+    saturation: float = 0.2
+
+    # evaluation
+    val_ap_every_n_epochs: int = 10
+
+    # loss
+    weights: SetPredictionLossWeightsConfig = Field(
+        default_factory=SetPredictionLossWeightsConfig,
+    )
+
+    def build(
+        self,
+        backbone: "BaseFeatureExtractor",
+        data: "PoseDataModule",
+    ) -> BackboneProbeModule:
+        input_size = self.input_size
+        if input_size is None:
+            if data.max_size is None:
+                raise ValueError(
+                    "QueryBackboneProbeConfig: input_size is null and data.max_size is also "
+                    "null. Set input_size explicitly in the probe config."
+                )
+            input_size = backbone.get_output_size(data.max_size)
+        probe_head = QueryProbe(
+            in_channels=backbone.out_channels,
+            input_size=input_size,
+            num_stem_layers=self.num_stem_layers,
+            stem_kernel_size=self.stem_kernel_size,
+            stem_ffn_mult=self.stem_ffn_mult,
+            stem_dropout=self.stem_dropout,
+            downsample_size=self.downsample_size,
+            feature_dim=self.feature_dim,
+            num_slots=self.num_slots,
+            num_keypoints=data.num_keypoints,
+            num_heads=self.num_heads,
+            ffn_mult=self.ffn_mult,
+            attn_dropout=self.attn_dropout,
+            ffn_dropout=self.ffn_dropout,
             proj_dropout=self.proj_dropout,
             feature_key=self.feature_key,
         )

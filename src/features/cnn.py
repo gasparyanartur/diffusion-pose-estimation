@@ -58,6 +58,9 @@ class CNNFeatureExtractor(BaseFeatureExtractor):
         x = self.stage4(x)
         return {"spatial": x}
 
+    def get_output_size(self, input_size: int) -> int:
+        return input_size // 16
+
 
 class CNNFeatureExtractorConfig(BaseFeatureExtractorConfig):
     out_channels: int = 128

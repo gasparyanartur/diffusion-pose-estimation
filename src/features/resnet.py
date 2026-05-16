@@ -112,6 +112,10 @@ class ResNetFeatureExtractor(BaseFeatureExtractor):
             x = self.layer4(x)
         return {"spatial": x}
 
+    def get_output_size(self, input_size: int) -> int:
+        stride = 32 if self._output_layer == "layer4" else 16
+        return input_size // stride
+
 
 class ResNetFeatureExtractorConfig(BaseFeatureExtractorConfig):
     variant: _VARIANT = "resnet18"

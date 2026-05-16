@@ -41,6 +41,11 @@ class BaseFeatureExtractor(nn.Module):
     ) -> dict[str, Any]:
         ...
 
+    @abstractmethod
+    def get_output_size(self, input_size: int) -> int:
+        """Return the spatial output size for a square input of ``input_size``."""
+        ...
+
 
 class BaseFeatureExtractorConfig(BaseConfig):
     """Polymorphic config; subclasses build their concrete extractor."""

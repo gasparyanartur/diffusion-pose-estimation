@@ -6,6 +6,7 @@ from src.features.cached_dino import (
     CachedDinoFeatureExtractorConfig,
 )
 from src.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
+from src.features.identity import IdentityFeatureExtractor, IdentityFeatureExtractorConfig
 from src.features.none import NoneFeatureExtractor, NoneFeatureExtractorConfig
 from src.features.resnet import ResNetFeatureExtractor, ResNetFeatureExtractorConfig
 
@@ -16,6 +17,8 @@ __all__ = [
     "CNNFeatureExtractorConfig",
     "CachedDinoFeatureExtractor",
     "CachedDinoFeatureExtractorConfig",
+    "IdentityFeatureExtractor",
+    "IdentityFeatureExtractorConfig",
     "NoneFeatureExtractor",
     "NoneFeatureExtractorConfig",
     "ResNetFeatureExtractor",

@@ -20,6 +20,9 @@ class NoneFeatureExtractor(BaseFeatureExtractor):
     ) -> dict[str, Any]:
         return {}
 
+    def get_output_size(self, input_size: int) -> int:
+        raise NotImplementedError("NoneFeatureExtractor has no spatial output")
+
 
 class NoneFeatureExtractorConfig(BaseFeatureExtractorConfig):
     def build(self) -> NoneFeatureExtractor:

@@ -36,6 +36,13 @@ class CachedDinoFeatureExtractor(BaseFeatureExtractor):
     SPATIAL_DIM: int = _SPATIAL_DIM
     HIDDEN_DIM: int = _HIDDEN_DIM
 
+    def get_output_size(self, input_size: int) -> int:
+        # spatial key → stride 4; semantic key → stride 32
+        raise NotImplementedError(
+            "CachedDinoFeatureExtractor.get_output_size depends on which feature key "
+            "is used. Set input_size explicitly in the probe config."
+        )
+
     def __init__(
         self,
         model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",

@@ -12,7 +12,7 @@
 
 defaults:
   - backbone: resnet18
-  - training_module: backbone_probe
+  - training_module: backbone_probe_query
   - data: crowdpose_set_prediction
   - hardware: auto
   - _self_

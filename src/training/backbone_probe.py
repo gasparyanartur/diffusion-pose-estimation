@@ -24,6 +24,7 @@ across all variants regardless of input spatial resolution.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -107,7 +108,7 @@ class TransformerBlock(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class ProbeHead(nn.Module):
+class ConvProbe(nn.Module):
     """Self-contained spatial feature map → pose prediction dict.
 
     Two-stage projection funnels backbone channels to a narrow conv_dim, where
@@ -257,14 +258,222 @@ class ProbeHead(nn.Module):
         }
 
 
-        tokens = x.flatten(2).permute(0, 2, 1)    # [B, H*W, feature_dim]
-        pe = make_2d_sinusoidal_pe(H, W, self.feature_dim, x.device, x.dtype)
-        tokens = tokens + pe.unsqueeze(0)
+# ---------------------------------------------------------------------------
+# CrossAttentionBlock
+# ---------------------------------------------------------------------------
 
-        for block in self.attn_layers:
-            tokens = block(tokens)
 
-        return tokens.mean(dim=1)                  # [B, feature_dim]
+class CrossAttentionBlock(nn.Module):
+    """Pre-norm cross-attention block: Q attends to KV, then FFN + residual."""
+
+    def __init__(self, dim: int, num_heads: int, ffn_mult: int = 2,
+                 attn_dropout: float = 0.0, ffn_dropout: float = 0.1) -> None:
+        super().__init__()
+        self.q_norm  = nn.LayerNorm(dim)
+        self.kv_norm = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(dim, num_heads, dropout=attn_dropout, batch_first=True)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * ffn_mult),
+            nn.GELU(),
+            nn.Dropout(ffn_dropout),
+            nn.Linear(dim * ffn_mult, dim),
+        )
+
+    def forward(self, q: Tensor, kv: Tensor) -> Tensor:
+        kv_n = self.kv_norm(kv)
+        attn_out, _ = self.attn(self.q_norm(q), kv_n, kv_n)
+        q = q + attn_out
+        q = q + self.ffn(self.norm2(q))
+        return q
+
+
+# ---------------------------------------------------------------------------
+# StemBlock
+# ---------------------------------------------------------------------------
+
+
+class StemBlock(nn.Module):
+    """Single stem stage: depthwise spatial reduction then pointwise FFN.
+
+    DWConv(k×k, stride) → Conv1×1(expand) → GELU → Dropout → Conv1×1(project) → GroupNorm
+    """
+
+    def __init__(self, dim: int, ffn_mult: float, kernel_size: int, stride: int, dropout: float) -> None:
+        super().__init__()
+        pad = kernel_size // 2
+        expanded = int(dim * ffn_mult)
+        self.dw      = nn.Conv2d(dim, dim, kernel_size, stride=stride, padding=pad, groups=dim)
+        self.expand  = nn.Conv2d(dim, expanded, kernel_size=1)
+        self.act     = nn.GELU()
+        self.drop    = nn.Dropout(dropout)
+        self.project = nn.Conv2d(expanded, dim, kernel_size=1)
+        self.norm    = nn.GroupNorm(1, dim)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.dw(x)
+        x = self.drop(self.expand(x))
+        x = self.norm(self.act(self.project(x)))
+        return x
+
+
+# ---------------------------------------------------------------------------
+# QueryProbe
+# ---------------------------------------------------------------------------
+
+
+class QueryProbe(nn.Module):
+    """Query-based probe: DETR-style cross-attention over backbone patch tokens.
+
+    MLP projection funnels backbone channels to feature_dim.  Learned instance
+    queries and joint queries are then applied in five steps:
+
+        proj MLP: in_ch → proj_dim (GroupNorm+GELU+Dropout) → feature_dim
+        flatten + sinusoidal 2D PE → patch_tokens [B, HW, D]
+
+        Step A: instance_queries [B,N,D] cross-attend to patch_tokens [B,HW,D]
+        Step B: instance_latents [B,N,D] self-attend (slot interaction)
+        objectness_head: Linear(D→1) → scores [B,N]
+
+        Step C: joint_queries [B*N,K,D] cross-attend to patch_tokens [B*N,HW,D]
+        Step D: joint_latents [B*N,K,D] cross-attend to instance_latents [B*N,1,D]
+        Step E: joint_latents [B*N,K,D] self-attend (joint interaction within slot)
+        → reshape [B,N,K,D]
+        vis_head:       Linear(D→1) → vis_logits  [B,N,K]
+        keypoints_head: Linear(D→2) → keypoints   [B,N,K,2]
+
+    Returns the same pred dict as ConvProbe — drop-in for BackboneProbeModule.
+
+    Args:
+        in_channels:   backbone output channels.
+        feature_dim:   attention dimension D. Must be divisible by 4 and num_heads.
+        proj_dim:      intermediate width of the MLP projection.
+        num_slots:     number of instance slots N.
+        num_keypoints: keypoints per slot K.
+        num_heads:     attention heads.
+        ffn_mult:      FFN hidden expansion factor.
+        attn_dropout:  dropout inside MultiheadAttention.
+        ffn_dropout:   dropout inside FFN.
+        proj_dropout:  dropout inside the MLP projection.
+        feature_key:   key in the backbone feature dict to consume.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        input_size: int = 32,
+        num_stem_layers: int = 2,
+        stem_kernel_size: int = 3,
+        stem_ffn_mult: float = 1.5,
+        stem_dropout: float = 0.1,
+        downsample_size: int = 128,
+        feature_dim: int = 256,
+        num_slots: int = 20,
+        num_keypoints: int = 14,
+        num_heads: int = 4,
+        ffn_mult: int = 2,
+        attn_dropout: float = 0.0,
+        ffn_dropout: float = 0.1,
+        proj_dropout: float = 0.1,
+        feature_key: str = "spatial",
+        predict_visibility: bool = False,
+    ) -> None:
+        super().__init__()
+        D = feature_dim
+
+        if D % 4 != 0:
+            raise ValueError(f"feature_dim must be divisible by 4; got {feature_dim}")
+        if D % num_heads != 0:
+            raise ValueError(f"feature_dim must be divisible by num_heads; got {feature_dim} % {num_heads}")
+
+        self.feature_key   = feature_key
+        self.feature_dim   = D
+        self.num_slots     = num_slots
+        self.num_keypoints = num_keypoints
+        self.predict_visibility = predict_visibility
+
+        # Channel projection: in_channels → feature_dim (runs once at full resolution).
+        self.stem_proj = nn.Conv2d(in_channels, D, kernel_size=1)
+
+        # Spatial-reduction stem: num_stem_layers × StemBlock.
+        # Each layer uses stride=2 only while the running spatial size is > downsample_size.
+        # num_stem_layers=0 disables the stem entirely.
+        layers: list[nn.Module] = []
+        size = input_size
+        for _ in range(num_stem_layers):
+            s = 2 if size > downsample_size else 1
+            layers.append(StemBlock(D, stem_ffn_mult, stem_kernel_size, s, stem_dropout))
+            size = math.ceil(size / s)
+        self.stem = nn.Sequential(*layers) if layers else nn.Identity()
+        self.instance_queries    = nn.Embedding(num_slots, D)
+        self.inst_cross_attn     = CrossAttentionBlock(D, num_heads, ffn_mult, attn_dropout, ffn_dropout)
+        self.inst_self_attn      = TransformerBlock(D, num_heads, ffn_mult, attn_dropout=attn_dropout, ffn_dropout=ffn_dropout)
+
+        self.objectness_head     = nn.Sequential(
+            nn.LayerNorm(D),
+            nn.Linear(D, D // 2),
+            nn.GELU(),
+            nn.Dropout(proj_dropout),
+            nn.Linear(D // 2, 1),
+        )
+
+        self.joint_queries       = nn.Embedding(num_keypoints, D)
+
+        self.joint_cross_inst    = CrossAttentionBlock(D, num_heads, ffn_mult, attn_dropout, ffn_dropout)
+        self.joint_self_attn     = TransformerBlock(D, num_heads, ffn_mult, attn_dropout=attn_dropout, ffn_dropout=ffn_dropout)
+
+        self.final_norm = nn.LayerNorm(D)
+        self.vis_head = nn.Sequential(
+            nn.Linear(D, D // 2),
+            nn.Dropout(proj_dropout),
+            nn.GELU(),
+            nn.Dropout(proj_dropout),
+            nn.Linear(D // 2, 1),
+        ) if predict_visibility else None
+        self.keypoints_head      = nn.Sequential(
+            nn.Linear(D, D // 2),
+            nn.GELU(),
+            nn.Linear(D // 2, 2),
+        )
+
+    def forward(self, features: dict[str, Tensor]) -> dict[str, Tensor]:
+        feat = features[self.feature_key]           # [B, C, H, W]
+        B = feat.shape[0]
+        N, K, D = self.num_slots, self.num_keypoints, self.feature_dim
+
+        x = self.stem_proj(feat)                    # [B, D, H, W]
+        x = self.stem(x)                            # [B, D, H', W']
+        _, _, H, W = x.shape
+        pe = make_2d_sinusoidal_pe(H, W, D, x.device, x.dtype)
+        x = x + pe.view(H, W, D).permute(2, 0, 1).unsqueeze(0)
+        patch_tokens = x.flatten(2).permute(0, 2, 1)   # [B, HW, D]
+
+        # Instance path
+        inst_q = self.instance_queries.weight.unsqueeze(0).expand(B, -1, -1)   # [B, N, D]
+        inst_latents = self.inst_cross_attn(inst_q, patch_tokens)              # [B, N, D]
+        inst_latents = self.inst_self_attn(inst_latents)                       # [B, N, D]
+        scores_logits = self.objectness_head(inst_latents).squeeze(-1)         # [B, N]
+
+        # Joint path: queries attend directly to instance latents, then self-attend
+        joint_q  = self.joint_queries.weight.unsqueeze(0).expand(B * N, -1, -1)  # [B*N, K, D]
+        inst_kv = inst_latents.reshape(B * N, 1, D)
+        joint_latents = self.joint_cross_inst(joint_q, inst_kv)                # [B*N, K, D]
+
+        joint_latents = self.joint_self_attn(joint_latents)                    # [B*N, K, D]
+        joint_latents = joint_latents.view(B, N, K, D)                         # [B, N, K, D]
+        
+        joint_latents = self.final_norm(joint_latents)
+
+        vis_logits = self.vis_head(joint_latents).squeeze(-1) if self.predict_visibility else torch.zeros(B, N, K, device=joint_latents.device, dtype=joint_latents.dtype)  # [B, N, K]
+        kpt_logits = self.keypoints_head(joint_latents)                        # [B, N, K, 2]
+
+        return {
+            "keypoints":       torch.sigmoid(kpt_logits) * 2.0 - 1.0,
+            "scores":          torch.sigmoid(scores_logits),
+            "scores_logits":   scores_logits,
+            "keypoint_scores": torch.sigmoid(vis_logits),
+            "vis_logits":      vis_logits,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +509,7 @@ class BackboneProbeModule(pl.LightningModule):
     def __init__(
         self,
         backbone: BaseFeatureExtractor,
-        probe_head: ProbeHead,
+        probe_head: ConvProbe,
         weights: SetPredictionLossWeights | None = None,
         lr: float = 1e-3,
         weight_decay: float = 1e-4,
@@ -349,6 +558,13 @@ class BackboneProbeModule(pl.LightningModule):
 
         self._val_metric  = KeypointAPMetric(val_ann_file,  max_persons=max_persons) if val_ann_file  else None
         self._test_metric = KeypointAPMetric(test_ann_file, max_persons=max_persons) if test_ann_file else None
+
+        _vis = getattr(probe_head, "predict_visibility", True)
+        self._log_loss_names = (
+            "oks_loss", "objectness_loss",
+            *(("visibility_loss",) if _vis else ()),
+            "ranking_loss", "mean_oks",
+        )
 
         self.save_hyperparameters(ignore=["backbone", "probe_head"])
 
@@ -434,7 +650,7 @@ class BackboneProbeModule(pl.LightningModule):
         B = batch["image"].shape[0]
         kw = dict(batch_size=B, on_step=True, on_epoch=True)
         self.log("train/loss", losses["total"], prog_bar=True, **kw)
-        for name in ("oks_loss", "objectness_loss", "visibility_loss", "ranking_loss", "mean_oks"):
+        for name in self._log_loss_names:
             self.log(f"train/{name}", losses[name], **kw)
         return losses["total"]
 
@@ -448,7 +664,7 @@ class BackboneProbeModule(pl.LightningModule):
         B = batch["image"].shape[0]
         kw = dict(batch_size=B, on_step=False, on_epoch=True)
         self.log("val/loss", losses["total"], prog_bar=True, **kw)
-        for name in ("oks_loss", "objectness_loss", "visibility_loss", "ranking_loss", "mean_oks"):
+        for name in self._log_loss_names:
             self.log(f"val/{name}", losses[name], **kw)
 
         # Diagnostic metrics
@@ -491,7 +707,7 @@ class BackboneProbeModule(pl.LightningModule):
         B = batch["image"].shape[0]
         kw = dict(batch_size=B, on_epoch=True)
         self.log("test/loss", losses["total"], **kw)
-        for name in ("oks_loss", "objectness_loss", "visibility_loss", "ranking_loss", "mean_oks"):
+        for name in self._log_loss_names:
             self.log(f"test/{name}", losses[name], **kw)
 
         with torch.no_grad():
