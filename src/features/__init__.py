@@ -6,7 +6,12 @@ from src.features.cached_dino import (
     CachedDinoFeatureExtractorConfig,
 )
 from src.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
-from src.features.dino import DinoFeatureExtractor, DinoFeatureExtractorConfig
+from src.features.dino import (
+    DinoFeatureExtractor,
+    DinoFeatureExtractorConfig,
+    DinoViTFeatureExtractor,
+    DinoViTFeatureExtractorConfig,
+)
 from src.features.identity import IdentityFeatureExtractor, IdentityFeatureExtractorConfig
 from src.features.none import NoneFeatureExtractor, NoneFeatureExtractorConfig
 from src.features.resnet import ResNetFeatureExtractor, ResNetFeatureExtractorConfig
@@ -20,6 +25,8 @@ __all__ = [
     "CachedDinoFeatureExtractorConfig",
     "DinoFeatureExtractor",
     "DinoFeatureExtractorConfig",
+    "DinoViTFeatureExtractor",
+    "DinoViTFeatureExtractorConfig",
     "IdentityFeatureExtractor",
     "IdentityFeatureExtractorConfig",
     "NoneFeatureExtractor",

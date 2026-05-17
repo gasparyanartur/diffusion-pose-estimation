@@ -9,6 +9,8 @@ img_dir: crowdpose/images
 
 # Set-format batches: SetPoseDataset + set_pose_collate
 target_format: set
+image_h: null
+image_w: null
 max_size: 128
 max_persons: null
 
