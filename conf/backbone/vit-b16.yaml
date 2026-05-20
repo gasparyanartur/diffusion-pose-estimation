@@ -1,0 +1,4 @@
+# ViT-B/16 backbone (torchvision, ImageNet pretrained by default).
+# Patch size 16 → stride 16, out_channels 768.
+_target_: src.features.ViTFeatureExtractorConfig
+pretrained: true

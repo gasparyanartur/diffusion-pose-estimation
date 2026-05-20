@@ -361,7 +361,7 @@ class QueryProbe(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        input_size: int = 32,
+        input_size: int | None = None,
         num_stem_layers: int = 2,
         stem_kernel_size: int = 3,
         stem_ffn_mult: float = 1.5,
@@ -397,13 +397,15 @@ class QueryProbe(nn.Module):
 
         # Spatial-reduction stem: num_stem_layers × StemBlock.
         # Each layer uses stride=2 only while the running spatial size is > downsample_size.
+        # When input_size is None all layers use stride=1 (no downsampling).
         # num_stem_layers=0 disables the stem entirely.
         layers: list[nn.Module] = []
         size = input_size
         for _ in range(num_stem_layers):
-            s = 2 if size > downsample_size else 1
+            s = 2 if (size is not None and size > downsample_size) else 1
             layers.append(StemBlock(D, stem_ffn_mult, stem_kernel_size, s, stem_dropout))
-            size = math.ceil(size / s)
+            if size is not None:
+                size = math.ceil(size / s)
         self.stem = nn.Sequential(*layers) if layers else nn.Identity()
         self.instance_queries    = nn.Embedding(num_slots, D)
         self.inst_cross_attn     = CrossAttentionBlock(D, num_heads, ffn_mult, attn_dropout, ffn_dropout)

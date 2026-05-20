@@ -6,6 +6,7 @@ from src.features.cached_dino import (
     CachedDinoFeatureExtractorConfig,
 )
 from src.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
+from src.features.concat import ConcatFeatureExtractor, ConcatFeatureExtractorConfig
 from src.features.dino import (
     DinoFeatureExtractor,
     DinoFeatureExtractorConfig,
@@ -14,7 +15,14 @@ from src.features.dino import (
 )
 from src.features.identity import IdentityFeatureExtractor, IdentityFeatureExtractorConfig
 from src.features.none import NoneFeatureExtractor, NoneFeatureExtractorConfig
+from src.features.radio import (
+    CRadioV3BFeatureExtractorConfig,
+    CRadioV4HFeatureExtractorConfig,
+    RadioFeatureExtractor,
+    RadioFeatureExtractorConfig,
+)
 from src.features.resnet import ResNetFeatureExtractor, ResNetFeatureExtractorConfig
+from src.features.vit import ViTFeatureExtractor, ViTFeatureExtractorConfig
 
 __all__ = [
     "BaseFeatureExtractor",
@@ -23,6 +31,10 @@ __all__ = [
     "CNNFeatureExtractorConfig",
     "CachedDinoFeatureExtractor",
     "CachedDinoFeatureExtractorConfig",
+    "ConcatFeatureExtractor",
+    "ConcatFeatureExtractorConfig",
+    "CRadioV3BFeatureExtractorConfig",
+    "CRadioV4HFeatureExtractorConfig",
     "DinoFeatureExtractor",
     "DinoFeatureExtractorConfig",
     "DinoViTFeatureExtractor",
@@ -31,6 +43,10 @@ __all__ = [
     "IdentityFeatureExtractorConfig",
     "NoneFeatureExtractor",
     "NoneFeatureExtractorConfig",
+    "RadioFeatureExtractor",
+    "RadioFeatureExtractorConfig",
     "ResNetFeatureExtractor",
     "ResNetFeatureExtractorConfig",
+    "ViTFeatureExtractor",
+    "ViTFeatureExtractorConfig",
 ]

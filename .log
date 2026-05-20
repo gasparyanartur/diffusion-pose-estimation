@@ -1,3 +1,9 @@
+[2026-05-20] Backbone sweep visualisation notebook
+
+- Added `find_last_run(sweep_dir)` to src/utils.py: returns {task_id → latest run Path} for any sweep directory
+- Added `load_backbone_probe_module(run_dir, ckpt_name, device)` to src/utils.py: rebuilds backbone + QueryProbe module from .hydra/config.yaml and loads checkpoint weights
+- Created notebook/visualize_backbone_sweep.ipynb: loads last run per task, runs inference on 5 fixed CrowdPose test images, displays 4×5 grid with keypoints drawn as circles (border colour = slot identity, number inside = joint index)
+
 [2026-05-16] ProbeHead self-contained: 2-stage projection + built-in decoder heads; no PoseSlotDecoder dependency
 
 - Added 2-stage proj: proj1(in_ch→768, 1×1) + ReLU + proj2(768→96, 1×1) before ConvNeXt stack
