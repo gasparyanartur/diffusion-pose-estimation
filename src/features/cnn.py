@@ -12,6 +12,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 
@@ -56,7 +57,10 @@ class CNNFeatureExtractor(BaseFeatureExtractor):
         x = self.stage2(x)
         x = self.stage3(x)
         x = self.stage4(x)
-        return {"spatial": x}
+        return {
+            "spatial": x,
+            "patch_centers": make_patch_centers(x.shape[2], x.shape[3], x.device, x.dtype),
+        }
 
     def get_output_size(self, input_size: int) -> int:
         return input_size // 16

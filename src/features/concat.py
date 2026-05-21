@@ -2,13 +2,14 @@
 
 For each child backbone:
     spatial [B, C, H, W]
+      → add 2D sinusoidal PE
       → permute → [B, H*W, C]
       → LayerNorm(C)
       → Linear(C → dim)
       → add learned modality embedding [1, 1, dim]
 
 All modality token sequences are concatenated along the sequence axis:
-    output["tokens"]  →  [B, T, dim],  T = sum_i(H_i * W_i)
+    output["spatial"]  →  [B, T, dim],  T = sum_i(H_i * W_i)
 
 The extractor is recursive: each child is a full BaseFeatureExtractor, so
 ConcatFeatureExtractors can be nested.
@@ -65,6 +66,7 @@ class ConcatFeatureExtractor(BaseFeatureExtractor):
         **kwargs: Any,
     ) -> dict[str, Tensor]:
         all_tokens: list[Tensor] = []
+        all_centers: list[Tensor] = []
         for i, backbone in enumerate(self.backbones):
             feat_dict = backbone(image=image, image_ids=image_ids, **kwargs)
             feat = feat_dict[self.feature_key]
@@ -79,8 +81,12 @@ class ConcatFeatureExtractor(BaseFeatureExtractor):
             tokens = self.projs[i](tokens)              # [B, H*W, dim]
             tokens = tokens + self.modality_embeds[i]   # [B, H*W, dim]
             all_tokens.append(tokens)
+            all_centers.append(feat_dict["patch_centers"].reshape(-1, 2))
 
-        return {"tokens": torch.cat(all_tokens, dim=1)}  # [B, T, dim]
+        return {
+            "spatial": torch.cat(all_tokens, dim=1),       # [B, T, dim]
+            "patch_centers": torch.cat(all_centers, dim=0), # [T, 2]
+        }
 
 
 class ConcatFeatureExtractorConfig(BaseFeatureExtractorConfig):

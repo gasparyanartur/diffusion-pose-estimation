@@ -13,8 +13,10 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 
@@ -23,6 +25,7 @@ _IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
 _OUT_CHANNELS = 768   # ViT-B hidden dimension
 _PATCH_SIZE   = 16
+_VIT_SIZE     = 224   # model's fixed input resolution
 
 
 class ViTFeatureExtractor(BaseFeatureExtractor):
@@ -55,8 +58,8 @@ class ViTFeatureExtractor(BaseFeatureExtractor):
     def out_channels(self) -> int:
         return _OUT_CHANNELS
 
-    def get_output_size(self, input_size: int) -> int:
-        return input_size // _PATCH_SIZE
+    def get_output_size(self, input_size: int) -> int:  # noqa: ARG002
+        return _VIT_SIZE // _PATCH_SIZE  # always 14
 
     def forward(
         self,
@@ -68,14 +71,17 @@ class ViTFeatureExtractor(BaseFeatureExtractor):
             raise ValueError("ViTFeatureExtractor requires `image`; got None")
 
         B, _, H, W = image.shape
-        n_h = H // self._patch_size
-        n_w = W // self._patch_size
+
+        # ViT-B/16 has fixed 224×224 positional embeddings; resize if needed.
+        if H != _VIT_SIZE or W != _VIT_SIZE:
+            image = F.interpolate(image, size=(_VIT_SIZE, _VIT_SIZE), mode="bilinear", align_corners=False)
 
         x = (image - self._imagenet_mean) / self._imagenet_std
 
-        # Patch embedding → [B, hidden, n_h, n_w] → [B, T, hidden]
+        # Patch embedding → [B, T, hidden]  (T = 14*14 = 196)
+        G = _VIT_SIZE // _PATCH_SIZE  # 14
         x = self._conv_proj(x)
-        x = x.reshape(B, _OUT_CHANNELS, n_h * n_w).permute(0, 2, 1)
+        x = x.reshape(B, _OUT_CHANNELS, G * G).permute(0, 2, 1)
 
         # Prepend class token, run encoder.
         cls = self._class_token.expand(B, -1, -1)
@@ -84,8 +90,11 @@ class ViTFeatureExtractor(BaseFeatureExtractor):
 
         # Drop class token, reshape to spatial grid.
         x = x[:, 1:]                  # [B, T, hidden]
-        x = x.permute(0, 2, 1).reshape(B, _OUT_CHANNELS, n_h, n_w)
-        return {"spatial": x}
+        x = x.permute(0, 2, 1).reshape(B, _OUT_CHANNELS, G, G)
+        return {
+            "spatial": x,
+            "patch_centers": make_patch_centers(G, G, x.device, x.dtype),
+        }
 
 
 class ViTFeatureExtractorConfig(BaseFeatureExtractorConfig):

@@ -18,6 +18,7 @@ from typing import Any, Literal
 import torch
 from torch import Tensor, nn
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 
@@ -110,7 +111,10 @@ class ResNetFeatureExtractor(BaseFeatureExtractor):
         x = self.layer3(x)
         if self._output_layer == "layer4":
             x = self.layer4(x)
-        return {"spatial": x}
+        return {
+            "spatial": x,
+            "patch_centers": make_patch_centers(x.shape[2], x.shape[3], x.device, x.dtype),
+        }
 
     def get_output_size(self, input_size: int) -> int:
         stride = 32 if self._output_layer == "layer4" else 16

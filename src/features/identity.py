@@ -7,6 +7,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 
@@ -27,7 +28,10 @@ class IdentityFeatureExtractor(BaseFeatureExtractor):
     ) -> dict[str, Tensor]:
         if image is None:
             raise ValueError("IdentityFeatureExtractor requires `image`; got None")
-        return {"spatial": image}
+        return {
+            "spatial": image,
+            "patch_centers": make_patch_centers(image.shape[2], image.shape[3], image.device, image.dtype),
+        }
 
     def get_output_size(self, input_size: int) -> int:
         return input_size

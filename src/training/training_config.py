@@ -295,12 +295,6 @@ class QueryBackboneProbeConfig(BaseConfig):
 
     # QueryProbe
     feature_dim: int = 256
-    input_size: int | None = None
-    num_stem_layers: int = 2
-    stem_kernel_size: int = 3
-    stem_ffn_mult: float = 1.5
-    stem_dropout: float = 0.1
-    downsample_size: int = 32
     num_slots: int = 20
     num_heads: int = 4
     ffn_mult: int = 2
@@ -329,22 +323,8 @@ class QueryBackboneProbeConfig(BaseConfig):
         backbone: "BaseFeatureExtractor",
         data: "PoseDataModule",
     ) -> BackboneProbeModule:
-        input_size = self.input_size
-        if input_size is None:
-            if data.max_size is None:
-                raise ValueError(
-                    "QueryBackboneProbeConfig: input_size is null and data.max_size is also "
-                    "null. Set input_size explicitly in the probe config."
-                )
-            input_size = backbone.get_output_size(data.max_size)
         probe_head = QueryProbe(
             in_channels=backbone.out_channels,
-            input_size=input_size,
-            num_stem_layers=self.num_stem_layers,
-            stem_kernel_size=self.stem_kernel_size,
-            stem_ffn_mult=self.stem_ffn_mult,
-            stem_dropout=self.stem_dropout,
-            downsample_size=self.downsample_size,
             feature_dim=self.feature_dim,
             num_slots=self.num_slots,
             num_keypoints=data.num_keypoints,

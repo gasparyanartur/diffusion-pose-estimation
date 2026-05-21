@@ -19,12 +19,6 @@ gt_sanity_check: false
 
 # QueryProbe
 feature_dim: 256
-input_size: null
-num_stem_layers: 0
-stem_kernel_size: 3
-stem_ffn_mult: 1.5
-stem_dropout: 0.1
-downsample_size: 32
 num_slots: 20
 num_heads: 4
 ffn_mult: 2

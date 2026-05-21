@@ -48,9 +48,18 @@ def _count_missed(
     return num_gt - len(matched_above)
 
 
-def _has_duplicate(oks_matrix: Tensor, threshold: float) -> bool:  # [N, P]
-    for g in range(oks_matrix.shape[1]):
-        if (oks_matrix[:, g] >= threshold).sum().item() >= 2:
+def _has_duplicate(
+    oks_matrix: Tensor,          # [N, P]
+    scores: Tensor,              # [N]
+    objectness_threshold: float,
+    oks_threshold: float,
+) -> bool:
+    active = scores >= objectness_threshold  # [N]
+    if not active.any():
+        return False
+    active_oks = oks_matrix[active]  # [A, P]
+    for g in range(active_oks.shape[1]):
+        if (active_oks[:, g] >= oks_threshold).sum().item() >= 2:
             return True
     return False
 
@@ -136,7 +145,10 @@ def compute_probe_diagnostics(
         missed_total += _count_missed(
             slot_idx, gt_idx, torch.sigmoid(pred_logits), num_gt, objectness_threshold,
         )
-        if _has_duplicate(oks_matrix, oks_duplicate_threshold):
+        if _has_duplicate(
+            oks_matrix, torch.sigmoid(pred_logits),
+            objectness_threshold, oks_duplicate_threshold,
+        ):
             dup_images += 1
 
         if slot_idx.numel() > 0:

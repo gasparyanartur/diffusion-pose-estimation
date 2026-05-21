@@ -45,6 +45,34 @@ def make_2d_sinusoidal_pe(H: int, W: int, dim: int, device: torch.device,
     return pe.reshape(H * W, dim)
 
 
+def make_patch_centers(H: int, W: int, device: torch.device,
+                       dtype: torch.dtype = torch.float32) -> Tensor:
+    """Patch center coordinates in [-1, 1], shape ``[H, W, 2]``.
+
+    Uses pixel-center convention: center of patch (i, j) is at
+    ``y = 2*(i+0.5)/H - 1``, ``x = 2*(j+0.5)/W - 1``.
+    """
+    ys = (torch.arange(H, device=device, dtype=dtype) + 0.5) * (2.0 / H) - 1.0
+    xs = (torch.arange(W, device=device, dtype=dtype) + 0.5) * (2.0 / W) - 1.0
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+    return torch.stack([grid_y, grid_x], dim=-1)  # [H, W, 2]
+
+
+def make_pe_from_centers(centers: Tensor, dim: int) -> Tensor:
+    """Sinusoidal PE from arbitrary (y, x) positions, shape ``[T, dim]``.
+
+    ``centers`` is ``[T, 2]`` with (y, x) in any coordinate system.
+    ``dim`` is split into 4 equal banks: sin/cos for y and sin/cos for x.
+    """
+    if dim % 4 != 0:
+        raise ValueError(f"dim must be divisible by 4 for sinusoidal PE; got {dim}")
+    d = dim // 4
+    freq = 1.0 / (10000 ** (torch.arange(d, device=centers.device, dtype=centers.dtype) / d))
+    y_enc = centers[:, 0].unsqueeze(1) * freq.unsqueeze(0)  # [T, d]
+    x_enc = centers[:, 1].unsqueeze(1) * freq.unsqueeze(0)  # [T, d]
+    return torch.cat([y_enc.sin(), y_enc.cos(), x_enc.sin(), x_enc.cos()], dim=-1)
+
+
 class SpatialAttentionEmbedder(BaseFeatureEmbedder):
     """1x1 conv -> 2D sinusoidal PE -> self-attention -> mean-pool -> [B, D]."""
 

@@ -23,6 +23,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 
@@ -88,7 +89,10 @@ class RadioFeatureExtractor(BaseFeatureExtractor):
 
         _, spatial = self._model(image)                         # [B, T, D]
         spatial = spatial.permute(0, 2, 1).reshape(B, self._out_channels, G_H, G_W)
-        return {"spatial": spatial}
+        return {
+            "spatial": spatial,
+            "patch_centers": make_patch_centers(G_H, G_W, image.device, image.dtype),
+        }
 
 
 class RadioFeatureExtractorConfig(BaseFeatureExtractorConfig):

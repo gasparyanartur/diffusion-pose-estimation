@@ -4,9 +4,9 @@ _target_: src.features.ConcatFeatureExtractorConfig
 dim: 256
 feature_key: spatial
 backbones:
-  - _target_: src.features.CNNFeatureExtractorConfig
-    out_channels: 128
   - _target_: src.features.ResNetFeatureExtractorConfig
     variant: resnet18
     output_layer: layer3
     pretrained: true
+  - _target_: src.features.CRadioV3BFeatureExtractorConfig
+    frozen: true

@@ -24,7 +24,6 @@ across all variants regardless of input spatial resolution.
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import pytorch_lightning as pl
@@ -33,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from src.embedders.spatial_attention import make_2d_sinusoidal_pe
+from src.embedders.spatial_attention import make_2d_sinusoidal_pe, make_pe_from_centers
 from src.features.base import BaseFeatureExtractor
 from src.training.augmentations import add_gaussian_noise, color_jitter
 from src.metrics import CROWDPOSE_SIGMAS, KeypointAPMetric, canonical_to_pixel
@@ -289,35 +288,6 @@ class CrossAttentionBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# StemBlock
-# ---------------------------------------------------------------------------
-
-
-class StemBlock(nn.Module):
-    """Single stem stage: depthwise spatial reduction then pointwise FFN.
-
-    DWConv(k×k, stride) → Conv1×1(expand) → GELU → Dropout → Conv1×1(project) → GroupNorm
-    """
-
-    def __init__(self, dim: int, ffn_mult: float, kernel_size: int, stride: int, dropout: float) -> None:
-        super().__init__()
-        pad = kernel_size // 2
-        expanded = int(dim * ffn_mult)
-        self.dw      = nn.Conv2d(dim, dim, kernel_size, stride=stride, padding=pad, groups=dim)
-        self.expand  = nn.Conv2d(dim, expanded, kernel_size=1)
-        self.act     = nn.GELU()
-        self.drop    = nn.Dropout(dropout)
-        self.project = nn.Conv2d(expanded, dim, kernel_size=1)
-        self.norm    = nn.GroupNorm(1, dim)
-
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.dw(x)
-        x = self.drop(self.expand(x))
-        x = self.norm(self.act(self.project(x)))
-        return x
-
-
-# ---------------------------------------------------------------------------
 # QueryProbe
 # ---------------------------------------------------------------------------
 
@@ -361,12 +331,6 @@ class QueryProbe(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        input_size: int | None = None,
-        num_stem_layers: int = 2,
-        stem_kernel_size: int = 3,
-        stem_ffn_mult: float = 1.5,
-        stem_dropout: float = 0.1,
-        downsample_size: int = 128,
         feature_dim: int = 256,
         num_slots: int = 20,
         num_keypoints: int = 14,
@@ -392,21 +356,7 @@ class QueryProbe(nn.Module):
         self.num_keypoints = num_keypoints
         self.predict_visibility = predict_visibility
 
-        # Channel projection: in_channels → feature_dim (runs once at full resolution).
-        self.stem_proj = nn.Conv2d(in_channels, D, kernel_size=1)
-
-        # Spatial-reduction stem: num_stem_layers × StemBlock.
-        # Each layer uses stride=2 only while the running spatial size is > downsample_size.
-        # When input_size is None all layers use stride=1 (no downsampling).
-        # num_stem_layers=0 disables the stem entirely.
-        layers: list[nn.Module] = []
-        size = input_size
-        for _ in range(num_stem_layers):
-            s = 2 if (size is not None and size > downsample_size) else 1
-            layers.append(StemBlock(D, stem_ffn_mult, stem_kernel_size, s, stem_dropout))
-            if size is not None:
-                size = math.ceil(size / s)
-        self.stem = nn.Sequential(*layers) if layers else nn.Identity()
+        self.proj = nn.Linear(in_channels, D)
         self.instance_queries    = nn.Embedding(num_slots, D)
         self.inst_cross_attn     = CrossAttentionBlock(D, num_heads, ffn_mult, attn_dropout, ffn_dropout)
         self.inst_self_attn      = TransformerBlock(D, num_heads, ffn_mult, attn_dropout=attn_dropout, ffn_dropout=ffn_dropout)
@@ -439,16 +389,17 @@ class QueryProbe(nn.Module):
         )
 
     def forward(self, features: dict[str, Tensor]) -> dict[str, Tensor]:
-        feat = features[self.feature_key]           # [B, C, H, W]
-        B = feat.shape[0]
         N, K, D = self.num_slots, self.num_keypoints, self.feature_dim
 
-        x = self.stem_proj(feat)                    # [B, D, H, W]
-        x = self.stem(x)                            # [B, D, H', W']
-        _, _, H, W = x.shape
-        pe = make_2d_sinusoidal_pe(H, W, D, x.device, x.dtype)
-        x = x + pe.view(H, W, D).permute(2, 0, 1).unsqueeze(0)
-        patch_tokens = x.flatten(2).permute(0, 2, 1)   # [B, HW, D]
+        feat = features[self.feature_key]
+        centers = features["patch_centers"].reshape(-1, 2)         # [T/HW, 2]
+        B = feat.shape[0]
+        if feat.ndim == 3:
+            tokens = self.proj(feat)                               # [B, T, D]
+        else:
+            tokens = self.proj(feat.permute(0, 2, 3, 1)).flatten(1, 2)  # [B, HW, D]
+        pe = make_pe_from_centers(centers, D)                     # [T/HW, D]
+        patch_tokens = tokens + pe.unsqueeze(0)                   # [B, T/HW, D]
 
         # Instance path
         inst_q = self.instance_queries.weight.unsqueeze(0).expand(B, -1, -1)   # [B, N, D]

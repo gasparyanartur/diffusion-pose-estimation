@@ -15,6 +15,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.base import BaseFeatureExtractor, BaseFeatureExtractorConfig
 
 _MODEL_NAME = "facebook/dinov3-convnext-small-pretrain-lvd1689m"
@@ -73,7 +74,10 @@ class DinoFeatureExtractor(BaseFeatureExtractor):
         outputs = self._model(x)
         # hidden_states: 0=input, 1=stage1, 2=stage2, 3=stage3, 4=stage4
         spatial = outputs.hidden_states[self._stage]  # [B, C, H/stride, W/stride]
-        return {"spatial": spatial}
+        return {
+            "spatial": spatial,
+            "patch_centers": make_patch_centers(spatial.shape[2], spatial.shape[3], spatial.device, spatial.dtype),
+        }
 
 
 class DinoFeatureExtractorConfig(BaseFeatureExtractorConfig):
@@ -157,7 +161,10 @@ class DinoViTFeatureExtractor(BaseFeatureExtractor):
         tokens = outputs.last_hidden_state[:, self._n_skip:]  # [B, G_H*G_W, D]
         B, _L, D = tokens.shape
         spatial = tokens.permute(0, 2, 1).reshape(B, D, G_H, G_W)  # [B, D, G_H, G_W]
-        return {"spatial": spatial}
+        return {
+            "spatial": spatial,
+            "patch_centers": make_patch_centers(G_H, G_W, image.device, image.dtype),
+        }
 
 
 class DinoViTFeatureExtractorConfig(BaseFeatureExtractorConfig):
