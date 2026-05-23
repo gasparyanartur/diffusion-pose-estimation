@@ -77,8 +77,9 @@ class KeypointAPMetric:
         metric.reset()
     """
 
-    def __init__(self, ann_file: str | None) -> None:
+    def __init__(self, ann_file: str | None, max_persons: int | None = None) -> None:
         self._ann_file = ann_file
+        self._max_persons = max_persons
         self._metric = self._build_metric()
         self._valid_img_ids: frozenset[int] = frozenset(self._metric.coco.getImgIds())
         self._n_images = 0
@@ -92,7 +93,25 @@ class KeypointAPMetric:
             prefix="crowdpose",
         )
         m.dataset_meta = CROWDPOSE_DATASET_META
+        if self._max_persons is not None:
+            self._filter_coco_to_max_persons(m.coco, self._max_persons)
         return m
+
+    @staticmethod
+    def _filter_coco_to_max_persons(coco, max_persons: int) -> None:
+        """Remove images with more than max_persons annotated persons in-place."""
+        from collections import defaultdict
+        ann_counts: dict[int, int] = defaultdict(int)
+        for ann in coco.dataset["annotations"]:
+            ann_counts[ann["image_id"]] += 1
+        keep_ids = {img_id for img_id, n in ann_counts.items() if n <= max_persons}
+        # Also keep images with zero annotations (no persons)
+        for img in coco.dataset["images"]:
+            if img["id"] not in ann_counts:
+                keep_ids.add(img["id"])
+        coco.dataset["images"] = [img for img in coco.dataset["images"] if img["id"] in keep_ids]
+        coco.dataset["annotations"] = [ann for ann in coco.dataset["annotations"] if ann["image_id"] in keep_ids]
+        coco.createIndex()
 
     def reset(self) -> None:
         """Clear accumulated results; ready for a new epoch."""

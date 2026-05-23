@@ -68,10 +68,13 @@ def test_dummy_pipeline_end_to_end() -> None:
         img_hw=img_hw,
         initial_keypoints=graph.node_pos,
     )
-    M = graph.B * graph.N * graph.K
-    assert out.shape == (M, 2)
+    assert isinstance(out, dict)
+    assert out["keypoints"].shape == (graph.B, graph.N, graph.K, 2)
     # Shift is at most max_shift; with zero-init head, equal to identity.
-    assert torch.allclose(out, graph.node_pos, atol=1e-5)
+    expected = graph.node_pos.view(graph.B, graph.N, graph.K, 2)
+    assert torch.allclose(out["keypoints"], expected, atol=1e-5)
+    assert out["scores"].shape == (graph.B, graph.N)
+    assert out["keypoint_scores"].shape == (graph.B, graph.N, graph.K)
 
 
 def test_graph_diffusion_pipeline_end_to_end() -> None:
@@ -103,8 +106,9 @@ def test_graph_diffusion_pipeline_end_to_end() -> None:
             img_hw=img_hw,
             initial_keypoints=graph.node_pos,
         )
-    assert out.shape == (graph.num_nodes, 2)
-    assert torch.isfinite(out).all()
+    assert isinstance(out, dict)
+    assert out["keypoints"].shape == (graph.B, graph.N, graph.K, 2)
+    assert torch.isfinite(out["keypoints"]).all()
 
 
 def test_graph_diffusion_predict_delta_shape() -> None:

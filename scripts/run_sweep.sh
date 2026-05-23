@@ -30,14 +30,20 @@ RUN_DATETIME="$(date +%Y%m%d_%H%M%S)"
 # ---------------------------------------------------------------------------
 # Arguments
 # ---------------------------------------------------------------------------
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <sweep_file> <task_id> [extra_hydra_overrides...]" >&2
+if [[ $# -lt 3 ]]; then
+    echo "Usage: $0 <script> <sweep_file> <task_id> [extra_hydra_overrides...]" >&2
     exit 1
 fi
 
-SWEEP_FILE="$1"
-TASK_ID="$2"
-EXTRA_ARGS=("${@:3}")
+SCRIPT="$1"
+SWEEP_FILE="$2"
+TASK_ID="$3"
+EXTRA_ARGS=("${@:4}")
+
+if [[ ! -f "$SCRIPT" ]]; then
+    echo "Error: script not found: ${SCRIPT}" >&2
+    exit 1
+fi
 
 if [[ ! -f "$SWEEP_FILE" ]]; then
     echo "Error: sweep file not found: ${SWEEP_FILE}" >&2
@@ -76,7 +82,10 @@ mkdir -p "$SWEEP_DIR"
 # Run
 # ---------------------------------------------------------------------------
 echo "================================================================"
-echo "  Sweep : ${SWEEP_NAME}"  echo "  Run   : ${RUN_DATETIME}"echo "  Task  : ${TASK_ID}"
+echo "  Script: ${SCRIPT}"
+echo "  Sweep : ${SWEEP_NAME}"
+echo "  Run   : ${RUN_DATETIME}"
+echo "  Task  : ${TASK_ID}"
 echo "  Params: ${PARAMS}"
 echo "  Extra : ${EXTRA_ARGS[*]}"
 echo "  OutDir: ${SWEEP_DIR}"
@@ -88,7 +97,7 @@ cd "$PROJECT_ROOT"
 # Split $PARAMS into an array so that quoted sub-strings are handled correctly.
 read -ra PARAM_ARRAY <<< "$PARAMS"
 
-python scripts/train_pose_refinement.py \
+python "${SCRIPT}" \
     "hydra.run.dir=${SWEEP_DIR}" \
     "${PARAM_ARRAY[@]}" \
     "${EXTRA_ARGS[@]}"

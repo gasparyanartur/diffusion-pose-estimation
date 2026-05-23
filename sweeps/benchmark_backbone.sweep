@@ -1,0 +1,20 @@
+# Backbone benchmark sweep.
+# Each line is a set of Hydra overrides for scripts/benchmark_backbone.py.
+#
+# Run one task (1-based):
+#   scripts/run_sweep.sh scripts/benchmark_backbone.py sweeps/benchmark_backbone.sweep <task_id>
+#
+# Run all tasks sequentially:
+#   for i in $(seq 1 $(grep -cve '^\s*#\|^\s*$' sweeps/benchmark_backbone.sweep)); do
+#       scripts/run_sweep.sh scripts/benchmark_backbone.py sweeps/benchmark_backbone.sweep $i
+#   done
+
+backbone=resnet18
+backbone=resnet34
+backbone=dino-v3-convnext-small
+backbone=dino-v3-vit-s16
+backbone=concat-resnet18-radio-v3b
+backbone=c-radio-v3-b
+backbone=c-radio-v4-h
+backbone=vit-b16
+backbone=concat-resnet34-radio-v4h

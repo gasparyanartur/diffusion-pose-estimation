@@ -1,0 +1,35 @@
+# Hydra root config for scripts/benchmark_backbone.py
+#
+# Architecture: backbone → ProbeHead (fixed) → PoseSlotDecoder (fixed)
+# Only the 'backbone' group varies between benchmark runs.
+#
+# Examples:
+#   python scripts/benchmark_backbone.py
+#   python scripts/benchmark_backbone.py training_module.max_epochs=100
+#   python scripts/benchmark_backbone.py training_module.val_ap_every_n_epochs=5
+#   python scripts/benchmark_backbone.py skip_training=true \
+#       training_module.resume=results/.../checkpoints/last.ckpt
+
+defaults:
+  - backbone: resnet18
+  - training_module: backbone_probe_query
+  - data: crowdpose_set_prediction
+  - hardware: auto
+  - _self_
+
+run_name: backbone_benchmark
+out_dir: results/backbone_benchmark
+
+# When true, skip trainer.fit and only run trainer.test on the checkpoint at
+# `training_module.resume`. Use `+skip_training=true` on the command line.
+skip_training: false
+
+# Set to true to enable torch.compile on the Lightning module.
+# Disabled by default — compilation adds 30-60s of warmup on first steps.
+compile: true
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

@@ -34,10 +34,6 @@ from typing import Any
 import torch
 from omegaconf import OmegaConf
 
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
 from src.metrics import KeypointAPMetric
 from src.pose_estimator import PoseEstimatorConfig
 from src.training.training_module import PoseEstimatorTrainingModule

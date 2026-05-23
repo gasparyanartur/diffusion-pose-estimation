@@ -181,10 +181,15 @@ class CrossAttentionEmbedder(BaseFeatureEmbedder):
     def forward(
         self,
         features: dict[str, Any],
-        kpt_pixel: Tensor,
-        img_hw: Tensor,
+        kpt_pixel: Tensor | None = None,
+        img_hw: Tensor | None = None,
         joint_mask: Tensor | None = None,
+        **kwargs: Any,
     ) -> dict[str, Tensor]:
+        if kpt_pixel is None or img_hw is None:
+            raise ValueError(
+                "CrossAttentionEmbedder requires kpt_pixel and img_hw"
+            )
         spatial_maps = features["spatial"]
         semantic_maps = features["semantic"]
 

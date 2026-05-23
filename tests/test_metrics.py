@@ -603,3 +603,38 @@ class TestKeypointAPMetricIntegration:
         assert (captured["timestep"] == expected_t_start).all()
         assert captured["start_t"] == expected_t_start
         assert captured["num_inf"] == expected_t_start
+
+
+# ===========================================================================
+# 4.  KeypointAPMetric — max_persons COCO index filtering
+# ===========================================================================
+
+
+def test_max_persons_filters_valid_img_ids():
+    """Images with more persons than max_persons must be excluded from _valid_img_ids."""
+    import sys
+    sys.path.insert(0, "external/mmpose")
+    m_all = KeypointAPMetric(str(MINI_ANN_FILE))
+    m_max2 = KeypointAPMetric(str(MINI_ANN_FILE), max_persons=2)
+    # The fixture has one 2-person image (109488) and several with 3+ persons.
+    # With max_persons=2 only 109488 should remain.
+    assert 109488 in m_max2._valid_img_ids
+    assert len(m_max2._valid_img_ids) < len(m_all._valid_img_ids)
+
+
+def test_max_persons_excludes_high_crowd_images():
+    """Images exceeding the threshold must not appear in _valid_img_ids."""
+    import sys
+    sys.path.insert(0, "external/mmpose")
+    m = KeypointAPMetric(str(MINI_ANN_FILE), max_persons=2)
+    # 117306 has 6 persons in the fixture — must be excluded
+    assert 117306 not in m._valid_img_ids
+
+
+def test_max_persons_none_keeps_all_images():
+    """max_persons=None (default) must not filter anything."""
+    import sys
+    sys.path.insert(0, "external/mmpose")
+    m_none = KeypointAPMetric(str(MINI_ANN_FILE), max_persons=None)
+    m_all = KeypointAPMetric(str(MINI_ANN_FILE))
+    assert m_none._valid_img_ids == m_all._valid_img_ids

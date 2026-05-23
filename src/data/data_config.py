@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from pathlib import Path
+from typing import Literal
 
 from hydra.utils import to_absolute_path
 from pydantic import field_validator
@@ -20,6 +21,7 @@ class DataConfig(BaseConfig):
     batch_size: int = 64
     num_keypoints: int = 14
     subset_frac: float = 1.0
+    prefetch_factor: int = 2
     """Fraction of each split's samples to keep (0 < x <= 1). 1.0 = full dataset."""
 
     @field_validator("subset_frac")
@@ -45,6 +47,12 @@ class CrowdPoseDataConfig(DataConfig):
     val_pred_cache: str | None = None
     test_pred_cache: str | None = None
 
+    target_format: Literal["refinement", "set"] = "refinement"
+    image_h: int | None = 256
+    image_w: int | None = 192
+    max_persons: int | None = None
+    max_size: int | None = 512
+
     def build(self, pin_memory: bool = False) -> CrowdPoseDataModule:
         root = Path(to_absolute_path(self.root))
         return CrowdPoseDataModule(
@@ -60,4 +68,10 @@ class CrowdPoseDataConfig(DataConfig):
             num_keypoints=self.num_keypoints,
             subset_frac=self.subset_frac,
             pin_memory=pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            target_format=self.target_format,
+            image_h=self.image_h,
+            image_w=self.image_w,
+            max_persons=self.max_persons,
+            max_size=self.max_size,
         )

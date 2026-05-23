@@ -1,0 +1,25 @@
+# Set-prediction training preset.
+_target_: src.training.SetPredictionTrainingModuleConfig
+
+lr: 1e-3
+weight_decay: 1e-4
+cosine_lr: true
+lr_warmup_epochs: 0
+lr_min_frac: 1e-1
+
+max_epochs: 50
+seed: 42
+grad_clip: 5.0
+early_stop_patience: 0
+log_every_n_steps: 50
+compile: false
+resume: null
+gt_sanity_check: false
+
+weights:
+  oks: 1.0
+  obj: 1.0
+  vis: 0.5
+  rank: 1.0
+  matcher_lambda_oks: 1.0
+  matcher_lambda_obj: 0.1

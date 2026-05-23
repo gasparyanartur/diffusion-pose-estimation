@@ -7,9 +7,22 @@ from src.training.augmentations import (
     keypoint_jitter,
     pose_dropout,
 )
-from src.training.losses import compute_bone_loss, compute_joint_loss
+from src.training.backbone_probe import BackboneProbeModule, ConvProbe
+from src.training.diagnostics import compute_probe_diagnostics
+from src.training.losses import (
+    SetPredictionLoss,
+    SetPredictionLossWeights,
+    compute_bone_loss,
+    compute_joint_loss,
+    compute_oks,
+    hungarian_match,
+)
+from src.training.set_prediction_module import SetPredictionTrainingModule
 from src.training.training_config import (
+    BackboneProbeConfig,
     DiffusionTrainingModuleConfig,
+    SetPredictionLossWeightsConfig,
+    SetPredictionTrainingModuleConfig,
     TrainingModuleConfig,
 )
 from src.training.training_module import (
@@ -21,13 +34,24 @@ from src.training.training_module import (
 
 __all__ = [
     "AugmentationConfig",
+    "BackboneProbeConfig",
+    "BackboneProbeModule",
     "DiffusionTrainingModuleConfig",
     "LossConfig",
     "PoseEstimatorTrainingModule",
+    "ConvProbe",
+    "SetPredictionLoss",
+    "SetPredictionLossWeights",
+    "SetPredictionLossWeightsConfig",
+    "SetPredictionTrainingModule",
+    "SetPredictionTrainingModuleConfig",
     "StepOutputs",
     "TrainingModuleConfig",
     "compute_bone_loss",
     "compute_joint_loss",
+    "compute_oks",
+    "compute_probe_diagnostics",
+    "hungarian_match",
     "image_dropout",
     "joint_dropout",
     "joint_randomize",

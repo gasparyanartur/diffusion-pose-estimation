@@ -100,7 +100,14 @@ class CenterPatchExtractor(BaseFeatureExtractor):
     def register_image(self, image_id: int, image: Tensor) -> None:
         self._images[image_id] = image
 
-    def forward(self, image_ids: list[int]) -> dict[str, Any]:
+    def forward(
+        self,
+        image: Tensor | None = None,
+        image_ids: list[int] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if image_ids is None:
+            raise ValueError("CenterPatchExtractor requires image_ids")
         patches = []
         for iid in image_ids:
             img = self._images[iid]                     # (3, H, W)
@@ -138,10 +145,13 @@ class BroadcastEmbedder(BaseFeatureEmbedder):
     def forward(
         self,
         features: dict[str, Any],
-        kpt_pixel: Tensor,
-        img_hw: Tensor,
+        kpt_pixel: Tensor | None = None,
+        img_hw: Tensor | None = None,
         joint_mask: Tensor | None = None,
+        **kwargs: Any,
     ) -> dict[str, Tensor]:
+        if kpt_pixel is None:
+            raise ValueError("BroadcastEmbedder requires kpt_pixel")
         B, N, K, _ = kpt_pixel.shape
         global_vec = self.proj(features["global"])       # (B, out_dim)
         node_feats = global_vec.view(B, 1, 1, -1).expand(B, N, K, -1).contiguous()
@@ -177,10 +187,13 @@ class ShiftDecoder(BaseDecoder):
 
     def forward(
         self,
-        graph: PoseGraphBatch,
         embeddings: dict[str, Tensor],
+        graph: PoseGraphBatch | None = None,
         initial_keypoints: Tensor | None = None,
-    ) -> Tensor:
+        **kwargs: Any,
+    ) -> dict[str, Tensor]:
+        if graph is None:
+            raise ValueError("ShiftDecoder requires graph")
         node_feats = embeddings["node_feats"]            # (B, N, K, D)
         # Pool to per-batch and predict one shift per batch element.
         pooled = node_feats.mean(dim=(1, 2))             # (B, D)
@@ -189,8 +202,15 @@ class ShiftDecoder(BaseDecoder):
         # Broadcast the shift to every node in each batch.
         shift_per_node = shift[graph.node_batch]         # (M, 2)
         if initial_keypoints is None:
-            return shift_per_node
-        return initial_keypoints + shift_per_node
+            kpts_flat = shift_per_node
+        else:
+            kpts_flat = initial_keypoints + shift_per_node
+        keypoints = kpts_flat.view(graph.B, graph.N, graph.K, 2)
+        return {
+            "keypoints": keypoints,
+            "scores": keypoints.new_ones(graph.B, graph.N),
+            "keypoint_scores": keypoints.new_ones(graph.B, graph.N, graph.K),
+        }
 
 
 class ShiftDecoderConfig(BaseDecoderConfig):

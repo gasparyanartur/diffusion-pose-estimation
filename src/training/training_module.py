@@ -454,51 +454,13 @@ class PoseEstimatorTrainingModule(pl.LightningModule):
     # Optimisation
     # ------------------------------------------------------------------
     def configure_optimizers(self):
-        decay, no_decay = [], []
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            if param.ndim <= 1 or name.endswith(".bias"):
-                no_decay.append(param)
-            else:
-                decay.append(param)
-        param_groups = [
-            {"params": decay, "weight_decay": self.weight_decay},
-            {"params": no_decay, "weight_decay": 0.0},
-        ]
-        optimizer = torch.optim.AdamW(param_groups, lr=self.lr)
+        from src.training.optim import build_adamw_with_schedule
 
-        schedulers: list[torch.optim.lr_scheduler.LRScheduler] = []
-        milestones: list[int] = []
-
-        if self.lr_warmup_epochs > 0:
-            schedulers.append(
-                torch.optim.lr_scheduler.LinearLR(
-                    optimizer,
-                    start_factor=1e-8,
-                    end_factor=1.0,
-                    total_iters=self.lr_warmup_epochs,
-                )
-            )
-            milestones.append(self.lr_warmup_epochs)
-
-        if self.lr_T_max is not None:
-            cosine_epochs = max(1, self.lr_T_max - self.lr_warmup_epochs)
-            schedulers.append(
-                torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer, T_max=cosine_epochs, eta_min=self.lr * self.lr_min_frac
-                )
-            )
-
-        if not schedulers:
-            return optimizer
-        if len(schedulers) == 1:
-            scheduler = schedulers[0]
-        else:
-            scheduler = torch.optim.lr_scheduler.SequentialLR(
-                optimizer, schedulers=schedulers, milestones=milestones
-            )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "epoch"},
-        }
+        return build_adamw_with_schedule(
+            self,
+            lr=self.lr,
+            weight_decay=self.weight_decay,
+            lr_T_max=self.lr_T_max,
+            lr_warmup_epochs=self.lr_warmup_epochs,
+            lr_min_frac=self.lr_min_frac,
+        )

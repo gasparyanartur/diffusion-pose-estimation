@@ -1,0 +1,100 @@
+[2026-05-23] YOLOv3 bounding box generation for CrowdPose
+
+- Created scripts/generate_boxes_yolov3.py: downloads YOLOv3 weights/cfg/names on first run,
+  runs cv2.dnn inference on all CrowdPose images (train/val/test), saves
+  data/crowdpose/annotations/boxes_crowdpose_{split}.json in the same format as
+  det_for_crowd_test_0.1_0.5.json (list of {bbox, category_id, image_id, score}).
+  --verify flag compares test output against det_for_crowd_test_0.1_0.5.json
+  (detection counts, mean |Δ|, IoU>0.9 match rate on 200-image sample).
+  Reference thresholds: conf=0.1, nms=0.5 (pass explicitly to match reference file).
+- Created notebook/visualize_yolov3_boxes.ipynb: detection count histograms,
+  per-image box visualization (generated=green, GT=red), and side-by-side
+  generated vs reference comparison panel.
+
+[2026-05-20] Backbone sweep visualisation notebook
+
+- Added `find_last_run(sweep_dir)` to src/utils.py: returns {task_id → latest run Path} for any sweep directory
+- Added `load_backbone_probe_module(run_dir, ckpt_name, device)` to src/utils.py: rebuilds backbone + QueryProbe module from .hydra/config.yaml and loads checkpoint weights
+- Created notebook/visualize_backbone_sweep.ipynb: loads last run per task, runs inference on 5 fixed CrowdPose test images, displays 4×5 grid with keypoints drawn as circles (border colour = slot identity, number inside = joint index)
+
+[2026-05-16] ProbeHead self-contained: 2-stage projection + built-in decoder heads; no PoseSlotDecoder dependency
+
+- Added 2-stage proj: proj1(in_ch→768, 1×1) + ReLU + proj2(768→96, 1×1) before ConvNeXt stack
+- Added separate attn_dropout / ffn_dropout params to TransformerBlock
+- Fixed doubled attn_layers loop bug (N×N → N blocks); param count 3.9M → 2.47M
+- Rewrote ProbeHead.forward to return pred dict directly:
+    shared_proj: Linear(feature_dim→hidden_dim) + ReLU + Dropout(mlp_dropout)
+    scores_head:    Linear(hidden_dim → num_slots)
+    keypoints_head: Linear(hidden_dim → num_slots*num_keypoints*2)
+    vis_head:       Linear(hidden_dim → num_slots*num_keypoints)
+    returns {keypoints[B,N,K,2], scores[B,N], scores_logits[B,N], keypoint_scores[B,N,K], vis_logits[B,N,K]}
+- BackboneProbeModule: removed slot_decoder param; _forward calls probe_head directly; _make_gt_pred reads num_slots from probe_head
+- BackboneProbeConfig.build(): no longer creates PoseSlotDecoder; passes num_slots/num_keypoints/hidden_dim/mlp_dropout to ProbeHead
+- Updated conf/training_module/backbone_probe.yaml: added proj_dim=768, conv_dim=96, ffn_dropout=0.5
+- Updated tests: all ProbeHead shape/gradient tests migrated to dict output; slot_decoder removed from all construction sites; 164/164 pass
+
+[2026-05-15] ProbeHead redesign: ConvNeXt blocks + conditional pool + Transformer
+
+- Added ConvNeXtBlock: DWConv(7x7,groups=D) + LN + pw Linear(D->ffn_mult*D) + GELU + pw Linear(ffn_mult*D->D) + residual
+- Added TransformerBlock: pre-norm MHSA + Add, pre-norm FFN(D->ffn_mult*D->D, Dropout) + Add
+- Rewrote ProbeHead: proj(1x1) + ConvNeXt stack with conditional AvgPool2d(2,2) + Transformer readout + mean-pool
+  - Removed: proj_dim, pool_h, pool_w, conv_depth, conv_dropout, final_proj, _pe_pool buffer
+  - Added: target_size, num_conv_layers, num_attn_layers, ffn_mult
+  - Parameter-identical for any backbone spatial resolution
+- Updated BackboneProbeConfig: removed old params, added new params, updated build()
+- Updated conf/training_module/backbone_probe.yaml to match new config schema
+- Updated tests: removed proj_dim/pool/conv_depth tests; added test_probe_head_large_input_pools_down,
+  test_probe_head_small_input_no_extra_pool, test_probe_head_zero_conv_layers; all 163 tests pass
+
+[2026-05-14] Refactor losses.py into nn.Module hierarchy
+
+- src/training/losses.py: rewrote all loss logic as nn.Module subclasses — OKSLoss, ObjectnessLoss, VisibilityLoss, RankingLoss, SetPredictionLoss. Removed set_prediction_loss and set_prediction_loss_per_image free functions. sigmas registered as buffer in SetPredictionLoss.
+- src/training/set_prediction_module.py: replaced inline loss call with self._loss (SetPredictionLoss). Updated all log key references to explicit names: oks_loss, objectness_loss, visibility_loss, ranking_loss.
+- src/training/__init__.py: replaced set_prediction_loss export with SetPredictionLoss.
+- tests/test_set_prediction.py: rewrote all loss tests for new class-based API.
+- All 127 tests pass.
+
+---
+
+[2026-05-15] BackboneProbeModule + diagnostics + periodic AP (clean-break benchmark refactor)
+
+- src/training/diagnostics.py: new module — compute_probe_diagnostics() returns per-batch
+  diagnostic scalars: missed_person_rate, duplicate_person_rate, vis_accuracy, vis_f1,
+  per_joint_oks_{j:02d} (14 values). Hungarian-match based.
+- src/training/backbone_probe.py: new module — ProbeHead (1×1 conv → conv blocks →
+  adaptive avg-pool → sinusoidal 2D PE + self-attention + LN → mean-pool → [B,D]) and
+  BackboneProbeModule (Lightning module: backbone → ProbeHead → PoseSlotDecoder).
+  Supports val_ap_every_n_epochs cadence (default=10), gt_sanity_check, per-step diagnostics.
+- src/training/training_config.py: added BackboneProbeConfig with .build(backbone, data).
+- src/training/__init__.py: exported BackboneProbeModule, ProbeHead, BackboneProbeConfig,
+  compute_probe_diagnostics.
+- conf/backbone/cnn.yaml: new Hydra config group for backbone selection.
+- conf/training_module/backbone_probe.yaml: new training_module config for BackboneProbeConfig.
+- conf/benchmark_backbone.yaml: replaced pose_estimator group with backbone group; now
+  uses backbone: cnn + training_module: backbone_probe.
+- scripts/benchmark_backbone.py: rewritten to use BaseFeatureExtractorConfig + BackboneProbeConfig.
+  Logs separate param counts (backbone / probe_head / decoder).
+- tests/test_backbone_probe.py: 15 new tests covering ProbeHead shapes, gradients,
+  BackboneProbeModule forward/train/val, BackboneProbeConfig.build(), and all diagnostics paths.
+- tests/test_benchmark_backbone_script.py: updated to reflect new config group (backbone vs
+  pose_estimator) and BackboneProbeModule.
+- 142/142 tests passing.
+
+---
+
+[2026-05-14] Fix set-prediction loss: pos_weight + ranking loss + remove L1
+
+- src/training/losses.py: removed L1 from SetPredictionLossWeights and loss computation;
+  added dynamic pos_weight = (N-P)/max(P,1) capped at 20 to objectness BCE;
+  added pairwise RankNet ranking loss over matched vs unmatched slots.
+- src/training/training_config.py: removed l1 field, added rank field to
+  SetPredictionLossWeightsConfig and to_dataclass().
+- src/training/set_prediction_module.py: removed l1 from train/val log loops, added rank.
+- conf/training_module/set_prediction.yaml: removed l1 weight, added rank: 1.0.
+- conf/pose_estimator/cnn_set_prediction.yaml: restored num_slots: 20.
+- conf/data/crowdpose_set_prediction.yaml: set max_persons: null (full dataset, option kept).
+- docs/backbone-benchmark-spec.txt: updated Training loss section with new formula.
+- tests/test_set_prediction.py: fixed smoke test (l1 → oks+rank), added
+  test_pos_weight_balances_objectness_gradient, test_ranking_loss_zero_when_no_gt,
+  test_ranking_loss_decreases_when_matched_outscores_unmatched.
+- 127/127 tests passing.

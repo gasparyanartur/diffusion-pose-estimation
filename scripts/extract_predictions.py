@@ -30,10 +30,6 @@ from pathlib import Path
 import torch
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parents[1]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
 from src import defaults
 from src.configs import REGISTRY
 from src.benchmark import download_checkpoint

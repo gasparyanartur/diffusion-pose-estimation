@@ -1,0 +1,4 @@
+# CNN backbone variant for the backbone probe benchmark.
+# Plain 4-stage CNN with stride 16.  Trained from scratch (not frozen).
+_target_: src.features.CNNFeatureExtractorConfig
+out_channels: 128
