@@ -1,3 +1,16 @@
+[2026-05-23] YOLOv3 bounding box generation for CrowdPose
+
+- Created scripts/generate_boxes_yolov3.py: downloads YOLOv3 weights/cfg/names on first run,
+  runs cv2.dnn inference on all CrowdPose images (train/val/test), saves
+  data/crowdpose/annotations/boxes_crowdpose_{split}.json in the same format as
+  det_for_crowd_test_0.1_0.5.json (list of {bbox, category_id, image_id, score}).
+  --verify flag compares test output against det_for_crowd_test_0.1_0.5.json
+  (detection counts, mean |Δ|, IoU>0.9 match rate on 200-image sample).
+  Reference thresholds: conf=0.1, nms=0.5 (pass explicitly to match reference file).
+- Created notebook/visualize_yolov3_boxes.ipynb: detection count histograms,
+  per-image box visualization (generated=green, GT=red), and side-by-side
+  generated vs reference comparison panel.
+
 [2026-05-20] Backbone sweep visualisation notebook
 
 - Added `find_last_run(sweep_dir)` to src/utils.py: returns {task_id → latest run Path} for any sweep directory
