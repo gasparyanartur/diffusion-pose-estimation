@@ -340,6 +340,7 @@ class QueryProbe(nn.Module):
         ffn_dropout: float = 0.1,
         proj_dropout: float = 0.1,
         feature_key: str = "spatial",
+        pe_scale: float = 1000.0,
         predict_visibility: bool = False,
     ) -> None:
         super().__init__()
@@ -352,6 +353,7 @@ class QueryProbe(nn.Module):
 
         self.feature_key   = feature_key
         self.feature_dim   = D
+        self.pe_scale      = pe_scale
         self.num_slots     = num_slots
         self.num_keypoints = num_keypoints
         self.predict_visibility = predict_visibility
@@ -398,7 +400,7 @@ class QueryProbe(nn.Module):
             tokens = self.proj(feat)                               # [B, T, D]
         else:
             tokens = self.proj(feat.permute(0, 2, 3, 1)).flatten(1, 2)  # [B, HW, D]
-        pe = make_pe_from_centers(centers, D)                     # [T/HW, D]
+        pe = make_pe_from_centers(centers, D, self.pe_scale)       # [T/HW, D]
         patch_tokens = tokens + pe.unsqueeze(0)                   # [B, T/HW, D]
 
         # Instance path
@@ -524,6 +526,18 @@ class BackboneProbeModule(pl.LightningModule):
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def on_save_checkpoint(self, checkpoint: dict) -> None:
+        frozen_keys = {name for name, p in self.named_parameters() if not p.requires_grad}
+        state = checkpoint["state_dict"]
+        for key in frozen_keys:
+            state.pop(key, None)
+
+    def on_load_checkpoint(self, checkpoint: dict) -> None:
+        state = checkpoint["state_dict"]
+        for key, value in self.state_dict().items():
+            if key not in state:
+                state[key] = value
 
     def on_fit_start(self) -> None:
         import logging

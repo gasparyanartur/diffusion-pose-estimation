@@ -408,3 +408,41 @@ def test_diagnostics_vis_accuracy_perfect():
     }
     diag = compute_probe_diagnostics(pred, batch, SIGMAS)
     assert diag["vis_accuracy"].item() == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint: frozen params excluded, reload works
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_excludes_frozen_params():
+    """Frozen backbone parameters must not appear in the saved checkpoint state."""
+    module = _make_probe_module()
+    # CNNFeatureExtractor has no frozen params by default; freeze it manually
+    for p in module.backbone.parameters():
+        p.requires_grad_(False)
+
+    checkpoint: dict = {"state_dict": dict(module.state_dict())}
+    module.on_save_checkpoint(checkpoint)
+
+    frozen_keys = {name for name, p in module.named_parameters() if not p.requires_grad}
+    for key in frozen_keys:
+        assert key not in checkpoint["state_dict"], f"Frozen key present in checkpoint: {key}"
+
+
+def test_checkpoint_reload_restores_frozen_params():
+    """on_load_checkpoint must re-insert missing frozen keys so load_state_dict succeeds."""
+    module = _make_probe_module()
+    for p in module.backbone.parameters():
+        p.requires_grad_(False)
+
+    checkpoint: dict = {"state_dict": dict(module.state_dict())}
+    module.on_save_checkpoint(checkpoint)
+
+    # Simulate reload: on_load_checkpoint should fill missing keys back in
+    module.on_load_checkpoint(checkpoint)
+    full_keys = set(module.state_dict().keys())
+    assert full_keys == set(checkpoint["state_dict"].keys())
+
+    # load_state_dict must succeed without errors
+    module.load_state_dict(checkpoint["state_dict"], strict=True)

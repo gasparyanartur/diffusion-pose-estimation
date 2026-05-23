@@ -58,18 +58,20 @@ def make_patch_centers(H: int, W: int, device: torch.device,
     return torch.stack([grid_y, grid_x], dim=-1)  # [H, W, 2]
 
 
-def make_pe_from_centers(centers: Tensor, dim: int) -> Tensor:
+def make_pe_from_centers(centers: Tensor, dim: int, scale: float = 1000.0) -> Tensor:
     """Sinusoidal PE from arbitrary (y, x) positions, shape ``[T, dim]``.
 
-    ``centers`` is ``[T, 2]`` with (y, x) in any coordinate system.
+    ``centers`` is ``[T, 2]`` with (y, x) coordinates. ``scale`` multiplies
+    the coordinates before encoding; use it to match the frequency range of
+    the sinusoidal basis (default 1000 maps [-1, 1] coords to [-1000, 1000]).
     ``dim`` is split into 4 equal banks: sin/cos for y and sin/cos for x.
     """
     if dim % 4 != 0:
         raise ValueError(f"dim must be divisible by 4 for sinusoidal PE; got {dim}")
     d = dim // 4
     freq = 1.0 / (10000 ** (torch.arange(d, device=centers.device, dtype=centers.dtype) / d))
-    y_enc = centers[:, 0].unsqueeze(1) * freq.unsqueeze(0)  # [T, d]
-    x_enc = centers[:, 1].unsqueeze(1) * freq.unsqueeze(0)  # [T, d]
+    y_enc = centers[:, 0].unsqueeze(1) * scale * freq.unsqueeze(0)  # [T, d]
+    x_enc = centers[:, 1].unsqueeze(1) * scale * freq.unsqueeze(0)  # [T, d]
     return torch.cat([y_enc.sin(), y_enc.cos(), x_enc.sin(), x_enc.cos()], dim=-1)
 
 

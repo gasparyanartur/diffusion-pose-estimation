@@ -302,6 +302,7 @@ class QueryBackboneProbeConfig(BaseConfig):
     ffn_dropout: float = 0.1
     proj_dropout: float = 0.1
     feature_key: str = "spatial"
+    pe_scale: float = 1000.0
     predict_visibility: bool = False
 
     # augmentation

@@ -123,11 +123,12 @@ def main(cfg: DictConfig) -> None:
     callbacks: list[pl.Callback] = [
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="epoch{epoch:03d}-val_loss{val/loss:.4f}",
-            monitor="val/loss",
-            mode="min",
+            filename="epoch{epoch:03d}-val_crowdpose_AP",
+            monitor="val/crowdpose/AP",
+            mode="max",
             save_top_k=1,
-            save_last=True,
+            save_last=False,
+            every_n_epochs=probe_cfg.val_ap_every_n_epochs,
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="epoch"),
@@ -173,7 +174,7 @@ def main(cfg: DictConfig) -> None:
 
         best_ckpt  = trainer.checkpoint_callback.best_model_path   # type: ignore[union-attr]
         best_score = trainer.checkpoint_callback.best_model_score  # type: ignore[union-attr]
-        log.info("Best val/loss  : %s", best_score)
+        log.info("Best val/crowdpose/AP: %s", best_score)
         log.info("Best checkpoint: %s", best_ckpt)
         if not best_ckpt:
             log.warning("No checkpoint found; skipping test evaluation.")
