@@ -1,21 +1,19 @@
-# Root Hydra config.  Override any value from the command line:
+# Root Hydra config. Override any value from the command line:
 #
-#   python scripts/train_pose_refinement.py run_name=exp_large model=large
-#   python scripts/train_pose_refinement.py train.lr=3e-4 train.max_epochs=200
-#   python scripts/train_pose_refinement.py hardware=gpu dino=dinov2_small
-#   python scripts/train_pose_refinement.py train.resume=checkpoints/run/last.ckpt
+#   python scripts/train_pose_refinement.py run_name=exp1
+#   python scripts/train_pose_refinement.py pose_estimator=dino_bilinear
+#   python scripts/train_pose_refinement.py training_module.lr=3e-4 training_module.max_epochs=200
+#   python scripts/train_pose_refinement.py training_module=diffusion_minimal data=crowdpose_minimal
 
 defaults:
-  - model: small
+  - pose_estimator: default
+  - training_module: diffusion
   - data: crowdpose
-  - train: base
-  - dino: attention_convnext_small
   - hardware: auto
   - _self_
 
-# Top-level identifiers — override with run_name=my_experiment
-run_name: diffusion
-out_dir: results/diffusion_training
+run_name: pose_estimator
+out_dir: results/pose_estimator_training
 
 hydra:
   run:

@@ -1,0 +1,259 @@
+"""Pose datasets and their config wrappers.
+
+PoseDataset
+    GT-only; one sample per image; N people; K keypoints.
+PredictionDataset
+    Wraps detector predictions with optional GT side-table.
+
+Both pair with :class:`SceneGraphSampler` for uniform-N batches.
+"""
+
+from __future__ import annotations
+
+import json
+import pickle
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Literal
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Dataset
+
+from src.base_config import BaseConfig
+from src.data.io import load_gt_annotations, read_image
+from src.data.sampler import SceneGraphSampler
+
+
+def _collate_with_images(batch: list[dict]) -> dict:
+    """Like ``default_collate`` but keeps ``image`` as a list (variable spatial size)."""
+    images = [s["image"] for s in batch] if "image" in batch[0] else None
+    other = [{k: v for k, v in s.items() if k != "image"} for s in batch]
+    result = torch.utils.data.default_collate(other)
+    if images is not None:
+        result["image"] = images
+    return result
+
+
+class PoseDataset(Dataset):
+    """One sample per image; N people, K keypoints each."""
+
+    def __init__(
+        self,
+        samples: list[dict[str, Any]],
+        num_keypoints: int = 14,
+        load_images: bool = False,
+    ) -> None:
+        self.samples = samples
+        self.num_keypoints = num_keypoints
+        self._load_images = load_images
+
+    @classmethod
+    def from_path(
+        cls,
+        ann_path: Path | str,
+        img_root: Path | str | None = None,
+        num_keypoints: int = 14,
+    ) -> "PoseDataset":
+        """Load from a COCO-style annotation JSON."""
+        with open(ann_path) as fh:
+            data = json.load(fh)
+
+        img_root_path = Path(img_root) if img_root is not None else None
+        image_paths: dict[int, str] = {
+            img["id"]: (
+                str(img_root_path / img["file_name"])
+                if img_root_path is not None
+                else img.get("file_name", "")
+            )
+            for img in data.get("images", [])
+        }
+
+        by_image: dict[int, list[dict]] = defaultdict(list)
+        for ann in data["annotations"]:
+            if ann.get("num_keypoints", 0) > 0:
+                by_image[ann["image_id"]].append(ann)
+
+        samples = []
+        for image_id, anns in by_image.items():
+            kpts = np.array(
+                [a["keypoints"] for a in anns], dtype=np.float32
+            ).reshape(len(anns), num_keypoints, 3)
+            samples.append({
+                "image_id":   image_id,
+                "img_path":   image_paths.get(image_id, ""),
+                "keypoints":  torch.from_numpy(kpts[:, :, :2]),
+                "visibility": torch.from_numpy(kpts[:, :, 2]),
+            })
+
+        return cls(samples=samples, num_keypoints=num_keypoints)
+
+    def create_dataloader(
+        self,
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        num_workers: int = 0,
+        load_images: bool = False,
+        pin_memory: bool = False,
+        **kwargs: Any,
+    ) -> DataLoader:
+        self._load_images = load_images
+        sampler = SceneGraphSampler(
+            self, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last
+        )
+        return DataLoader(
+            self,
+            batch_sampler=sampler,
+            collate_fn=_collate_with_images,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(num_workers > 0),
+            **kwargs,
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        sample = self.samples[idx]
+        if self._load_images:
+            sample = dict(sample)
+            sample["image"] = read_image(sample["img_path"]).float().div(255.0)
+        return sample
+
+
+class PredictionDataset(PoseDataset):
+    """:class:`PoseDataset` extended with model predictions and optional GT."""
+
+    def __init__(
+        self,
+        model_name: str,
+        architecture_type: Literal["top-down", "bottom-up"],
+        num_keypoints: int,
+        predictions: list[dict[str, Any]],
+        gt_by_image_id: dict[int, list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.model_name = model_name
+        self.architecture_type = architecture_type
+        self.num_keypoints = num_keypoints
+        self.predictions = predictions
+        self.has_bboxes: bool = bool(predictions) and "bboxes" in predictions[0]
+        self._gt_by_image_id = gt_by_image_id
+        self.has_gt: bool = gt_by_image_id is not None
+
+    @classmethod
+    def from_path(
+        cls,
+        path: Path | str,
+        ann_path: Path | str | None = None,
+        **kwargs: Any,
+    ) -> "PredictionDataset":
+        with open(path, "rb") as fh:
+            data = pickle.load(fh)
+        kwargs.update({
+            "model_name": data["model_name"],
+            "architecture_type": data["architecture_type"],
+            "num_keypoints": data["num_keypoints"],
+            "predictions": data["predictions"],
+        })
+        if ann_path is not None:
+            kwargs["gt_by_image_id"] = load_gt_annotations(ann_path)
+        return cls(**kwargs)
+
+    def create_dataloader(
+        self,
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        num_workers: int = 0,
+        **kwargs: Any,
+    ) -> DataLoader:
+        sampler = SceneGraphSampler(
+            self,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            group_key="pred_keypoints",
+        )
+        return DataLoader(
+            self,
+            batch_sampler=sampler,
+            collate_fn=torch.utils.data.default_collate,
+            num_workers=num_workers,
+            **kwargs,
+        )
+
+    def __len__(self) -> int:
+        return len(self.predictions)
+
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        pred = self.predictions[idx]
+        sample: dict[str, Any] = {
+            "image_id":             pred["image_id"],
+            "img_path":             pred.get("img_path", ""),
+            "pred_keypoints":       torch.tensor(pred["keypoints"],       dtype=torch.float32),
+            "pred_keypoint_scores": torch.tensor(pred["keypoint_scores"], dtype=torch.float32),
+        }
+        if self.has_bboxes:
+            sample["bboxes"]      = torch.tensor(pred["bboxes"],      dtype=torch.float32)
+            sample["bbox_scores"] = torch.tensor(pred["bbox_scores"], dtype=torch.float32)
+        return sample
+
+    def get_gt(self, image_id: int) -> dict[str, Any] | None:
+        """Return GT keypoints / visibility for an image, or ``None`` if no GT loaded."""
+        if not self.has_gt or self._gt_by_image_id is None:
+            return None
+        gt_anns = self._gt_by_image_id.get(image_id, [])
+        if not gt_anns:
+            return {
+                "keypoints":  torch.zeros(0, self.num_keypoints, 2, dtype=torch.float32),
+                "visibility": torch.zeros(0, self.num_keypoints,    dtype=torch.float32),
+            }
+        kpts_flat = np.array([a["keypoints"] for a in gt_anns], dtype=np.float32)
+        kpts = kpts_flat.reshape(len(gt_anns), self.num_keypoints, 3)
+        return {
+            "keypoints":  torch.from_numpy(kpts[:, :, :2]),
+            "visibility": torch.from_numpy(kpts[:, :, 2]),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Configs
+# ---------------------------------------------------------------------------
+
+
+class BaseDatasetConfig(BaseConfig):
+    """Base config for any dataset. Override ``build()`` in subclasses."""
+
+    num_keypoints: int = 14
+
+    def build(self) -> Dataset:
+        raise NotImplementedError
+
+
+class PoseDatasetConfig(BaseDatasetConfig):
+    """Config for :class:`PoseDataset` loaded from a COCO annotation file."""
+
+    ann_path: str
+    img_root: str | None = None
+
+    def build(self) -> PoseDataset:
+        return PoseDataset.from_path(
+            ann_path=self.ann_path,
+            img_root=self.img_root,
+            num_keypoints=self.num_keypoints,
+        )
+
+
+class PredictionDatasetConfig(BaseDatasetConfig):
+    """Config for :class:`PredictionDataset` loaded from a pickle cache."""
+
+    cache_path: str
+    ann_path: str | None = None
+
+    def build(self) -> PredictionDataset:
+        return PredictionDataset.from_path(
+            path=self.cache_path,
+            ann_path=self.ann_path,
+        )

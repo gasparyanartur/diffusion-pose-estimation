@@ -481,12 +481,9 @@ class TestKeypointAPMetricIntegration:
         )
 
     def test_identity_ddim_gives_baseline_ap(self):
-        """When DDIM is monkeypatched to return the input unchanged (delta=0),
-        AP must match the raw detector baseline.
-
-        This tests the full _refine_batch → metric pipeline without any
-        dependency on model quality.  A failure here means the coordinate
-        conversion or the noise injection in _refine_batch is incorrect.
+        """When DDIM is monkeypatched to return the input unchanged, AP must match
+        the raw detector baseline. Tests the full _refine_batch → metric pipeline
+        without any dependency on model quality.
         """
         if not VAL_ANN_FILE.exists() or not PRED_CACHE.exists():
             pytest.skip("CrowdPose data or prediction cache not available")
@@ -495,40 +492,49 @@ class TestKeypointAPMetricIntegration:
         sys.path.insert(0, "external/mmpose")
         from unittest.mock import patch
         from src.data import PredictionDataset
-        from src.model import (
-            KeypointDiffusionConfig,
-            KeypointDiffusionModel,
-            PoseDiffusionModule,
+        from src.decoders import (
+            GraphDiffusionDecoderConfig,
+            MlpDenoiseNetworkConfig,
         )
+        from src.embedders import NoneEmbedderConfig
+        from src.features import NoneFeatureExtractorConfig
+        from src.pose_estimator import PoseEstimatorConfig
+        from src.training import PoseEstimatorTrainingModule
 
-        cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
-                                         dim_hidden=16, num_layers=1,
-                                         num_train_steps=100)
-        model  = KeypointDiffusionModel(config=cfg, num_keypoints=14)
-        module = PoseDiffusionModule(model=model, start_inference_noise_frac=0.0)  # no noise
+        cfg = PoseEstimatorConfig(
+            feature_extractor=NoneFeatureExtractorConfig(),
+            feature_embedder=NoneEmbedderConfig(),
+            decoder=GraphDiffusionDecoderConfig(
+                denoise_network=MlpDenoiseNetworkConfig(num_layers=1, hidden_dim=16),
+                num_train_steps=100,
+                hidden_dim=16,
+                dim_pos=16,
+                dim_time=16,
+            ),
+        )
+        pose_estimator = cfg.build()
+        module = PoseEstimatorTrainingModule(
+            pose_estimator=pose_estimator, start_inference_noise_frac=0.0
+        )
         module.eval()
 
         dataset = PredictionDataset.from_path(str(PRED_CACHE))
-        loader  = dataset.create_dataloader(batch_size=64, shuffle=False, num_workers=0)
+        loader = dataset.create_dataloader(batch_size=64, shuffle=False, num_workers=0)
 
-        # Raw detector baseline
         m_raw = KeypointAPMetric(str(VAL_ANN_FILE))
         for batch in loader:
-            m_raw.update(batch["pred_keypoints"], batch["pred_keypoint_scores"],
-                         batch["image_id"])
+            m_raw.update(batch["pred_keypoints"], batch["pred_keypoint_scores"], batch["image_id"])
         ap_baseline = m_raw.compute().get("crowdpose/AP", -1.0)
 
-        # Identity DDIM: patch add_noise → no-op AND ddim_sample → return x_init.
-        # Together these make _refine_batch a pure canonical ↔ pixel roundtrip,
-        # which must preserve AP exactly (tolerance 1e-3 covers float rounding).
-        import torch as _torch
+        decoder = module._decoder
+
         def _noop_add_noise(**kw):
-            return kw["node_pos"], _torch.zeros_like(kw["node_pos"])
+            return kw["node_pos"], torch.zeros_like(kw["node_pos"])
 
         m_id = KeypointAPMetric(str(VAL_ANN_FILE))
         with (
-            patch.object(module.model, "add_noise",    side_effect=_noop_add_noise),
-            patch.object(module.model, "ddim_sample",  side_effect=lambda **kw: kw["x_init"]),
+            patch.object(decoder, "add_noise", side_effect=_noop_add_noise),
+            patch.object(decoder, "ddim_sample", side_effect=lambda **kw: kw["x_init"]),
         ):
             for batch in loader:
                 pred_pixel, pred_scores, image_ids = module._refine_prediction_batch(batch)
@@ -536,36 +542,38 @@ class TestKeypointAPMetricIntegration:
         ap_identity = m_id.compute().get("crowdpose/AP", -1.0)
 
         assert abs(ap_identity - ap_baseline) < 1e-3, (
-            f"Identity DDIM AP={ap_identity:.6f} differs from "
-            f"detector baseline={ap_baseline:.6f}.  "
-            "The _refine_batch pipeline has a lossy bug "
-            "(check root_pos / scale passing or root-keypoint dropping)."
+            f"Identity DDIM AP={ap_identity:.6f} differs from baseline={ap_baseline:.6f}"
         )
 
     def test_start_inference_noise_frac_controls_starting_timestep(self):
-        """_refine_batch must add noise at t_start=round(T*frac), not at T=100.
-
-        We verify the mechanism (not AP value) by monkeypatching add_noise and
-        ddim_sample so we can inspect the timestep and start_t arguments.
-        A random model's delta accumulation makes AP meaningless here — what
-        matters is that the noise is small (frac*T, not T) so a TRAINED model
-        that predicts delta≈0 can gracefully fall back to the detector output.
-        """
+        """_refine_batch must add noise at t_start=round(T*frac), not at T."""
         from unittest.mock import patch
-        from src.model import (
-            KeypointDiffusionConfig,
-            KeypointDiffusionModel,
-            PoseDiffusionModule,
+        from src.decoders import (
+            GraphDiffusionDecoderConfig,
+            MlpDenoiseNetworkConfig,
         )
+        from src.embedders import NoneEmbedderConfig
+        from src.features import NoneFeatureExtractorConfig
+        from src.pose_estimator import PoseEstimatorConfig
+        from src.training import PoseEstimatorTrainingModule
 
-        frac   = 0.15
-        T      = 100
-        cfg    = KeypointDiffusionConfig(dim_pos=16, dim_index=16, dim_time=16,
-                                         dim_hidden=16, num_layers=1,
-                                         num_train_steps=T)
-        model  = KeypointDiffusionModel(config=cfg, num_keypoints=14)
-        module = PoseDiffusionModule(model=model, start_inference_noise_frac=frac)
+        frac, T = 0.15, 100
+        cfg = PoseEstimatorConfig(
+            feature_extractor=NoneFeatureExtractorConfig(),
+            feature_embedder=NoneEmbedderConfig(),
+            decoder=GraphDiffusionDecoderConfig(
+                denoise_network=MlpDenoiseNetworkConfig(num_layers=1, hidden_dim=16),
+                num_train_steps=T,
+                hidden_dim=16,
+                dim_pos=16,
+                dim_time=16,
+            ),
+        )
+        module = PoseEstimatorTrainingModule(
+            pose_estimator=cfg.build(), start_inference_noise_frac=frac
+        )
         module.eval()
+        decoder = module._decoder
 
         B = 4
         dummy_batch = {
@@ -581,30 +589,17 @@ class TestKeypointAPMetricIntegration:
             return kw["node_pos"], torch.zeros_like(kw["node_pos"])
 
         def capture_ddim(**kw):
-            captured["start_t"]  = kw.get("start_t")
-            captured["num_inf"]  = kw.get("num_inference_steps")
+            captured["start_t"] = kw.get("start_t")
+            captured["num_inf"] = kw.get("num_inference_steps")
             return kw["x_init"]
 
         with (
-            patch.object(module.model, "add_noise",   side_effect=capture_add_noise),
-            patch.object(module.model, "ddim_sample", side_effect=capture_ddim),
+            patch.object(decoder, "add_noise", side_effect=capture_add_noise),
+            patch.object(decoder, "ddim_sample", side_effect=capture_ddim),
         ):
             module._refine_prediction_batch(dummy_batch)
 
-        expected_t_start = max(1, round(T * frac))          # 15
-        expected_S       = expected_t_start                  # default: S = t_start
-
-        assert "timestep" in captured, "_refine_batch did not call add_noise"
-        assert "start_t"  in captured, "_refine_batch did not call ddim_sample"
-
-        assert (captured["timestep"] == expected_t_start).all(), (
-            f"add_noise timestep={captured['timestep'].unique().tolist()} "
-            f"but expected {expected_t_start} (= round(T*frac)={round(T*frac)}).  "
-            "Large noise at t=T would make AP=0 for any undertrained model."
-        )
-        assert captured["start_t"] == expected_t_start, (
-            f"ddim_sample start_t={captured['start_t']} but expected {expected_t_start}."
-        )
-        assert captured["num_inf"] == expected_S, (
-            f"ddim_sample num_inference_steps={captured['num_inf']} expected {expected_S}."
-        )
+        expected_t_start = max(1, round(T * frac))
+        assert (captured["timestep"] == expected_t_start).all()
+        assert captured["start_t"] == expected_t_start
+        assert captured["num_inf"] == expected_t_start

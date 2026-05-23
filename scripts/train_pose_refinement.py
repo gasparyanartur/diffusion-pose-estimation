@@ -8,17 +8,23 @@ Run from the project root so that relative data paths resolve correctly.
 Quick start (all defaults):
     python scripts/train_pose_refinement.py
 
+Fast smoke run (2 epochs, batch 4, no augmentations, no AP eval):
+    python scripts/train_pose_refinement.py training_module=diffusion_minimal data=crowdpose_minimal
+
 Switch config groups:
-    python scripts/train_pose_refinement.py model=large
+    python scripts/train_pose_refinement.py pose_estimator=default
+    python scripts/train_pose_refinement.py pose_estimator=dino_bilinear
     python scripts/train_pose_refinement.py hardware=gpu
-    python scripts/train_pose_refinement.py dino=dinov3_vits16
 
 Override individual values:
-    python scripts/train_pose_refinement.py run_name=exp_large train.lr=3e-4 train.max_epochs=200
-    python scripts/train_pose_refinement.py model.dim_hidden=256 model.num_layers=6
+    python scripts/train_pose_refinement.py run_name=exp1 training_module.lr=3e-4 training_module.max_epochs=200
+    python scripts/train_pose_refinement.py pose_estimator.decoder.num_train_steps=200
+    python scripts/train_pose_refinement.py pose_estimator.decoder.denoise_network.num_layers=6
+    python scripts/train_pose_refinement.py training_module.augmentations.aug_jitter=false training_module.losses.use_bone_loss=false
+    python scripts/train_pose_refinement.py data.batch_size=8 data.num_workers=0
 
 Resume from a checkpoint:
-    python scripts/train_pose_refinement.py train.resume=results/diffusion_training/run/ts/checkpoints/last.ckpt
+    python scripts/train_pose_refinement.py training_module.resume=results/pose_estimator_training/run/ts/checkpoints/last.ckpt
 """
 
 from __future__ import annotations
@@ -38,7 +44,6 @@ from pathlib import Path
 import hydra
 import torch
 from hydra.core.hydra_config import HydraConfig
-from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -49,8 +54,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
-from src.data import PoseDataset
-from src.model import KeypointDiffusionConfig, KeypointDiffusionModel, PoseDiffusionModule
+from src.data import DataConfig
+from src.pose_estimator import PoseEstimatorConfig
+from src.training import TrainingModuleConfig
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +142,6 @@ def _setup_logging(log_file: Path) -> logging.Logger:
 
 @hydra.main(version_base="1.3", config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    pl.seed_everything(cfg.train.seed, workers=True)
-
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     ckpt_dir = out_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -147,92 +151,31 @@ def main(cfg: DictConfig) -> None:
     log.info("Output dir: %s", out_dir)
     log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
-    data_root = Path(to_absolute_path(cfg.data.root))
-    train_ann = data_root / cfg.data.train_ann
-    val_ann   = data_root / cfg.data.val_ann
-    test_ann  = data_root / cfg.data.test_ann
-    img_dir   = data_root / cfg.data.img_dir
+    # Build typed configs (polymorphic dispatch on _target_).
+    pose_cfg = PoseEstimatorConfig.from_hydra_config(cfg.pose_estimator)
+    tm_cfg = TrainingModuleConfig.from_hydra_config(cfg.training_module)
+    data_cfg = DataConfig.from_hydra_config(cfg.data)
 
-    for path, label in [
-        (train_ann, "data.train_ann"),
-        (val_ann,   "data.val_ann"),
-        (test_ann,  "data.test_ann"),
-        (img_dir,   "data.img_dir"),
-    ]:
-        if not path.exists():
-            log.error("%s path does not exist: %s", label, path)
-            sys.exit(1)
-
-    log.info("Loading datasets from %s ...", data_root)
-    train_ds = PoseDataset.from_path(train_ann, img_root=img_dir)
-    val_ds   = PoseDataset.from_path(val_ann,   img_root=img_dir)
-    test_ds  = PoseDataset.from_path(test_ann,  img_root=img_dir)
-    log.info(
-        "Dataset sizes — Train: %s  Val: %s  Test: %s",
-        f"{len(train_ds):,}", f"{len(val_ds):,}", f"{len(test_ds):,}",
-    )
+    pl.seed_everything(tm_cfg.seed, workers=True)
 
     use_gpu = cfg.hardware.accelerator in ("gpu", "cuda")
-    loader_kwargs = dict(
-        batch_size=cfg.train.batch_size,
-        num_workers=cfg.data.num_workers,
-        load_images=False,
-        pin_memory=use_gpu,
-    )
-    train_loader = train_ds.create_dataloader(**loader_kwargs, shuffle=True,  drop_last=True)
-    val_loader   = val_ds.create_dataloader(**loader_kwargs,   shuffle=False, drop_last=False)
-    test_loader  = test_ds.create_dataloader(**loader_kwargs,  shuffle=False, drop_last=False)
+    pose_estimator = pose_cfg.build()
+    data_module = data_cfg.build(pin_memory=use_gpu)
+    module = tm_cfg.build(pose_estimator, data=data_module)
 
-    use_image_cond = cfg.dino.model_name is not None
-    model_config = KeypointDiffusionConfig(
-        name=cfg.run_name,
-        **OmegaConf.to_container(cfg.model, resolve=True),
-    )
-    model = KeypointDiffusionModel(config=model_config, num_keypoints=14)
+    log.info("FeatureExtractor : %s", type(pose_estimator.feature_extractor).__name__)
+    log.info("FeatureEmbedder  : %s", type(pose_estimator.feature_embedder).__name__)
+    log.info("Decoder          : %s", type(pose_estimator.decoder).__name__)
+    n_params = sum(p.numel() for p in pose_estimator.parameters() if p.requires_grad)
+    log.info("PoseEstimator    —  %s trainable parameters", f"{n_params:,}")
+    log.info("DataModule       : %s  (batch=%d, num_workers=%d)",
+             type(data_module).__name__, data_cfg.batch_size, data_cfg.num_workers)
+    log.info("TrainingModule   : %s", type(module).__name__)
 
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    log.info("%s  —  %s trainable parameters", type(model).__name__, f"{n_params:,}")
-    if use_image_cond:
-        log.info(
-            "DINO: model=%s  radius=%d  train_cache=%s  val_cache=%s  test_cache=%s",
-            cfg.dino.model_name, cfg.dino.neighborhood_radius,
-            cfg.dino.cache_train or "(live)", cfg.dino.cache_val or "(live)",
-            cfg.dino.cache_test or "(live)",
-        )
-
-    module = PoseDiffusionModule(
-        model=model,
-        lr=cfg.train.lr,
-        weight_decay=cfg.train.weight_decay,
-        lr_T_max=cfg.train.max_epochs if cfg.train.cosine_lr else None,
-        lr_warmup_epochs=cfg.train.lr_warmup_epochs,
-        lr_min_frac=cfg.train.lr_min_frac,
-        cfg_guidance_scale=cfg.train.cfg_guidance_scale,
-        val_ann_file=str(val_ann),
-        test_ann_file=str(test_ann),
-        val_pred_cache=str(cfg.data.val_pred_cache)   if cfg.data.val_pred_cache  else None,
-        test_pred_cache=str(cfg.data.test_pred_cache) if cfg.data.test_pred_cache else None,
-        num_inference_steps=cfg.train.num_inference_steps,
-        start_inference_noise_frac=cfg.train.start_inference_noise_frac,
-        raw_refiner=cfg.train.raw_refiner,
-        ap_batch_size=cfg.data.ap_batch_size,
-        ap_eval_interval=cfg.train.ap_eval_interval,
-        ap_step_counts=list(cfg.train.ap_step_counts) if cfg.train.ap_step_counts else None,
-        dino_model_name=cfg.dino.model_name,
-        dino_neighborhood_radius=cfg.dino.neighborhood_radius,
-        dino_cache_train=str(cfg.dino.cache_train) if cfg.dino.cache_train else None,
-        dino_cache_val=str(cfg.dino.cache_val)     if cfg.dino.cache_val   else None,
-        dino_cache_test=str(cfg.dino.cache_test)   if cfg.dino.cache_test  else None,
-        dino_conditioner_type=OmegaConf.select(cfg.dino, "conditioner_type", default="simple"),
-        dino_inner_dim=OmegaConf.select(cfg.dino, "inner_dim", default=256),
-        dino_num_heads=OmegaConf.select(cfg.dino, "num_heads", default=4),
-    )
-
-    running_loss_window = cfg.train.running_loss_window
-    monitor_key = f"running_loss_{running_loss_window}"
+    monitor_key = f"running_loss_{tm_cfg.running_loss_window}"
     callbacks: list[pl.Callback] = [
         GradNormLogger(),
-        RunningLossLogger(window=running_loss_window),
+        RunningLossLogger(window=tm_cfg.running_loss_window),
         ModelCheckpoint(
             dirpath=ckpt_dir,
             filename=f"epoch{{epoch:03d}}-{monitor_key}={{{monitor_key}:.4f}}",
@@ -244,10 +187,10 @@ def main(cfg: DictConfig) -> None:
         ),
         LearningRateMonitor(logging_interval="epoch"),
     ]
-    if cfg.train.early_stop_patience > 0:
+    if tm_cfg.early_stop_patience > 0:
         callbacks.append(EarlyStopping(
             monitor="val/loss",
-            patience=cfg.train.early_stop_patience,
+            patience=tm_cfg.early_stop_patience,
             mode="min",
             verbose=True,
         ))
@@ -257,34 +200,33 @@ def main(cfg: DictConfig) -> None:
         CSVLogger(save_dir=str(out_dir),          name="csv_logs", version=""),
     ]
 
-    grad_clip = cfg.train.grad_clip if cfg.train.grad_clip > 0 else None
+    grad_clip = tm_cfg.grad_clip if tm_cfg.grad_clip > 0 else None
     trainer = pl.Trainer(
         accelerator=cfg.hardware.accelerator,
         devices=_devices_arg(cfg.hardware.devices),
         precision=cfg.hardware.precision,
-        max_epochs=cfg.train.max_epochs,
+        max_epochs=tm_cfg.max_epochs,
         gradient_clip_val=grad_clip,
         callbacks=callbacks,
         logger=loggers,
-        log_every_n_steps=cfg.train.log_every_n_steps,
+        log_every_n_steps=tm_cfg.log_every_n_steps,
         deterministic=False,
     )
 
     log.info(
         "Training: epochs=%d  batch=%d  lr=%g  cosine_lr=%s",
-        cfg.train.max_epochs, cfg.train.batch_size, cfg.train.lr, cfg.train.cosine_lr,
+        tm_cfg.max_epochs, data_cfg.batch_size, tm_cfg.lr, tm_cfg.cosine_lr,
     )
-    resume = str(cfg.train.resume) if cfg.train.resume else None
+    resume = tm_cfg.resume
     if resume:
         log.info("Resuming from: %s", resume)
 
-    if cfg.train.compile:
-        log.info("torch.compile: compiling model.backward_process (dynamic=True)...")
-        module.model.backward_process = torch.compile(
-            module.model.backward_process, dynamic=True
-        )
+    if tm_cfg.compile:
+        log.info("torch.compile: compiling decoder.predict_delta (dynamic=True)...")
+        decoder = module.pose_estimator.decoder
+        decoder.predict_delta = torch.compile(decoder.predict_delta, dynamic=True)
 
-    trainer.fit(module, train_loader, val_loader, ckpt_path=resume)
+    trainer.fit(module, datamodule=data_module, ckpt_path=resume)
 
     best_ckpt  = trainer.checkpoint_callback.best_model_path   # type: ignore[union-attr]
     best_score = trainer.checkpoint_callback.best_model_score  # type: ignore[union-attr]
@@ -293,7 +235,7 @@ def main(cfg: DictConfig) -> None:
 
     if best_ckpt:
         log.info("Evaluating best checkpoint on test set...")
-        output = trainer.test(module, dataloaders=test_loader, ckpt_path=best_ckpt)
+        output = trainer.test(module, datamodule=data_module, ckpt_path=best_ckpt)
         for metric, value in output[0].items():
             log.info("test  %-30s %.6f", metric, value)
         dump_path = out_dir / "test_results.json"
