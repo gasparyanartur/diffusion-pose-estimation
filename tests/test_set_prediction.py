@@ -150,14 +150,19 @@ def test_set_prediction_loss_no_gt():
 def test_set_prediction_loss_smoke_and_grad():
     loss_fn = _make_loss()
     pred_obj = torch.zeros(1, 5, requires_grad=True)
-    pred_kp  = (torch.rand(1, 5, K, 2) * 2 - 1).requires_grad_(True)
+    # Initialise predictions near GT so OKS is in the active gradient range.
+    # Random keypoints produce d² >> 2s²σ², causing exp(-d²/…) ≈ 0 and
+    # vanishing gradients; small perturbations around GT avoid that.
+    gt_kp = torch.rand(1, 2, K, 2) * 2 - 1
+    pred_kp = (gt_kp[:, :1, :, :].expand(1, 5, K, 2)
+               + torch.randn(1, 5, K, 2) * 0.01).detach().requires_grad_(True)
     pred = {
         "scores_logits": pred_obj,
         "keypoints":     pred_kp,
         "vis_logits":    torch.zeros(1, 5, K, requires_grad=True),
     }
     targets = {
-        "gt_keypoints": torch.rand(1, 2, K, 2) * 2 - 1,
+        "gt_keypoints": gt_kp,
         "gt_labeled":   torch.ones(1, 2, K),
         "gt_visible":   torch.ones(1, 2, K),
         "person_scale": torch.full((1, 2), 0.4),

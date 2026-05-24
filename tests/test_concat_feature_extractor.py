@@ -36,8 +36,8 @@ def test_output_shape_two_backbones():
     extractor = _two_cnn_extractor(dim=32)
     image = torch.rand(2, 3, 64, 48)
     out = extractor(image=image)
-    assert "tokens" in out
-    B, T, D = out["tokens"].shape
+    assert "spatial" in out
+    B, T, D = out["spatial"].shape
     assert B == 2
     assert D == 32
     # CNN stride=16 → 64//16=4 and 48//16=3 → 4*3=12 tokens each, 12+12=24 total
@@ -49,7 +49,7 @@ def test_output_shape_single_backbone():
     extractor = ConcatFeatureExtractor(backbones=[b], dim=8)
     image = torch.rand(1, 3, 32, 32)
     out = extractor(image=image)
-    B, T, D = out["tokens"].shape
+    B, T, D = out["spatial"].shape
     assert B == 1
     assert D == 8
     # 32//16=2 → 2*2=4 tokens
@@ -72,7 +72,7 @@ def test_output_equals_manual_concat():
     image = torch.rand(2, 3, 64, 48)
 
     with torch.no_grad():
-        result = extractor(image=image)["tokens"]  # [B, T, dim]
+        result = extractor(image=image)["spatial"]  # [B, T, dim]
 
         # Manual backbone 0
         feat0 = b1(image=image)["spatial"]          # [B, 64, H, W]
@@ -178,7 +178,7 @@ def test_gradients_flow_to_projections():
     extractor = _two_cnn_extractor(dim=16)
     image = torch.rand(2, 3, 32, 32)
     out = extractor(image=image)
-    out["tokens"].sum().backward()
+    out["spatial"].sum().backward()
     for i in range(2):
         for name, p in [
             (f"projs[{i}].weight", extractor.projs[i].weight),

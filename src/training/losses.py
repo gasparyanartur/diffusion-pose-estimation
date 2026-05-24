@@ -371,3 +371,262 @@ class SetPredictionLoss(nn.Module):
             "mean_oks":         mean_oks,
             "matched_count":    matched_count,
         }
+
+
+# ---------------------------------------------------------------------------
+# Box set-prediction utilities (free functions — pure math, no state)
+# ---------------------------------------------------------------------------
+
+
+def box_cxcywh_to_xyxy(boxes: Tensor) -> Tensor:
+    """Convert ``(cx, cy, w, h)`` → ``(x1, y1, x2, y2)``.
+
+    Negative widths/heights are not corrected here; the caller is expected to
+    feed sensible boxes (matcher and GIoU clamp where necessary).
+    """
+    cx, cy, w, h = boxes.unbind(dim=-1)
+    half_w = w * 0.5
+    half_h = h * 0.5
+    return torch.stack(
+        [cx - half_w, cy - half_h, cx + half_w, cy + half_h],
+        dim=-1,
+    )
+
+
+def pairwise_giou(
+    boxes_a: Tensor,   # [A, 4] xyxy
+    boxes_b: Tensor,   # [B, 4] xyxy
+    eps: float = 1e-7,
+) -> Tensor:           # [A, B]
+    """Pairwise generalised IoU between two sets of xyxy boxes.
+
+    GIoU ∈ [-1, 1].  Identical boxes → 1, disjoint boxes → < 1 (and can be
+    negative when the enclosing box is much larger than the union).
+    """
+    A = boxes_a.shape[0]
+    B = boxes_b.shape[0]
+    if A == 0 or B == 0:
+        return boxes_a.new_zeros(A, B)
+
+    area_a = (boxes_a[:, 2] - boxes_a[:, 0]).clamp_min(0) * (boxes_a[:, 3] - boxes_a[:, 1]).clamp_min(0)
+    area_b = (boxes_b[:, 2] - boxes_b[:, 0]).clamp_min(0) * (boxes_b[:, 3] - boxes_b[:, 1]).clamp_min(0)
+
+    inter_lt = torch.maximum(boxes_a[:, None, :2], boxes_b[None, :, :2])  # [A, B, 2]
+    inter_rb = torch.minimum(boxes_a[:, None, 2:], boxes_b[None, :, 2:])  # [A, B, 2]
+    inter_wh = (inter_rb - inter_lt).clamp_min(0)
+    inter = inter_wh[..., 0] * inter_wh[..., 1]                            # [A, B]
+
+    union = area_a[:, None] + area_b[None, :] - inter
+    iou = inter / union.clamp_min(eps)
+
+    encl_lt = torch.minimum(boxes_a[:, None, :2], boxes_b[None, :, :2])
+    encl_rb = torch.maximum(boxes_a[:, None, 2:], boxes_b[None, :, 2:])
+    encl_wh = (encl_rb - encl_lt).clamp_min(0)
+    encl_area = encl_wh[..., 0] * encl_wh[..., 1]
+
+    giou = iou - (encl_area - union) / encl_area.clamp_min(eps)
+    return giou
+
+
+def box_matching_cost(
+    pred_boxes_cxcywh: Tensor,  # [N, 4]
+    gt_boxes_cxcywh: Tensor,    # [P, 4]
+    obj_logits: Tensor,         # [N]
+    lambda_l1: float = 1.0,
+    lambda_giou: float = 1.0,
+    lambda_obj: float = 0.1,
+) -> Tensor:                    # [N, P]
+    """Combined L1 + GIoU + objectness cost for Hungarian matching."""
+    N = pred_boxes_cxcywh.shape[0]
+    P = gt_boxes_cxcywh.shape[0]
+    if N == 0 or P == 0:
+        return pred_boxes_cxcywh.new_zeros(N, P)
+
+    l1_cost = (pred_boxes_cxcywh[:, None, :] - gt_boxes_cxcywh[None, :, :]).abs().sum(dim=-1)
+    giou = pairwise_giou(
+        box_cxcywh_to_xyxy(pred_boxes_cxcywh),
+        box_cxcywh_to_xyxy(gt_boxes_cxcywh),
+    )
+    giou_cost = -giou
+    obj_cost = -F.logsigmoid(obj_logits)[:, None].expand(N, P)
+    return lambda_l1 * l1_cost + lambda_giou * giou_cost + lambda_obj * obj_cost
+
+
+def hungarian_box_match(cost: Tensor) -> tuple[Tensor, Tensor]:
+    """Min-cost bipartite assignment for a single image.
+
+    Returns ``(slot_idx, gt_idx)`` of length ``min(N, P)``. Cost tensor is
+    detached internally so this is safe to call inside a training step.
+    """
+    N, P = cost.shape
+    device = cost.device
+    if N == 0 or P == 0:
+        empty = torch.zeros(0, dtype=torch.long, device=device)
+        return empty, empty
+    assignment = batch_linear_assignment(cost.detach().unsqueeze(0))   # [1, N, P]
+    row, col = assignment_to_indices(assignment)
+    return row[0], col[0]
+
+
+# ---------------------------------------------------------------------------
+# Box set-prediction loss
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SetBoxDiffusionLossWeights:
+    """Multipliers for the components of :class:`SetBoxDiffusionLoss`."""
+
+    l1: float = 5.0
+    giou: float = 2.0
+    diff_l2: float = 1.0
+    obj_bce: float = 1.0
+    matcher_lambda_l1: float = 5.0
+    matcher_lambda_giou: float = 2.0
+    matcher_lambda_obj: float = 0.1
+
+
+class SetBoxDiffusionLoss(nn.Module):
+    """Hungarian-matched diffusion loss for the box set decoder.
+
+    Matched (slot, gt) pairs receive L1 + GIoU + L2 (the diffusion ``x₀``
+    regression term). All slots receive a BCE objectness loss with dynamic
+    ``pos_weight`` (same policy as :class:`ObjectnessLoss`).
+
+    forward inputs
+    --------------
+    pred:
+        pred_boxes  [B, N, 4]  cxcywh in padded-canvas canonical space
+        obj_logits  [B, N]
+    targets:
+        gt_boxes_canon  [B, P_max, 4]  cxcywh canonical
+        gt_box_labeled  [B, P_max]     {0, 1} — padded GTs have label 0
+
+    forward outputs
+    ---------------
+    total          weighted sum
+    l1_loss        mean L1 over matched slots
+    giou_loss      mean (1 - GIoU) over matched slots
+    diff_l2_loss   mean MSE over matched slots (x₀ regression)
+    obj_loss       BCE over all slots with dynamic pos_weight
+    matched        total matched count across batch
+    """
+
+    _max_pos_weight: float = 20.0
+
+    def __init__(self, weights: SetBoxDiffusionLossWeights | None = None) -> None:
+        super().__init__()
+        self.weights = weights if weights is not None else SetBoxDiffusionLossWeights()
+
+    def forward(
+        self,
+        pred: dict[str, Tensor],
+        targets: dict[str, Tensor],
+    ) -> dict[str, Tensor]:
+        pred_boxes = pred["pred_boxes"]   # [B, N, 4]
+        obj_logits = pred["obj_logits"]   # [B, N]
+        gt_boxes   = targets["gt_boxes_canon"].to(pred_boxes.device)
+        gt_labeled = targets["gt_box_labeled"].to(pred_boxes.device)
+        B          = pred_boxes.shape[0]
+
+        component_keys = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss")
+        accum: dict[str, list[Tensor]] = {k: [] for k in component_keys}
+        matched_total = 0
+        for b in range(B):
+            per = self._forward_single(
+                pred_boxes[b], obj_logits[b],
+                gt_boxes[b], gt_labeled[b],
+            )
+            for k in component_keys:
+                accum[k].append(per[k])
+            matched_total += per["matched_count"]
+
+        components = {k: torch.stack(accum[k]).mean() for k in component_keys}
+        w = self.weights
+        total = (
+            w.l1      * components["l1_loss"]
+            + w.giou    * components["giou_loss"]
+            + w.diff_l2 * components["diff_l2_loss"]
+            + w.obj_bce * components["obj_loss"]
+        )
+        return {
+            "total":         total,
+            "l1_loss":       components["l1_loss"],
+            "giou_loss":     components["giou_loss"],
+            "diff_l2_loss":  components["diff_l2_loss"],
+            "obj_loss":      components["obj_loss"],
+            "matched":       torch.tensor(float(matched_total), device=pred_boxes.device),
+        }
+
+    def _forward_single(
+        self,
+        pred_boxes: Tensor,   # [N, 4]
+        obj_logits: Tensor,   # [N]
+        gt_boxes: Tensor,     # [P_max, 4]
+        gt_labeled: Tensor,   # [P_max]
+    ) -> dict[str, Tensor | int]:
+        N = pred_boxes.shape[0]
+        device = pred_boxes.device
+
+        keep = gt_labeled > 0
+        gt_boxes_kept = gt_boxes[keep]                  # [P, 4]
+        P = gt_boxes_kept.shape[0]
+
+        zero = pred_boxes.new_zeros(())
+        objectness_target = torch.zeros(N, device=device)
+
+        if P == 0:
+            obj_loss = self._objectness_bce(obj_logits, objectness_target, matched_count=0)
+            return {
+                "l1_loss":       zero,
+                "giou_loss":     zero,
+                "diff_l2_loss":  zero,
+                "obj_loss":      obj_loss,
+                "matched_count": 0,
+            }
+
+        cost = box_matching_cost(
+            pred_boxes, gt_boxes_kept, obj_logits,
+            lambda_l1=self.weights.matcher_lambda_l1,
+            lambda_giou=self.weights.matcher_lambda_giou,
+            lambda_obj=self.weights.matcher_lambda_obj,
+        )
+        slot_idx, gt_idx = hungarian_box_match(cost)
+        matched_count = slot_idx.numel()
+        objectness_target[slot_idx] = 1.0
+
+        matched_pred = pred_boxes[slot_idx]              # [M, 4]
+        matched_gt   = gt_boxes_kept[gt_idx]             # [M, 4]
+
+        l1_loss = (matched_pred - matched_gt).abs().sum(dim=-1).mean()
+        giou_mat = pairwise_giou(
+            box_cxcywh_to_xyxy(matched_pred),
+            box_cxcywh_to_xyxy(matched_gt),
+        )
+        giou_loss = (1.0 - giou_mat.diagonal()).mean()
+        diff_l2_loss = ((matched_pred - matched_gt) ** 2).sum(dim=-1).mean()
+        obj_loss = self._objectness_bce(obj_logits, objectness_target, matched_count)
+
+        return {
+            "l1_loss":       l1_loss,
+            "giou_loss":     giou_loss,
+            "diff_l2_loss":  diff_l2_loss,
+            "obj_loss":      obj_loss,
+            "matched_count": matched_count,
+        }
+
+    def _objectness_bce(
+        self,
+        obj_logits: Tensor,
+        target: Tensor,
+        matched_count: int,
+    ) -> Tensor:
+        N = obj_logits.shape[0]
+        pos_weight_val = min(
+            (N - matched_count) / max(matched_count, 1),
+            self._max_pos_weight,
+        )
+        pos_weight = obj_logits.new_tensor([pos_weight_val])
+        return F.binary_cross_entropy_with_logits(
+            obj_logits, target, pos_weight=pos_weight,
+        )

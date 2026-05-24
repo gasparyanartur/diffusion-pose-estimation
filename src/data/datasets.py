@@ -24,7 +24,13 @@ from torch.utils.data import DataLoader, Dataset
 from src.base_config import BaseConfig
 from src.data.io import load_gt_annotations, read_image
 from src.data.sampler import SceneGraphSampler
-from src.data.transforms import keypoints_from_coco_anns, pixel_to_canonical, visibility_flags
+from src.data.transforms import (
+    bboxes_xywh_from_coco_anns,
+    boxes_xywh_to_padded_canonical,
+    keypoints_from_coco_anns,
+    pixel_to_canonical,
+    visibility_flags,
+)
 
 
 def _collate_with_images(batch: list[dict]) -> dict:
@@ -85,12 +91,14 @@ class PoseDataset(Dataset):
         samples = []
         for image_id, anns in by_image.items():
             kpts, vis = keypoints_from_coco_anns(anns, num_keypoints)
+            boxes_xywh = bboxes_xywh_from_coco_anns(anns)
             samples.append({
-                "image_id":   image_id,
-                "img_path":   image_paths.get(image_id, ""),
-                "img_hw":     image_sizes.get(image_id),  # (H, W) or None if missing
-                "keypoints":  kpts,
-                "visibility": vis,
+                "image_id":       image_id,
+                "img_path":       image_paths.get(image_id, ""),
+                "img_hw":         image_sizes.get(image_id),  # (H, W) or None if missing
+                "keypoints":      kpts,
+                "visibility":     vis,
+                "gt_boxes_pixel": boxes_xywh,
             })
 
         return cls(samples=samples, num_keypoints=num_keypoints)
@@ -264,15 +272,22 @@ class SetPoseDataset(Dataset):
         labeled, visible = visibility_flags(sample["visibility"].float())
         person_scale = compute_person_scale(keypoints_canon, labeled)
 
+        boxes_xywh_pixel = sample.get("gt_boxes_pixel")
+        if boxes_xywh_pixel is None:
+            boxes_xywh_pixel = torch.zeros(sample["keypoints"].shape[0], 4, dtype=torch.float32)
+        gt_box_labeled = torch.ones(boxes_xywh_pixel.shape[0], dtype=torch.float32)
+
         return {
-            "image":        image,
-            "gt_keypoints": keypoints_canon,
-            "gt_labeled":   labeled,
-            "gt_visible":   visible,
-            "person_scale": person_scale,
-            "image_id":     int(sample["image_id"]),
-            "img_path":     sample["img_path"],
-            "img_hw":       torch.tensor([original_h, original_w], dtype=torch.float32),
+            "image":          image,
+            "gt_keypoints":   keypoints_canon,
+            "gt_labeled":     labeled,
+            "gt_visible":     visible,
+            "person_scale":   person_scale,
+            "gt_boxes_pixel": boxes_xywh_pixel,
+            "gt_box_labeled": gt_box_labeled,
+            "image_id":       int(sample["image_id"]),
+            "img_path":       sample["img_path"],
+            "img_hw":         torch.tensor([original_h, original_w], dtype=torch.float32),
         }
 
 
@@ -293,6 +308,8 @@ def set_pose_collate(batch: list[dict]) -> dict:
     gt_visible   = torch.zeros(B, P_max, K)
     person_scale = torch.zeros(B, P_max)
     person_mask  = torch.zeros(B, P_max)
+    gt_boxes_pixel = torch.zeros(B, P_max, 4)
+    gt_box_labeled = torch.zeros(B, P_max)
     img_hw       = torch.zeros(B, 2)
 
     for i, s in enumerate(batch):
@@ -303,18 +320,24 @@ def set_pose_collate(batch: list[dict]) -> dict:
             gt_visible[i, :P]   = s["gt_visible"]
             person_scale[i, :P] = s["person_scale"]
             person_mask[i, :P]  = 1.0
+            if "gt_boxes_pixel" in s:
+                gt_boxes_pixel[i, :P] = s["gt_boxes_pixel"]
+            if "gt_box_labeled" in s:
+                gt_box_labeled[i, :P] = s["gt_box_labeled"]
         img_hw[i] = s["img_hw"]
 
     return {
-        "image":        images,
-        "gt_keypoints": gt_keypoints,
-        "gt_labeled":   gt_labeled,
-        "gt_visible":   gt_visible,
-        "person_scale": person_scale,
-        "person_mask":  person_mask,
-        "img_hw":       img_hw,
-        "image_id":     torch.tensor([s["image_id"] for s in batch], dtype=torch.long),
-        "img_path":     [s["img_path"] for s in batch],
+        "image":          images,
+        "gt_keypoints":   gt_keypoints,
+        "gt_labeled":     gt_labeled,
+        "gt_visible":     gt_visible,
+        "person_scale":   person_scale,
+        "person_mask":    person_mask,
+        "gt_boxes_pixel": gt_boxes_pixel,
+        "gt_box_labeled": gt_box_labeled,
+        "img_hw":         img_hw,
+        "image_id":       torch.tensor([s["image_id"] for s in batch], dtype=torch.long),
+        "img_path":       [s["img_path"] for s in batch],
     }
 
 

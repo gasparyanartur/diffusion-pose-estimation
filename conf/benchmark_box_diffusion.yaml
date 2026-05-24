@@ -1,0 +1,36 @@
+# Hydra root config for scripts/train_box_diffusion.py
+#
+# Architecture: backbone → BoxSetDiffusionDecoder (EDM diffusion over a set of
+# bounding boxes, DETR-style Hungarian matching).
+#
+# Examples:
+#   python scripts/train_box_diffusion.py
+#   python scripts/train_box_diffusion.py training_module.max_epochs=200
+#   python scripts/train_box_diffusion.py data=crowdpose_debug \
+#       training_module.max_epochs=2 training_module.val_ap_every_n_epochs=1
+#   python scripts/train_box_diffusion.py skip_training=true \
+#       training_module.resume=results/.../checkpoints/last.ckpt
+#
+# Backbone / decoder coupling: ``decoder.image_token_dim`` is set automatically
+# from ``backbone.out_channels`` at runtime (see scripts/train_box_diffusion.py).
+# No manual override needed when swapping backbones.
+
+defaults:
+  - backbone: c-radio-v4-h
+  - decoder: box_set
+  - training_module: box_diffusion
+  - data: crowdpose_set_prediction
+  - hardware: auto
+  - _self_
+
+run_name: box_diffusion_benchmark
+out_dir: results/box_diffusion_benchmark
+
+skip_training: false
+compile: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

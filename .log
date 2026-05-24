@@ -1,3 +1,149 @@
+[2026-05-24] Box-diffusion pipeline I7 — Hydra configs + entry script + smoke run
+
+- src/training/box_diffusion_module.py: added pydantic
+  `SetBoxDiffusionLossWeightsConfig` (mirrors `SetBoxDiffusionLossWeights`
+  dataclass; `to_dataclass()` adapter). Rewrote `BoxSetDiffusionModuleConfig`
+  with trainer-level fields (`cosine_lr`, `max_epochs`, `seed`, `grad_clip`,
+  `log_every_n_steps`, `resume`, augmentation knobs, diffusion knobs,
+  nested `weights`); `build(backbone, decoder, val_ann_file, test_ann_file)`
+  resolves `lr_T_max=max_epochs if cosine_lr else None`.
+- src/training/__init__.py: export `SetBoxDiffusionLossWeightsConfig`.
+- src/decoders/diffusion/__init__.py + src/decoders/__init__.py: re-export
+  `BoxSetDiffusionDecoder` / `BoxSetDiffusionDecoderConfig` for Hydra.
+- conf/training_module/box_diffusion.yaml (NEW), conf/decoder/box_set.yaml
+  (NEW), conf/benchmark_box_diffusion.yaml (NEW) — Hydra wiring mirroring
+  `benchmark_backbone.yaml`.
+- scripts/train_box_diffusion.py (NEW): Hydra entry; builds backbone +
+  decoder + data + module from configs; `ModelCheckpoint(monitor="val/bbox/AP",
+  mode="max", every_n_epochs=val_ap_every_n_epochs)`; TB + CSV loggers;
+  `trainer.fit` then `trainer.test` on best checkpoint; dumps
+  `test_results.json`.
+- src/metrics.py: `BoxAPMetric.__init__` now populates missing `area`/`ignore`
+  fields on loaded COCO GT (CrowdPose annotations omit both, breaking
+  `COCOeval(iouType="bbox")`).
+- Smoke run on `data=crowdpose_set_prediction +data.subset_frac=0.001`
+  (2 epochs, CPU): completed train → val (AP populated) → test → JSON.
+- All 30 `tests/test_metrics.py` tests still pass.
+
+
+
+- src/data/transforms.py: `boxes_padded_canonical_to_pixel_xywh` (batched
+  inverse of the canonical mapper); used by the module to feed BoxAPMetric.
+- src/training/augmentations.py: `random_hflip_image_and_boxes` — per-sample
+  hflip with `cx → -cx`.
+- src/training/box_diffusion_module.py (NEW): `_image_tokens_and_centers`
+  helper + `BoxSetDiffusionModule(pl.LightningModule)` +
+  `BoxSetDiffusionModuleConfig`. Uniform-σ sampling per element; pad GTs to N
+  slots with random unstructured targets; `σ·ε` noise; training_step + val_step
+  + test_step + on_validation_epoch_end + on_test_epoch_end with multi- and
+  single-step BoxAPMetric flushes. Decoder type imported under TYPE_CHECKING
+  to avoid a circular import via `src.training.diffusion_modules`.
+- src/training/__init__.py: export the new module / config / aug.
+- tests/test_box_diffusion_module.py (NEW): 9 tests covering helpers, round-trip,
+  training_step (vanilla + augmented), validation_step (off-cycle, on-cycle),
+  test_step, and configure_optimizers.
+- All 9 new tests pass; 66 box-pipeline + data tests pass overall.
+
+[2026-05-24] Box-diffusion pipeline I5 — EDM Heun sampler + BoxAPMetric
+
+- src/decoders/diffusion/box_set.py: `edm_sigma_schedule` static helper
+  (Karras et al., trailing 0 for clean output). `BoxSetDiffusionDecoder.sample`
+  EDM Heun sampler on the x₀-prediction parameterisation. Single-step
+  (`num_inference_steps=1`) returns the σ_max forward pass directly; multi-step
+  does Euler + Heun corrector. Defaults: σ_min=0.002, σ_max=1.0, ρ=7.0.
+  Final obj_logits taken from the last decoder call. Wrapped in
+  `@torch.no_grad()`. Accepts `x_init` and a `torch.Generator` for
+  reproducibility.
+- src/metrics.py: new `BoxAPMetric` wrapping `pycocotools.cocoeval.COCOeval`
+  with `iouType="bbox"`. Constructor accepts `ann_file` or a pre-built `COCO`.
+  Update filters zero-area boxes, unknown image ids, and low-confidence dets.
+  `compute()` returns 12 AP/AR keys (`bbox/AP`, `bbox/AP50`, ..., `bbox/AR@100/l`).
+  COCOeval stdout suppressed.
+- tests/test_box_diffusion_sampler.py (NEW): 8 sampler unit tests.
+- tests/test_box_ap_metric.py (NEW): 7 AP-metric unit tests on a tiny
+  synthetic in-memory COCO — perfect-prediction case yields AP≈0.99+;
+  disjoint predictions yield AP=0.
+- All 36 box-pipeline tests pass; 30 pre-existing metric tests still pass.
+
+[2026-05-24] Box-diffusion pipeline I4 — SetBoxDiffusionLoss
+
+- src/training/losses.py (extended): new free functions `box_cxcywh_to_xyxy`,
+  `pairwise_giou` ([A,B] GIoU matrix including enclosing-box term),
+  `box_matching_cost` (λ·L1 + λ·(−GIoU) + λ·(−logsigmoid obj)),
+  `hungarian_box_match` (reuses `batch_linear_assignment`). New
+  `SetBoxDiffusionLossWeights` dataclass and `SetBoxDiffusionLoss(nn.Module)`.
+  Matched pairs get L1 + GIoU + diff-L2 (x₀ regression); all slots get BCE
+  objectness with dynamic pos_weight (cap 20, same policy as ObjectnessLoss).
+- src/training/__init__.py: exports new public names.
+- tests/test_box_diffusion_loss.py: 12 unit tests — coord conversion shape
+  and values, GIoU identity/disjoint/empty, cost shape/finiteness, hungarian
+  picks perfect-overlap rows, hungarian empty, full-loss key/finite check,
+  gradient flow into pred_boxes and obj_logits, empty-GT case (matched=0,
+  box components 0, obj_loss finite, total = w_obj·obj_loss),
+  perfect-prediction case (all box components < 1e-5). All pass; the 47
+  existing set-prediction tests still pass.
+
+[2026-05-24] BoxSetDiffusionDecoderConfig + smaller default num_blocks
+
+- src/decoders/diffusion/box_set.py: default `num_blocks` 6 → 3. Added
+  `BoxSetDiffusionDecoderConfig(BaseConfig)` mirroring all 13 constructor
+  args with a `build()` method. Matches the pattern used by the feature
+  extractor configs (ResNet, DINO, Radio, etc.). Existing 8 decoder tests
+  still pass.
+
+[2026-05-24] Box-diffusion pipeline I3 — BoxSetDiffusionDecoder forward
+
+- src/decoders/diffusion/box_set.py (NEW): `BoxSetDiffusionDecoder`.
+  Inputs: noisy_boxes [B, N, 4] (canonical cx/cy/w/h), sigma [B],
+  image_tokens [B, T, C], patch_centers [T, 2] in [-1, 1], optional
+  image_key_padding_mask. Pipeline: FourierFeatures(4→D) + learned slot
+  queries; image_proj(C→D) + sinusoidal PE from patch centres; K ×
+  TimeFiLMTransformerBlock(self-attn + cross-attn to image); obj branch
+  (FiLM-FFN + Linear→1); box branch (FiLM-FFN + cross-attn to obj_rep +
+  FiLM-FFN refine + Linear→4). Outputs {pred_boxes [B,N,4],
+  obj_logits [B,N]}.
+- tests/test_box_set_decoder.py: 8 tests — shapes, finiteness, extreme σ
+  clamp via sigma_log_offset, image key-padding mask, backward, slot-count
+  validation, dim%4 validation, and (after FiLM-weight perturbation) that
+  σ changes the output. All pass.
+- BaseConfig wiring (`BoxSetDiffusionDecoderConfig`) deferred to I7.
+
+[2026-05-24] Box-diffusion pipeline I2 — Fourier + TimeFiLM building blocks
+
+- src/training/diffusion_modules.py (NEW):
+  - FourierFeatures: log-spaced sin/cos bank (in_dim, num_bands, scale)
+    followed by Linear→GELU→Linear. Handles scalar (σ) or vector (box coord)
+    inputs. Frequencies registered as a non-persistent buffer.
+  - TimeFiLMFFN: pre-norm FFN; FiLM(γ, β) drawn from time embedding via a
+    zero-init Linear so the block is identity-FFN at init (training-stable).
+  - TimeFiLMTransformerBlock: pre-norm self-attn + optional cross-attn +
+    FiLM-FFN; supports separate `cross_dim` and `context_key_padding_mask`.
+- tests/test_diffusion_modules.py: 14 unit tests covering output shapes,
+  identity-at-init behaviour, FiLM activation after weight perturbation,
+  backward, multi-dim Fourier input, key-padding masking. All 14 pass.
+
+[2026-05-24] Box-diffusion pipeline I1 — GT box loading + canonical conversion
+
+- src/data/transforms.py: added `bboxes_xywh_from_coco_anns` (tolerates
+  missing `bbox`) and `boxes_xywh_to_padded_canonical` (per-image helper
+  that maps pixel xywh -> padded-square canonical (cx, cy, w, h) with
+  centres in [-1, 1] and w/h in [0, 2]).
+- src/data/datasets.py: `PoseDataset.from_path` now stores
+  `gt_boxes_pixel` ([P, 4] xywh) on each sample; `SetPoseDataset.__getitem__`
+  emits `gt_boxes_pixel` and `gt_box_labeled` ([P] in {0, 1});
+  `set_pose_collate` pads both to per-batch P_max with zeros.
+- src/data/data_module.py: added `_boxes_to_padded_canonical_batch`
+  (vectorised across the batch using each row's `img_hw`).
+  `on_after_batch_transfer` emits `gt_boxes_canon` ([B, P_max, 4]) when the
+  padded-square (`max_size`) code path runs. Other resize modes left
+  unchanged.
+- tests/test_box_set_dataset.py: 7 new unit tests covering the pure
+  helpers, dataset emission, collate padding, and batched canonical
+  conversion. All 7 new + 44 existing data/set-prediction tests pass.
+- Known limitation: `PoseDataset.from_path` still filters annotations on
+  `num_keypoints > 0`, so bbox-only annotations are dropped. Will revisit
+  when wiring the box-only training config (recorded in `.plan`).
+
 [2026-05-23] YOLOv3 bounding box generation for CrowdPose
 
 - Created scripts/generate_boxes_yolov3.py: downloads YOLOv3 weights/cfg/names on first run,

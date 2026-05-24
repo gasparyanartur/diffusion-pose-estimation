@@ -12,6 +12,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.cnn import CNNFeatureExtractor
 from src.training.backbone_probe import BackboneProbeModule, ConvProbe, QueryProbe
 from src.training.diagnostics import compute_probe_diagnostics
@@ -111,7 +112,11 @@ def test_cross_attention_block_single_kv_token():
 
 def test_query_probe_output_shapes():
     head = QueryProbe(in_channels=128, feature_dim=64, num_heads=4, num_slots=10, num_keypoints=K)
-    feat = {"spatial": torch.rand(2, 128, 16, 12)}
+    spatial = torch.rand(2, 128, 16, 12)
+    feat = {
+        "spatial": spatial,
+        "patch_centers": make_patch_centers(16, 12, spatial.device, spatial.dtype),
+    }
     out = head(feat)
     assert out["keypoints"].shape == (2, 10, K, 2)
     assert out["scores"].shape == (2, 10)
@@ -121,13 +126,21 @@ def test_query_probe_output_shapes():
 def test_query_probe_varied_input_sizes():
     head = QueryProbe(in_channels=64, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
     for h, w in [(8, 6), (16, 12), (32, 24)]:
-        out = head({"spatial": torch.rand(2, 64, h, w)})
+        spatial = torch.rand(2, 64, h, w)
+        out = head({
+            "spatial": spatial,
+            "patch_centers": make_patch_centers(h, w, spatial.device, spatial.dtype),
+        })
         assert out["scores"].shape == (2, 5), f"Failed for {h}x{w}"
 
 
 def test_query_probe_gradient_flows():
     head = QueryProbe(in_channels=32, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
-    out = head({"spatial": torch.rand(2, 32, 8, 6, requires_grad=True)})
+    spatial = torch.rand(2, 32, 8, 6, requires_grad=True)
+    out = head({
+        "spatial": spatial,
+        "patch_centers": make_patch_centers(8, 6, spatial.device, spatial.detach().dtype),
+    })
     
     loss = out["scores"].sum() + out["keypoints"].sum() + out["vis_logits"].sum()
     loss.backward()

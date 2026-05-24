@@ -54,7 +54,7 @@ def test_out_channels_matches_output():
 def test_output_key_is_spatial():
     m = ResNetFeatureExtractor(pretrained=False)
     out = m(image=_image())
-    assert list(out.keys()) == ["spatial"]
+    assert set(out.keys()) == {"spatial", "patch_centers"}
 
 
 def test_requires_image_not_none():
