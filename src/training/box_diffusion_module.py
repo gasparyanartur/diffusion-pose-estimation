@@ -157,7 +157,7 @@ class BoxSetDiffusionModule(BaseTrainingModule):
 
         self._log_loss_names = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "ranking_loss", "matched")
 
-        self.save_hyperparameters(ignore=["backbone", "decoder"])
+        self.save_hyperparameters(ignore=["backbone", "decoder", "weights"])
 
     # ------------------------------------------------------------------
     # Helpers

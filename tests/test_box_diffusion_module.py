@@ -247,3 +247,21 @@ def test_decoder_branch_blocks_zero_counts_still_runs():
     out = decoder(noisy_boxes=noisy, sigma=sigma, image_tokens=tokens, patch_centers=centers)
     assert out["pred_boxes"].shape == (B, N_SLOTS, 4)
     assert out["obj_logits"].shape == (B, N_SLOTS)
+
+
+def test_decoder_wider_trunk_with_branch_projection():
+    """dim=512 trunk projects independently to obj_dim and box_dim; output shapes are correct."""
+    B, T, C = 2, 9, FEAT_C
+    decoder = BoxSetDiffusionDecoder(
+        num_slots=N_SLOTS, dim=64, obj_dim=32, box_dim=48, num_heads=4,
+        num_blocks=2, num_obj_blocks=1, num_box_branch_blocks=1, num_box_refine_blocks=1,
+        time_dim=32, image_token_dim=C,
+        fourier_box_bands=4, fourier_sigma_bands=4,
+    )
+    noisy = torch.randn(B, N_SLOTS, 4)
+    sigma = torch.rand(B).clamp_min(1e-3)
+    tokens = torch.randn(B, T, C)
+    centers = torch.zeros(T, 2)
+    out = decoder(noisy_boxes=noisy, sigma=sigma, image_tokens=tokens, patch_centers=centers)
+    assert out["pred_boxes"].shape == (B, N_SLOTS, 4)
+    assert out["obj_logits"].shape == (B, N_SLOTS)

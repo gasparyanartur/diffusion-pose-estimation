@@ -34,14 +34,16 @@ class BoxSetDiffusionDecoder(nn.Module):
     2. Add learned instance-query embeddings (``nn.Embedding(N, dim)``).
     3. σ -> ``log σ`` -> Fourier features -> ``[B, time_dim]`` time embedding.
     4. Image tokens -> ``Linear(C → dim)`` + sinusoidal PE from patch centres.
-    5. ``num_blocks`` × ``TimeFiLMTransformerBlock`` (self-attn over slots,
-       cross-attn over image tokens, FiLM FFN).
-    6. Objectness branch: ``num_obj_blocks`` × ``TimeFiLMTransformerBlock``
-       (self-attn + cross-attn to image + FiLM FFN) -> ``Linear(dim, 1)``.
-    7. Box branch: ``num_box_branch_blocks`` × ``TimeFiLMTransformerBlock``
-       -> cross-attn over objectness reps
-       -> ``num_box_refine_blocks`` × ``TimeFiLMTransformerBlock``
-       -> ``Linear(dim, 4)``.
+    5. ``num_blocks`` × ``TimeFiLMTransformerBlock`` shared trunk (self-attn
+       over slots, cross-attn over image tokens at ``dim``, FiLM FFN).
+    6. Independent projections into two streams:
+       - Objectness: ``Linear(dim → obj_dim)`` + ``num_obj_blocks`` ×
+         ``TimeFiLMTransformerBlock`` (self-attn + cross-attn to image at
+         ``dim`` + FiLM FFN) -> ``Linear(obj_dim, 1)``.
+       - Box: ``Linear(dim → box_dim)`` + ``num_box_branch_blocks`` ×
+         ``TimeFiLMTransformerBlock`` -> cross-attn over objectness reps
+         (``obj_dim``) -> ``num_box_refine_blocks`` ×
+         ``TimeFiLMTransformerBlock`` -> ``Linear(box_dim, 4)``.
 
     Args:
         num_slots: Number of learned instance queries / output slots ``N``.
@@ -53,6 +55,13 @@ class BoxSetDiffusionDecoder(nn.Module):
             before the obj cross-attention.
         num_box_refine_blocks: Number of transformer blocks in the box branch
             after the obj cross-attention.
+        obj_dim: Hidden dim for the objectness branch. Projects from ``dim``
+            before the first obj block; cross-attn to image tokens uses
+            ``dim`` as the KV dim. Defaults to ``256``.
+        box_dim: Hidden dim for the box branch. Projects from ``dim`` before
+            the first box block; cross-attn to image tokens uses ``dim`` as
+            the KV dim; cross-attn to objectness reps uses ``obj_dim``.
+            Defaults to ``256``.
         time_dim: Time-embedding dim used by FiLM modules.
         ffn_mult: FFN hidden ratio for all FiLM-FFN modules.
         image_token_dim: ``C`` — channel dim of the input image tokens.
@@ -74,6 +83,8 @@ class BoxSetDiffusionDecoder(nn.Module):
         num_obj_blocks: int = 2,
         num_box_branch_blocks: int = 2,
         num_box_refine_blocks: int = 2,
+        obj_dim: int = 256,
+        box_dim: int = 256,
         time_dim: int = 256,
         ffn_mult: float = 4.0,
         image_token_dim: int = 1280,
@@ -92,6 +103,8 @@ class BoxSetDiffusionDecoder(nn.Module):
 
         self.num_slots = num_slots
         self.dim = dim
+        self.obj_dim = obj_dim
+        self.box_dim = box_dim
         self.time_dim = time_dim
         self.sigma_log_offset = float(sigma_log_offset)
         self.pe_scale = float(pe_scale)
@@ -123,37 +136,43 @@ class BoxSetDiffusionDecoder(nn.Module):
             for _ in range(num_blocks)
         ])
 
+        # 6. Trunk → branch projections.
+        self.obj_proj = nn.Linear(dim, obj_dim)
+        self.box_proj = nn.Linear(dim, box_dim)
+
         # 6. Objectness branch: num_obj_blocks transformer blocks + head.
+        #    Cross-attention KV comes from trunk-dim image tokens.
         self.obj_blocks = nn.ModuleList([
             TimeFiLMTransformerBlock(
-                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                dim=obj_dim, num_heads=num_heads, time_dim=time_dim,
                 ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
             )
             for _ in range(num_obj_blocks)
         ])
-        self.obj_head = nn.Linear(dim, 1)
+        self.obj_head = nn.Linear(obj_dim, 1)
 
         # 7. Box branch: num_box_branch_blocks blocks -> cross-attn to obj
         #    -> num_box_refine_blocks blocks -> head.
+        #    Cross-attention to image uses trunk dim; obj cross uses obj_dim.
         self.box_blocks = nn.ModuleList([
             TimeFiLMTransformerBlock(
-                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                dim=box_dim, num_heads=num_heads, time_dim=time_dim,
                 ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
             )
             for _ in range(num_box_branch_blocks)
         ])
         self.box_obj_cross = TimeFiLMTransformerBlock(
-            dim=dim, num_heads=num_heads, time_dim=time_dim,
-            ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
+            dim=box_dim, num_heads=num_heads, time_dim=time_dim,
+            ffn_mult=ffn_mult, cross_dim=obj_dim, use_cross_attn=True,
         )
         self.box_refine_blocks = nn.ModuleList([
             TimeFiLMTransformerBlock(
-                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                dim=box_dim, num_heads=num_heads, time_dim=time_dim,
                 ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
             )
             for _ in range(num_box_refine_blocks)
         ])
-        self.box_head = nn.Linear(dim, 4)
+        self.box_head = nn.Linear(box_dim, 4)
 
     def forward(
         self,
@@ -195,30 +214,30 @@ class BoxSetDiffusionDecoder(nn.Module):
                 context_key_padding_mask=image_key_padding_mask,
             )
 
-        # 6: objectness branch.
-        obj_rep = x
+        # 6: objectness branch — project trunk → obj_dim, then attend to image.
+        obj_rep = self.obj_proj(x)                                     # [B, N, obj_dim]
         for blk in self.obj_blocks:
             obj_rep = blk(
                 obj_rep, context=img, time_emb=time_emb,
                 context_key_padding_mask=image_key_padding_mask,
-            )                                                          # [B, N, D]
+            )                                                          # [B, N, obj_dim]
         obj_logits = self.obj_head(obj_rep).squeeze(-1)                # [B, N]
 
-        # 7: box branch.
-        box_rep = x
+        # 7: box branch — independent projection from trunk → box_dim.
+        box_rep = self.box_proj(x)                                     # [B, N, box_dim]
         for blk in self.box_blocks:
             box_rep = blk(
                 box_rep, context=img, time_emb=time_emb,
                 context_key_padding_mask=image_key_padding_mask,
-            )                                                          # [B, N, D]
+            )                                                          # [B, N, box_dim]
         box_rep = self.box_obj_cross(
-            box_rep, context=obj_rep, time_emb=time_emb,
+            box_rep, context=obj_rep.detach(), time_emb=time_emb,
         )
         for blk in self.box_refine_blocks:
             box_rep = blk(
                 box_rep, context=img, time_emb=time_emb,
                 context_key_padding_mask=image_key_padding_mask,
-            )                                                          # [B, N, D]
+            )                                                          # [B, N, box_dim]
         pred_boxes = self.box_head(box_rep)                            # [B, N, 4]
 
         _ = B  # silence unused warning if B isn't otherwise needed
@@ -349,12 +368,14 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
     """Pydantic config for :class:`BoxSetDiffusionDecoder`."""
 
     num_slots: int = 20
-    dim: int = 256
+    dim: int = 512
     num_heads: int = 8
     num_blocks: int = 3
-    num_obj_blocks: int = 2
-    num_box_branch_blocks: int = 2
-    num_box_refine_blocks: int = 2
+    num_obj_blocks: int = 1
+    num_box_branch_blocks: int = 1
+    num_box_refine_blocks: int = 1
+    obj_dim: int = 256
+    box_dim: int = 256
     time_dim: int = 256
     ffn_mult: float = 4.0
     image_token_dim: int = 1280
@@ -374,6 +395,8 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
             num_obj_blocks=self.num_obj_blocks,
             num_box_branch_blocks=self.num_box_branch_blocks,
             num_box_refine_blocks=self.num_box_refine_blocks,
+            obj_dim=self.obj_dim,
+            box_dim=self.box_dim,
             time_dim=self.time_dim,
             ffn_mult=self.ffn_mult,
             image_token_dim=self.image_token_dim,

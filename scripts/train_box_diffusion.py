@@ -38,6 +38,7 @@ from omegaconf import DictConfig, OmegaConf
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
+from lightning_fabric.plugins.io import TorchCheckpointIO
 
 from src.base_config import BaseConfig
 from src.data import DataConfig
@@ -45,6 +46,13 @@ from src.decoders.diffusion.box_set import BoxSetDiffusionDecoderConfig
 from src.features import BaseFeatureExtractorConfig
 from src.training import BoxSetDiffusionModuleConfig
 from src.utils import resolve_checkpoint
+
+
+class _TrustedCheckpointIO(TorchCheckpointIO):
+    """Load checkpoints with weights_only=False (trusted local files)."""
+
+    def load_checkpoint(self, path, map_location=None, weights_only=None):
+        return super().load_checkpoint(path, map_location=map_location, weights_only=False)
 
 
 class _CheckpointAlsoOnLastEpoch(ModelCheckpoint):
@@ -155,11 +163,12 @@ def main(cfg: DictConfig) -> None:
     if resume and resume != train_cfg.resume:
         log.info("Checkpoint resolved: %s  ->  %s", train_cfg.resume, resume)
 
+    n_steps = train_cfg.num_inference_steps
     callbacks: list[pl.Callback] = [
         _CheckpointAlsoOnLastEpoch(
             dirpath=ckpt_dir,
             filename="epoch{epoch:03d}-val_bbox_AP",
-            monitor="val/bbox/AP",
+            monitor=f"ap-val/{n_steps}-step/bbox/AP",
             mode="max",
             save_top_k=1,
             save_last=False,
@@ -184,6 +193,7 @@ def main(cfg: DictConfig) -> None:
         logger=loggers,
         log_every_n_steps=train_cfg.log_every_n_steps,
         deterministic=False,
+        plugins=[_TrustedCheckpointIO()],
     )
 
     if skip_training:
@@ -204,7 +214,7 @@ def main(cfg: DictConfig) -> None:
 
         best_ckpt = trainer.checkpoint_callback.best_model_path  # type: ignore[union-attr]
         best_score = trainer.checkpoint_callback.best_model_score  # type: ignore[union-attr]
-        log.info("Best val/bbox/AP: %s", best_score)
+        log.info("Best ap-val/%d-step/bbox/AP: %s", n_steps, best_score)
         log.info("Best checkpoint: %s", best_ckpt)
         if not best_ckpt:
             log.warning("No checkpoint found; skipping test evaluation.")
