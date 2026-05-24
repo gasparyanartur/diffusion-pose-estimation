@@ -21,9 +21,11 @@ resume: null
 
 # diffusion
 sigma_min: 0.002
-sigma_max: 1.0
+sigma_max: 10.0
 rho: 7.0
 num_inference_steps: 5
+sigma_p_mean: -1.2
+sigma_p_std: 1.2
 val_ap_every_n_epochs: 10
 
 feature_key: spatial
@@ -40,6 +42,7 @@ weights:
   giou: 2.0
   diff_l2: 1.0
   obj_bce: 1.0
+  rank: 1.0
   matcher_lambda_l1: 5.0
   matcher_lambda_giou: 2.0
   matcher_lambda_obj: 0.1

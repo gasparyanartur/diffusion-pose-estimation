@@ -128,7 +128,7 @@ def test_set_box_loss_returns_all_keys_and_finite():
     loss_fn = SetBoxDiffusionLoss()
     pred, targets = _make_pred_targets()
     out = loss_fn(pred, targets)
-    expected_keys = {"total", "l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "matched"}
+    expected_keys = {"total", "l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "ranking_loss", "matched"}
     assert expected_keys.issubset(out.keys())
     for k in expected_keys:
         assert torch.isfinite(out[k]).all(), f"{k} is not finite: {out[k]}"
@@ -197,3 +197,54 @@ def test_set_box_loss_perfect_predictions_give_near_zero_box_losses():
     assert out["diff_l2_loss"].item() < 1e-5
     # obj_loss should be small (logits strongly match the binary target).
     assert out["obj_loss"].item() < 0.1
+
+
+# ---------------------------------------------------------------------------
+# ranking_loss
+# ---------------------------------------------------------------------------
+
+
+def test_ranking_loss_positive_when_unmatched_logits_dominate():
+    """ranking_loss > 0 when unmatched slots have higher logits than matched."""
+    loss_fn = SetBoxDiffusionLoss()
+    # Single image: 1 GT box, 4 slots total.
+    # Matched slot is slot 0 (low logit); unmatched slots 1-3 have high logits.
+    gt = torch.tensor([[[0.0, 0.0, 0.4, 0.4], [0.0, 0.0, 0.0, 0.0]]])
+    labeled = torch.tensor([[1.0, 0.0]])
+    pred_boxes = torch.zeros(1, 4, 4, requires_grad=True)
+    # slot 0 logit=-5 (matched), slots 1-3 logit=+5 (unmatched)
+    obj_logits = torch.tensor([[-5.0, 5.0, 5.0, 5.0]], requires_grad=True)
+    pred = {"pred_boxes": pred_boxes, "obj_logits": obj_logits}
+    targets = {"gt_boxes_canon": gt, "gt_box_labeled": labeled}
+    out = loss_fn(pred, targets)
+    assert out["ranking_loss"].item() > 0.0
+
+
+def test_ranking_loss_small_when_matched_logits_dominate():
+    """ranking_loss is near zero when matched slot has much higher logit."""
+    loss_fn = SetBoxDiffusionLoss()
+    gt = torch.tensor([[[0.0, 0.0, 0.4, 0.4], [0.0, 0.0, 0.0, 0.0]]])
+    labeled = torch.tensor([[1.0, 0.0]])
+    pred_boxes = torch.zeros(1, 4, 4, requires_grad=True)
+    # slot 0 logit=+10 (matched), slots 1-3 logit=-10 (unmatched)
+    obj_logits = torch.tensor([[10.0, -10.0, -10.0, -10.0]], requires_grad=True)
+    pred = {"pred_boxes": pred_boxes, "obj_logits": obj_logits}
+    targets = {"gt_boxes_canon": gt, "gt_box_labeled": labeled}
+    out = loss_fn(pred, targets)
+    assert out["ranking_loss"].item() < 0.01
+
+
+def test_ranking_loss_is_zero_when_no_gt():
+    """ranking_loss is 0 when there are no GT boxes (no matched slots)."""
+    loss_fn = SetBoxDiffusionLoss()
+    B, N = 2, 4
+    pred = {
+        "pred_boxes": torch.randn(B, N, 4),
+        "obj_logits": torch.randn(B, N),
+    }
+    targets = {
+        "gt_boxes_canon": torch.zeros(B, 3, 4),
+        "gt_box_labeled": torch.zeros(B, 3),
+    }
+    out = loss_fn(pred, targets)
+    assert out["ranking_loss"].item() == 0.0

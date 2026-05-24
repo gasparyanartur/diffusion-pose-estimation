@@ -244,3 +244,33 @@
   test_pos_weight_balances_objectness_gradient, test_ranking_loss_zero_when_no_gt,
   test_ranking_loss_decreases_when_matched_outscores_unmatched.
 - 127/127 tests passing.
+
+[2026-05-24] Benchmark box detection: DiffusionDet baseline
+- external/diffusiondet/ — shallow clone (depth=1), added to .gitignore.
+- src/box_detectors/ — abstract BoxDetector/BoxDetectorConfig, DiffusionDetDetector
+  adapter (lazy Detectron2 import, person-class filter, xyxy→xywh, padding),
+  BoxDiffusionDetector stub (wraps BoxSetDiffusionModule checkpoint).
+- conf/box_detector/diffusiondet.yaml, box_diffusion.yaml
+- conf/benchmark_box_detection.yaml
+- scripts/benchmark_box_detection.py — config-driven, batched CrowdPose eval,
+  BoxAPMetric, writes metrics.json to Hydra output dir.
+- tests/test_box_detector_interface.py — 8 tests (all passing).
+- 28 existing box-pipeline tests still pass.
+
+[2026-05-24] Train DiffusionDet on CrowdPose — setup
+- external/diffusiondet/datasets/register_crowdpose.py: register_all_crowdpose()
+  via register_coco_instances for train/val/test splits.
+- external/diffusiondet/train_net.py: +1 import line to auto-register CrowdPose.
+- external/diffusiondet/configs/diffdet.crowdpose.res50.yaml: 100-epoch single-GPU
+  config (NUM_CLASSES=1, MAX_ITER=250000, STEPS=(175000,212500), EVAL_PERIOD=12500).
+- scripts/train_diffusiondet_crowdpose.sh: wrapper with RESUME/EVAL_ONLY support.
+- conf/box_detector/diffusiondet.yaml: updated to crowdpose config + checkpoint path.
+- tests/test_crowdpose_registration.py: 5 tests (skip without Detectron2).
+
+[2026-05-24] Visualize box diffusion results notebook
+- notebook/visualize_box_diffusion.ipynb: new notebook with 5 cells:
+  1. Config (CKPT_PATH, SPLIT, N_IMAGES, DEVICE, SCORE_THRESH, etc.)
+  2. Imports
+  3. Build backbone + decoder from .hydra/config.yaml, load state_dict from checkpoint
+  4. Sample N images from PoseDataset, run resize_and_pad_to_square → backbone → decoder.sample() → convert canonical boxes to pixel xyxy
+  5. Grid visualization (GT green, predicted red with alpha by score) + objectness histogram

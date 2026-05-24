@@ -481,6 +481,7 @@ class SetBoxDiffusionLossWeights:
     giou: float = 2.0
     diff_l2: float = 1.0
     obj_bce: float = 1.0
+    rank: float = 1.0
     matcher_lambda_l1: float = 5.0
     matcher_lambda_giou: float = 2.0
     matcher_lambda_obj: float = 0.1
@@ -517,6 +518,7 @@ class SetBoxDiffusionLoss(nn.Module):
     def __init__(self, weights: SetBoxDiffusionLossWeights | None = None) -> None:
         super().__init__()
         self.weights = weights if weights is not None else SetBoxDiffusionLossWeights()
+        self._ranking_loss = RankingLoss()
 
     def forward(
         self,
@@ -529,7 +531,7 @@ class SetBoxDiffusionLoss(nn.Module):
         gt_labeled = targets["gt_box_labeled"].to(pred_boxes.device)
         B          = pred_boxes.shape[0]
 
-        component_keys = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss")
+        component_keys = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "ranking_loss")
         accum: dict[str, list[Tensor]] = {k: [] for k in component_keys}
         matched_total = 0
         for b in range(B):
@@ -548,6 +550,7 @@ class SetBoxDiffusionLoss(nn.Module):
             + w.giou    * components["giou_loss"]
             + w.diff_l2 * components["diff_l2_loss"]
             + w.obj_bce * components["obj_loss"]
+            + w.rank    * components["ranking_loss"]
         )
         return {
             "total":         total,
@@ -555,6 +558,7 @@ class SetBoxDiffusionLoss(nn.Module):
             "giou_loss":     components["giou_loss"],
             "diff_l2_loss":  components["diff_l2_loss"],
             "obj_loss":      components["obj_loss"],
+            "ranking_loss":  components["ranking_loss"],
             "matched":       torch.tensor(float(matched_total), device=pred_boxes.device),
         }
 
@@ -582,6 +586,7 @@ class SetBoxDiffusionLoss(nn.Module):
                 "giou_loss":     zero,
                 "diff_l2_loss":  zero,
                 "obj_loss":      obj_loss,
+                "ranking_loss":  zero,
                 "matched_count": 0,
             }
 
@@ -598,6 +603,9 @@ class SetBoxDiffusionLoss(nn.Module):
         matched_pred = pred_boxes[slot_idx]              # [M, 4]
         matched_gt   = gt_boxes_kept[gt_idx]             # [M, 4]
 
+        all_slots = torch.arange(N, device=device)
+        unmatched_idx = all_slots[~torch.isin(all_slots, slot_idx)]
+
         l1_loss = (matched_pred - matched_gt).abs().sum(dim=-1).mean()
         giou_mat = pairwise_giou(
             box_cxcywh_to_xyxy(matched_pred),
@@ -606,12 +614,14 @@ class SetBoxDiffusionLoss(nn.Module):
         giou_loss = (1.0 - giou_mat.diagonal()).mean()
         diff_l2_loss = ((matched_pred - matched_gt) ** 2).sum(dim=-1).mean()
         obj_loss = self._objectness_bce(obj_logits, objectness_target, matched_count)
+        ranking_loss = self._ranking_loss(obj_logits, slot_idx, unmatched_idx)
 
         return {
             "l1_loss":       l1_loss,
             "giou_loss":     giou_loss,
             "diff_l2_loss":  diff_l2_loss,
             "obj_loss":      obj_loss,
+            "ranking_loss":  ranking_loss,
             "matched_count": matched_count,
         }
 

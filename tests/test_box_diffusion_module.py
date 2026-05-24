@@ -206,3 +206,44 @@ def test_configure_optimizers_returns_dict_with_scheduler():
     assert isinstance(out, dict)
     assert "optimizer" in out
     assert "lr_scheduler" in out
+
+
+# ---------------------------------------------------------------------------
+# Branch-block architecture
+# ---------------------------------------------------------------------------
+
+
+def test_decoder_branch_blocks_output_shapes():
+    """Structured branches produce correct output shapes with non-default block counts."""
+    B, T, C = 2, 9, FEAT_C
+    decoder = BoxSetDiffusionDecoder(
+        num_slots=N_SLOTS, dim=32, num_heads=4,
+        num_blocks=1, num_obj_blocks=2, num_box_branch_blocks=2, num_box_refine_blocks=2,
+        time_dim=32, image_token_dim=C,
+        fourier_box_bands=4, fourier_sigma_bands=4,
+    )
+    noisy = torch.randn(B, N_SLOTS, 4)
+    sigma = torch.rand(B).clamp_min(1e-3)
+    tokens = torch.randn(B, T, C)
+    centers = torch.zeros(T, 2)
+    out = decoder(noisy_boxes=noisy, sigma=sigma, image_tokens=tokens, patch_centers=centers)
+    assert out["pred_boxes"].shape == (B, N_SLOTS, 4)
+    assert out["obj_logits"].shape == (B, N_SLOTS)
+
+
+def test_decoder_branch_blocks_zero_counts_still_runs():
+    """num_obj_blocks=0 / num_box_branch_blocks=0 / num_box_refine_blocks=0 are valid."""
+    B, T, C = 2, 9, FEAT_C
+    decoder = BoxSetDiffusionDecoder(
+        num_slots=N_SLOTS, dim=32, num_heads=4,
+        num_blocks=2, num_obj_blocks=0, num_box_branch_blocks=0, num_box_refine_blocks=0,
+        time_dim=32, image_token_dim=C,
+        fourier_box_bands=4, fourier_sigma_bands=4,
+    )
+    noisy = torch.randn(B, N_SLOTS, 4)
+    sigma = torch.rand(B).clamp_min(1e-3)
+    tokens = torch.randn(B, T, C)
+    centers = torch.zeros(T, 2)
+    out = decoder(noisy_boxes=noisy, sigma=sigma, image_tokens=tokens, patch_centers=centers)
+    assert out["pred_boxes"].shape == (B, N_SLOTS, 4)
+    assert out["obj_logits"].shape == (B, N_SLOTS)

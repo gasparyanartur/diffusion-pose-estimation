@@ -6,12 +6,15 @@ num_slots: 20
 dim: 256
 num_heads: 8
 num_blocks: 3
+num_obj_blocks: 2
+num_box_branch_blocks: 2
+num_box_refine_blocks: 2
 time_dim: 256
 ffn_mult: 4.0
 # image_token_dim is set automatically from backbone.out_channels at runtime.
 fourier_box_bands: 16
 fourier_box_scale: 1000.0
 fourier_sigma_bands: 16
-fourier_sigma_scale: 1.0
+fourier_sigma_scale: 100.0
 sigma_log_offset: 1.0e-4
 pe_scale: 1000.0

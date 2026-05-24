@@ -105,9 +105,11 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         lr_warmup_epochs: int = 0,
         lr_min_frac: float = 1e-2,
         sigma_min: float = 0.002,
-        sigma_max: float = 1.0,
+        sigma_max: float = 10.0,
         rho: float = 7.0,
         num_inference_steps: int = 5,
+        sigma_p_mean: float = -1.2,
+        sigma_p_std: float = 1.2,
         val_ap_every_n_epochs: int = 10,
         val_ann_file: str | None = None,
         test_ann_file: str | None = None,
@@ -136,6 +138,8 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         self.sigma_max = float(sigma_max)
         self.rho = float(rho)
         self.num_inference_steps = int(num_inference_steps)
+        self.sigma_p_mean = float(sigma_p_mean)
+        self.sigma_p_std = float(sigma_p_std)
         self.val_ap_every_n_epochs = int(val_ap_every_n_epochs)
 
         self.feature_key = feature_key
@@ -151,7 +155,7 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         self._test_ap_metric = BoxAPMetric(ann_file=test_ann_file) if test_ann_file else None
         self._test_ap_metric_1step = BoxAPMetric(ann_file=test_ann_file) if test_ann_file else None
 
-        self._log_loss_names = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "matched")
+        self._log_loss_names = ("l1_loss", "giou_loss", "diff_l2_loss", "obj_loss", "ranking_loss", "matched")
 
         self.save_hyperparameters(ignore=["backbone", "decoder"])
 
@@ -164,8 +168,11 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         return self.decoder.num_slots
 
     def _sample_sigma(self, B: int, device: torch.device, dtype: torch.dtype) -> Tensor:
-        u = torch.rand(B, device=device, dtype=dtype)
-        return self.sigma_min + u * (self.sigma_max - self.sigma_min)
+        """EDM log-normal sigma sampling (Karras et al. 2022)."""
+        log_sigma = self.sigma_p_mean + self.sigma_p_std * torch.randn(
+            B, device=device, dtype=dtype
+        )
+        return log_sigma.exp().clamp(self.sigma_min, self.sigma_max)
 
     def _build_noisy_input(
         self,
@@ -257,6 +264,13 @@ class BoxSetDiffusionModule(BaseTrainingModule):
             batch["gt_boxes_canon"], batch["gt_box_labeled"], sigma,
         )
 
+        # Register a hook to capture ∂loss/∂noisy_boxes for debug logging.
+        noisy = noisy.detach().requires_grad_(True)
+        self._dbg_grad: list[Tensor] = []
+        self._dbg_handle = noisy.register_hook(
+            lambda g: self._dbg_grad.append(g.detach().abs().mean())
+        )
+
         pred = self._forward_decoder(batch, noisy, sigma)
         losses = self._loss(pred, {
             "gt_boxes_canon": batch["gt_boxes_canon"],
@@ -267,14 +281,33 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         self.log("train/loss", losses["total"], prog_bar=True, **kw)
         for name in self._log_loss_names:
             self.log(f"train/{name}", losses[name], **kw)
+        self.log("debug/sigma_mean", sigma.mean(), batch_size=B, on_step=True, on_epoch=False)
         return losses["total"]
+
+    def on_after_backward(self) -> None:
+        handle = getattr(self, "_dbg_handle", None)
+        if handle is not None:
+            handle.remove()
+            self._dbg_handle = None
+        grads = getattr(self, "_dbg_grad", [])
+        if grads:
+            self.log(
+                "debug/noisy_boxes_grad_norm", grads[0],
+                on_step=True, on_epoch=False,
+            )
+            self._dbg_grad = []
 
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
     def _ap_epoch_active(self) -> bool:
-        return (self.current_epoch + 1) % self.val_ap_every_n_epochs == 0
+        is_period = (self.current_epoch + 1) % self.val_ap_every_n_epochs == 0
+        is_last = (
+            self._trainer is not None
+            and (self.current_epoch + 1) == self.trainer.max_epochs
+        )
+        return is_period or is_last
 
     def _update_ap_metric(
         self,
@@ -390,6 +423,7 @@ class SetBoxDiffusionLossWeightsConfig(BaseConfig):
     giou: float = 2.0
     diff_l2: float = 1.0
     obj_bce: float = 1.0
+    rank: float = 1.0
     matcher_lambda_l1: float = 5.0
     matcher_lambda_giou: float = 2.0
     matcher_lambda_obj: float = 0.1
@@ -400,6 +434,7 @@ class SetBoxDiffusionLossWeightsConfig(BaseConfig):
             giou=self.giou,
             diff_l2=self.diff_l2,
             obj_bce=self.obj_bce,
+            rank=self.rank,
             matcher_lambda_l1=self.matcher_lambda_l1,
             matcher_lambda_giou=self.matcher_lambda_giou,
             matcher_lambda_obj=self.matcher_lambda_obj,
@@ -429,10 +464,12 @@ class BoxSetDiffusionModuleConfig(BaseConfig):
 
     # diffusion
     sigma_min: float = 0.002
-    sigma_max: float = 1.0
+    sigma_max: float = 10.0
     rho: float = 7.0
     num_inference_steps: int = 5
     val_ap_every_n_epochs: int = 10
+    sigma_p_mean: float = -1.2
+    sigma_p_std: float = 1.2
 
     feature_key: str = "spatial"
 
@@ -477,4 +514,6 @@ class BoxSetDiffusionModuleConfig(BaseConfig):
             saturation=self.saturation,
             hflip_p=self.hflip_p,
             grad_clip=self.grad_clip,
+            sigma_p_mean=self.sigma_p_mean,
+            sigma_p_std=self.sigma_p_std,
         )

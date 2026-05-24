@@ -47,6 +47,35 @@ from src.training import BoxSetDiffusionModuleConfig
 from src.utils import resolve_checkpoint
 
 
+class _CheckpointAlsoOnLastEpoch(ModelCheckpoint):
+    """ModelCheckpoint that also evaluates and saves on the final training epoch.
+
+    ``every_n_epochs`` normally prevents the checkpoint from running if the
+    current epoch is not on a period boundary.  This subclass forces evaluation
+    on the very last epoch so that the best-checkpoint is updated even when
+    ``max_epochs`` is not divisible by ``every_n_epochs``.
+    """
+
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ) -> None:
+        is_last = (trainer.current_epoch + 1) == trainer.max_epochs
+        on_period = (
+            self._every_n_epochs >= 1
+            and (trainer.current_epoch + 1) % self._every_n_epochs == 0
+        )
+        if is_last and not on_period:
+            # Force evaluation on the last epoch even if not on a period boundary.
+            if (
+                not self._should_skip_saving_checkpoint(trainer)
+                and self._should_save_on_train_epoch_end(trainer)
+            ):
+                monitor_candidates = self._monitor_candidates(trainer)
+                self._save_topk_checkpoint(trainer, monitor_candidates)
+        else:
+            super().on_train_epoch_end(trainer, pl_module)
+
+
 def _devices_arg(raw) -> int | str | list[int]:
     if raw == "auto":
         return "auto"
@@ -127,7 +156,7 @@ def main(cfg: DictConfig) -> None:
         log.info("Checkpoint resolved: %s  ->  %s", train_cfg.resume, resume)
 
     callbacks: list[pl.Callback] = [
-        ModelCheckpoint(
+        _CheckpointAlsoOnLastEpoch(
             dirpath=ckpt_dir,
             filename="epoch{epoch:03d}-val_bbox_AP",
             monitor="val/bbox/AP",

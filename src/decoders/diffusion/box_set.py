@@ -36,15 +36,23 @@ class BoxSetDiffusionDecoder(nn.Module):
     4. Image tokens -> ``Linear(C → dim)`` + sinusoidal PE from patch centres.
     5. ``num_blocks`` × ``TimeFiLMTransformerBlock`` (self-attn over slots,
        cross-attn over image tokens, FiLM FFN).
-    6. Objectness branch: FiLM-FFN residual head -> ``Linear(dim, 1)``.
-    7. Box branch: FiLM-FFN residual -> cross-attn over objectness reps
-       -> FiLM-FFN refine -> ``Linear(dim, 4)``.
+    6. Objectness branch: ``num_obj_blocks`` × ``TimeFiLMTransformerBlock``
+       (self-attn + cross-attn to image + FiLM FFN) -> ``Linear(dim, 1)``.
+    7. Box branch: ``num_box_branch_blocks`` × ``TimeFiLMTransformerBlock``
+       -> cross-attn over objectness reps
+       -> ``num_box_refine_blocks`` × ``TimeFiLMTransformerBlock``
+       -> ``Linear(dim, 4)``.
 
     Args:
         num_slots: Number of learned instance queries / output slots ``N``.
         dim: Hidden dim ``D``. Must be divisible by 4 for the PE.
         num_heads: Number of attention heads.
-        num_blocks: Number of slot ↔ image-token blocks.
+        num_blocks: Number of slot ↔ image-token blocks in the shared trunk.
+        num_obj_blocks: Number of transformer blocks in the objectness branch.
+        num_box_branch_blocks: Number of transformer blocks in the box branch
+            before the obj cross-attention.
+        num_box_refine_blocks: Number of transformer blocks in the box branch
+            after the obj cross-attention.
         time_dim: Time-embedding dim used by FiLM modules.
         ffn_mult: FFN hidden ratio for all FiLM-FFN modules.
         image_token_dim: ``C`` — channel dim of the input image tokens.
@@ -63,6 +71,9 @@ class BoxSetDiffusionDecoder(nn.Module):
         dim: int = 256,
         num_heads: int = 8,
         num_blocks: int = 3,
+        num_obj_blocks: int = 2,
+        num_box_branch_blocks: int = 2,
+        num_box_refine_blocks: int = 2,
         time_dim: int = 256,
         ffn_mult: float = 4.0,
         image_token_dim: int = 1280,
@@ -112,17 +123,36 @@ class BoxSetDiffusionDecoder(nn.Module):
             for _ in range(num_blocks)
         ])
 
-        # 6. Objectness branch.
-        self.obj_branch = TimeFiLMFFN(dim, ffn_mult=ffn_mult, time_dim=time_dim)
+        # 6. Objectness branch: num_obj_blocks transformer blocks + head.
+        self.obj_blocks = nn.ModuleList([
+            TimeFiLMTransformerBlock(
+                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
+            )
+            for _ in range(num_obj_blocks)
+        ])
         self.obj_head = nn.Linear(dim, 1)
 
-        # 7. Box branch (residual FFN -> cross-attn to obj_rep -> refine).
-        self.box_branch = TimeFiLMFFN(dim, ffn_mult=ffn_mult, time_dim=time_dim)
+        # 7. Box branch: num_box_branch_blocks blocks -> cross-attn to obj
+        #    -> num_box_refine_blocks blocks -> head.
+        self.box_blocks = nn.ModuleList([
+            TimeFiLMTransformerBlock(
+                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
+            )
+            for _ in range(num_box_branch_blocks)
+        ])
         self.box_obj_cross = TimeFiLMTransformerBlock(
             dim=dim, num_heads=num_heads, time_dim=time_dim,
             ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
         )
-        self.box_refine = TimeFiLMFFN(dim, ffn_mult=ffn_mult, time_dim=time_dim)
+        self.box_refine_blocks = nn.ModuleList([
+            TimeFiLMTransformerBlock(
+                dim=dim, num_heads=num_heads, time_dim=time_dim,
+                ffn_mult=ffn_mult, cross_dim=dim, use_cross_attn=True,
+            )
+            for _ in range(num_box_refine_blocks)
+        ])
         self.box_head = nn.Linear(dim, 4)
 
     def forward(
@@ -166,15 +196,29 @@ class BoxSetDiffusionDecoder(nn.Module):
             )
 
         # 6: objectness branch.
-        obj_rep = x + self.obj_branch(x, time_emb=time_emb)            # [B, N, D]
+        obj_rep = x
+        for blk in self.obj_blocks:
+            obj_rep = blk(
+                obj_rep, context=img, time_emb=time_emb,
+                context_key_padding_mask=image_key_padding_mask,
+            )                                                          # [B, N, D]
         obj_logits = self.obj_head(obj_rep).squeeze(-1)                # [B, N]
 
         # 7: box branch.
-        box_rep = x + self.box_branch(x, time_emb=time_emb)            # [B, N, D]
+        box_rep = x
+        for blk in self.box_blocks:
+            box_rep = blk(
+                box_rep, context=img, time_emb=time_emb,
+                context_key_padding_mask=image_key_padding_mask,
+            )                                                          # [B, N, D]
         box_rep = self.box_obj_cross(
             box_rep, context=obj_rep, time_emb=time_emb,
         )
-        box_rep = box_rep + self.box_refine(box_rep, time_emb=time_emb)
+        for blk in self.box_refine_blocks:
+            box_rep = blk(
+                box_rep, context=img, time_emb=time_emb,
+                context_key_padding_mask=image_key_padding_mask,
+            )                                                          # [B, N, D]
         pred_boxes = self.box_head(box_rep)                            # [B, N, 4]
 
         _ = B  # silence unused warning if B isn't otherwise needed
@@ -308,13 +352,16 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
     dim: int = 256
     num_heads: int = 8
     num_blocks: int = 3
+    num_obj_blocks: int = 2
+    num_box_branch_blocks: int = 2
+    num_box_refine_blocks: int = 2
     time_dim: int = 256
     ffn_mult: float = 4.0
     image_token_dim: int = 1280
     fourier_box_bands: int = 16
     fourier_box_scale: float = 1000.0
     fourier_sigma_bands: int = 16
-    fourier_sigma_scale: float = 1.0
+    fourier_sigma_scale: float = 100.0
     sigma_log_offset: float = 1e-4
     pe_scale: float = 1000.0
 
@@ -324,6 +371,9 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
             dim=self.dim,
             num_heads=self.num_heads,
             num_blocks=self.num_blocks,
+            num_obj_blocks=self.num_obj_blocks,
+            num_box_branch_blocks=self.num_box_branch_blocks,
+            num_box_refine_blocks=self.num_box_refine_blocks,
             time_dim=self.time_dim,
             ffn_mult=self.ffn_mult,
             image_token_dim=self.image_token_dim,
