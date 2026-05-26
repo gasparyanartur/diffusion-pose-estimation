@@ -1,3 +1,15 @@
+[2026-05-26] Self-conditioning for BoxSetDiffusionDecoder
+
+- src/decoders/diffusion/box_set.py: added self_cond flag + self_cond_in
+  FourierFeatures encoder; forward() accepts x0_prev; sample() passes x0
+  from each step to the next as x0_prev; BoxSetDiffusionDecoderConfig gains
+  self_cond: bool = True.
+- src/training/box_diffusion_module.py: _forward_decoder() accepts x0_prev;
+  training_step() implements 50%-probability self-conditioning (no-grad
+  forward pass to obtain x0_prev before the main forward).
+- conf/decoder/box_set.yaml: self_cond: true.
+- tests: 5 new tests added (sampler + module). All 26 pass.
+
 [2026-05-24] Box-diffusion pipeline I7 — Hydra configs + entry script + smoke run
 
 - src/training/box_diffusion_module.py: added pydantic

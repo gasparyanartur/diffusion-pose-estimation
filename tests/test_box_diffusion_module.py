@@ -265,3 +265,36 @@ def test_decoder_wider_trunk_with_branch_projection():
     out = decoder(noisy_boxes=noisy, sigma=sigma, image_tokens=tokens, patch_centers=centers)
     assert out["pred_boxes"].shape == (B, N_SLOTS, 4)
     assert out["obj_logits"].shape == (B, N_SLOTS)
+
+
+# ---------------------------------------------------------------------------
+# Self-conditioning in training module
+# ---------------------------------------------------------------------------
+
+
+def test_training_step_with_self_cond_returns_finite_loss():
+    """Training step with self_cond=True (default) returns a finite, differentiable loss."""
+    module = _make_module()
+    assert module.decoder.self_cond
+    batch = _fake_batch(B=2)
+    loss = module.training_step(batch, batch_idx=0)
+    assert torch.isfinite(loss)
+    assert loss.requires_grad
+
+
+def test_training_step_self_cond_disabled_still_works():
+    """Training step with self_cond=False still returns a finite loss."""
+    backbone = CNNFeatureExtractor(out_channels=FEAT_C)
+    decoder = BoxSetDiffusionDecoder(
+        num_slots=N_SLOTS, dim=32, num_heads=4, num_blocks=2,
+        time_dim=32, image_token_dim=FEAT_C,
+        fourier_box_bands=4, fourier_sigma_bands=4,
+        self_cond=False,
+    )
+    module = BoxSetDiffusionModule(
+        backbone=backbone, decoder=decoder,
+        weights=SetBoxDiffusionLossWeights(), lr=1e-3,
+    )
+    batch = _fake_batch(B=2)
+    loss = module.training_step(batch, batch_idx=0)
+    assert torch.isfinite(loss)

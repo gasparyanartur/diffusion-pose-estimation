@@ -20,3 +20,4 @@ fourier_sigma_bands: 16
 fourier_sigma_scale: 100.0
 sigma_log_offset: 1.0e-4
 pe_scale: 1000.0
+self_cond: true

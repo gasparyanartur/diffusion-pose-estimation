@@ -94,6 +94,7 @@ class BoxSetDiffusionDecoder(nn.Module):
         fourier_sigma_scale: float = 1.0,
         sigma_log_offset: float = 1e-4,
         pe_scale: float = 1000.0,
+        self_cond: bool = True,
     ) -> None:
         super().__init__()
         if dim % 4 != 0:
@@ -108,12 +109,19 @@ class BoxSetDiffusionDecoder(nn.Module):
         self.time_dim = time_dim
         self.sigma_log_offset = float(sigma_log_offset)
         self.pe_scale = float(pe_scale)
+        self.self_cond = self_cond
 
         # 1. Box-coord embedding.
         self.box_in = FourierFeatures(
             in_dim=4, out_dim=dim,
             num_bands=fourier_box_bands, scale=fourier_box_scale,
         )
+        # 1b. Self-conditioning embedding (x0 from previous step).
+        if self_cond:
+            self.self_cond_in = FourierFeatures(
+                in_dim=4, out_dim=dim,
+                num_bands=fourier_box_bands, scale=fourier_box_scale,
+            )
 
         # 2. Learned instance queries.
         self.slot_query = nn.Embedding(num_slots, dim)
@@ -181,6 +189,7 @@ class BoxSetDiffusionDecoder(nn.Module):
         image_tokens: Tensor,                             # [B, T, image_token_dim]
         patch_centers: Tensor,                            # [T, 2] in [-1, 1]
         image_key_padding_mask: Optional[Tensor] = None,  # [B, T] True=pad
+        x0_prev: Optional[Tensor] = None,                 # [B, N, 4] or None
     ) -> dict[str, Tensor]:
         if noisy_boxes.shape[1] != self.num_slots:
             raise ValueError(
@@ -192,6 +201,9 @@ class BoxSetDiffusionDecoder(nn.Module):
         # --- inputs --------------------------------------------------------
         # 1+2: box tokens + slot queries.
         box_tokens = self.box_in(noisy_boxes)                          # [B, N, D]
+        if self.self_cond:
+            prev = x0_prev if x0_prev is not None else torch.zeros_like(noisy_boxes)
+            box_tokens = box_tokens + self.self_cond_in(prev)          # [B, N, D]
         x = box_tokens + self.slot_query.weight.unsqueeze(0)           # [B, N, D]
 
         # 3: time embedding from log σ.
@@ -328,6 +340,7 @@ class BoxSetDiffusionDecoder(nn.Module):
         if x_init is None:
             x = x * (sigmas[0] / max(sigma_max, 1e-12))
 
+        x0_prev: Tensor | None = None
         last_obj_logits: Tensor | None = None
         for i in range(num_inference_steps):
             sigma_i = sigmas[i]
@@ -338,6 +351,7 @@ class BoxSetDiffusionDecoder(nn.Module):
                 noisy_boxes=x, sigma=sigma_i_batch,
                 image_tokens=image_tokens, patch_centers=patch_centers,
                 image_key_padding_mask=image_key_padding_mask,
+                x0_prev=x0_prev,
             )
             x0 = pred["pred_boxes"]
             last_obj_logits = pred["obj_logits"]
@@ -352,13 +366,16 @@ class BoxSetDiffusionDecoder(nn.Module):
                     noisy_boxes=x_euler, sigma=sigma_next_batch,
                     image_tokens=image_tokens, patch_centers=patch_centers,
                     image_key_padding_mask=image_key_padding_mask,
+                    x0_prev=x0_prev,
                 )
                 x0_next = pred2["pred_boxes"]
                 last_obj_logits = pred2["obj_logits"]
                 d_next = (x_euler - x0_next) / sigma_next
                 x = x + 0.5 * dt * (d_cur + d_next)
+                x0_prev = x0_next.detach()
             else:
                 x = x_euler
+                x0_prev = x0.detach()
 
         assert last_obj_logits is not None
         return {"pred_boxes": x, "obj_logits": last_obj_logits}
@@ -385,6 +402,7 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
     fourier_sigma_scale: float = 100.0
     sigma_log_offset: float = 1e-4
     pe_scale: float = 1000.0
+    self_cond: bool = True
 
     def build(self) -> BoxSetDiffusionDecoder:
         return BoxSetDiffusionDecoder(
@@ -406,4 +424,5 @@ class BoxSetDiffusionDecoderConfig(BaseConfig):
             fourier_sigma_scale=self.fourier_sigma_scale,
             sigma_log_offset=self.sigma_log_offset,
             pe_scale=self.pe_scale,
+            self_cond=self.self_cond,
         )

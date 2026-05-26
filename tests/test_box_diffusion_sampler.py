@@ -144,3 +144,70 @@ def test_sample_runs_under_no_grad():
         num_inference_steps=2,
     )
     assert not out["pred_boxes"].requires_grad
+
+
+# ---------------------------------------------------------------------------
+# Self-conditioning
+# ---------------------------------------------------------------------------
+
+
+def test_forward_with_x0_prev_changes_output():
+    """Providing x0_prev should change the forward output (self_cond=True)."""
+    torch.manual_seed(0)
+    dec = _make_decoder()
+    image_tokens, patch_centers = _make_inputs()
+    noisy = torch.randn(2, 4, 4)
+    sigma = torch.ones(2) * 0.5
+
+    out_no_prev = dec(noisy_boxes=noisy, sigma=sigma,
+                      image_tokens=image_tokens, patch_centers=patch_centers,
+                      x0_prev=None)
+    out_with_prev = dec(noisy_boxes=noisy, sigma=sigma,
+                        image_tokens=image_tokens, patch_centers=patch_centers,
+                        x0_prev=torch.ones_like(noisy) * 0.3)
+
+    assert not torch.allclose(out_no_prev["pred_boxes"], out_with_prev["pred_boxes"]), (
+        "x0_prev should change the output when self_cond=True"
+    )
+
+
+def test_forward_self_cond_disabled_ignores_x0_prev():
+    """When self_cond=False, x0_prev has no effect."""
+    torch.manual_seed(0)
+    dec = _make_decoder()
+    dec_no_sc = BoxSetDiffusionDecoder(
+        num_slots=4, dim=32, num_heads=4, num_blocks=2,
+        time_dim=32, image_token_dim=16,
+        fourier_box_bands=4, fourier_sigma_bands=4,
+        self_cond=False,
+    )
+    # Copy weights to make the models identical (minus self_cond_in).
+    dec_no_sc.load_state_dict(dec.state_dict(), strict=False)
+
+    image_tokens, patch_centers = _make_inputs()
+    noisy = torch.randn(2, 4, 4)
+    sigma = torch.ones(2) * 0.5
+
+    out_null = dec_no_sc(noisy_boxes=noisy, sigma=sigma,
+                         image_tokens=image_tokens, patch_centers=patch_centers,
+                         x0_prev=None)
+    out_prev = dec_no_sc(noisy_boxes=noisy, sigma=sigma,
+                         image_tokens=image_tokens, patch_centers=patch_centers,
+                         x0_prev=torch.ones_like(noisy) * 0.3)
+    assert torch.allclose(out_null["pred_boxes"], out_prev["pred_boxes"]), (
+        "self_cond=False should ignore x0_prev"
+    )
+
+
+def test_sample_multi_step_self_cond_shape_and_finite():
+    """Multi-step sampling with self_cond=True produces valid outputs."""
+    torch.manual_seed(0)
+    dec = _make_decoder()
+    assert dec.self_cond
+    image_tokens, patch_centers = _make_inputs()
+    out = dec.sample(
+        image_tokens=image_tokens, patch_centers=patch_centers,
+        num_inference_steps=4,
+    )
+    assert out["pred_boxes"].shape == (2, 4, 4)
+    assert torch.isfinite(out["pred_boxes"]).all()

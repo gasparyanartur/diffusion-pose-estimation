@@ -214,6 +214,7 @@ class BoxSetDiffusionModule(BaseTrainingModule):
         batch: dict,
         noisy_boxes: Tensor,
         sigma: Tensor,
+        x0_prev: Optional[Tensor] = None,
     ) -> dict[str, Tensor]:
         features = self.backbone(image=batch["image"])
         tokens, centers = _image_tokens_and_centers(features, self.feature_key)
@@ -222,6 +223,7 @@ class BoxSetDiffusionModule(BaseTrainingModule):
             sigma=sigma,
             image_tokens=tokens,
             patch_centers=centers,
+            x0_prev=x0_prev,
         )
 
     @torch.no_grad()
@@ -271,7 +273,16 @@ class BoxSetDiffusionModule(BaseTrainingModule):
             lambda g: self._dbg_grad.append(g.detach().abs().mean())
         )
 
-        pred = self._forward_decoder(batch, noisy, sigma)
+        x0_prev: Optional[Tensor] = None
+        if self.decoder.self_cond:
+            B = noisy.shape[0]
+            sc_mask = torch.rand(B, device=noisy.device) < 0.5   # [B] per-sample draw
+            if sc_mask.any():
+                with torch.no_grad():
+                    prev = self._forward_decoder(batch, noisy.detach(), sigma)["pred_boxes"].detach()
+                x0_prev = prev * sc_mask.view(B, 1, 1).to(prev.dtype)
+
+        pred = self._forward_decoder(batch, noisy, sigma, x0_prev=x0_prev)
         losses = self._loss(pred, {
             "gt_boxes_canon": batch["gt_boxes_canon"],
             "gt_box_labeled": batch["gt_box_labeled"],
