@@ -525,6 +525,14 @@ class BackboneProbeModule(BaseTrainingModule):
         self.save_hyperparameters(ignore=["backbone", "probe_head"])
 
     # ------------------------------------------------------------------
+    # State dict — exclude frozen backbone weights
+    # ------------------------------------------------------------------
+
+    def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
+        sd = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
+        return {k: v for k, v in sd.items() if not k.startswith(prefix + "backbone.")}
+
+    # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
