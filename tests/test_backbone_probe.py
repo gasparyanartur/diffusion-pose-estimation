@@ -336,6 +336,46 @@ def test_backbone_probe_config_build():
 
 
 # ---------------------------------------------------------------------------
+# state_dict / load_state_dict — backbone excluded from checkpoint
+# ---------------------------------------------------------------------------
+
+
+def test_state_dict_excludes_backbone_keys():
+    module = _make_probe_module()
+    sd = module.state_dict()
+    backbone_keys = [k for k in sd if k.startswith("backbone.")]
+    assert backbone_keys == [], f"backbone keys found in state_dict: {backbone_keys[:3]}"
+    probe_keys = [k for k in sd if k.startswith("probe_head.")]
+    assert probe_keys, "probe_head keys missing from state_dict"
+
+
+def test_load_state_dict_without_backbone_keys_succeeds():
+    """A checkpoint without backbone keys loads cleanly via the pattern used
+    in load_backbone_probe_module: backbone weights are injected from the
+    freshly built module before calling load_state_dict(strict=True)."""
+    import torch.nn as nn
+
+    module = _make_probe_module()
+
+    # state_dict() omits backbone keys — this is the checkpoint on disk
+    checkpoint_sd = {k: v.clone() for k, v in module.state_dict().items()}
+    assert not any(k.startswith("backbone.") for k in checkpoint_sd)
+
+    # Simulate load_backbone_probe_module: inject backbone weights via nn.Module.state_dict
+    module2 = _make_probe_module()
+    backbone_sd = {k: v for k, v in nn.Module.state_dict(module2).items() if k.startswith("backbone.")}
+    merged = {**backbone_sd, **checkpoint_sd}
+    module2.load_state_dict(merged, strict=True)  # must not raise
+
+    # Probe head weights from the checkpoint must be loaded into module2
+    for key in checkpoint_sd:
+        assert torch.equal(
+            nn.Module.state_dict(module)[key],
+            nn.Module.state_dict(module2)[key],
+        ), f"probe_head weight mismatch for {key}"
+
+
+# ---------------------------------------------------------------------------
 # compute_probe_diagnostics
 # ---------------------------------------------------------------------------
 
