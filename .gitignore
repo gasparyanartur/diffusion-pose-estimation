@@ -23,3 +23,4 @@ results/cache/*.pkl
 results/cache/work_dir/
 
 .env
+external/diffusiondet/

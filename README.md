@@ -30,10 +30,41 @@ tests/          ← unit tests
 Python 3.10 is required. [uv](https://github.com/astral-sh/uv) is recommended
 for fast, reproducible installs.
 
+Do not use the system Python directly. Create a local virtual environment:
+
 ```bash
 uv venv venv --python 3.10
 source venv/bin/activate
 ```
+
+If Python 3.10 is not available on the system, install it with pyenv and then
+create the venv from that interpreter.
+
+```bash
+pyenv install 3.10.20
+pyenv local 3.10.20
+
+python -m venv venv
+source venv/bin/activate
+```
+
+**CUDA / Compiler requirements:**
+The project uses CUDA PyTorch and includes at least one package that builds a CUDA extension, notably torch-linear-assignment.
+
+A CUDA 12.x toolkit with nvcc must be available. PyTorch’s pip wheels include CUDA runtime libraries, but they do not provide a full system CUDA compiler.
+
+```bash
+export CUDA_HOME=YOUR_CUDA_PATH
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+```
+See which nvcc to verify that the compiler is on the PATH:
+
+```bash
+which nvcc
+```
+It should be something like `/usr/local/cuda-12.1` depending on where CUDA is installed.
+
 
 **Step 1 — PyTorch (CUDA 12.1):**
 
@@ -49,10 +80,17 @@ uv pip install mmcv==2.2.0 \
     -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4/index.html
 ```
 
-**Step 3 — remaining dependencies:**
+**Step 3 — build/install CUDA extension:**
 
 ```bash
-uv pip install -r requirements.txt
+uv pip install -U pip setuptools wheel ninja packaging numpy
+uv pip install --no-build-isolation --no-deps torch-linear-assignment==0.0.6
+``` 
+
+**Step 4 — remaining dependencies:**
+
+```bash
+uv pip install -r requirements.txt --no-build-isolation
 ```
 
 **Step 4 — local editable installs (mmdet and mmpose):**

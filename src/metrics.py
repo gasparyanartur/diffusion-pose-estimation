@@ -243,3 +243,121 @@ def compute_pck(
     if not visible.any():
         return pred_pixel.new_zeros(())
     return (per_joint_err[visible] < threshold_px).float().mean()
+
+
+# ---------------------------------------------------------------------------
+# Box AP (COCO bbox) metric — pycocotools-backed
+# ---------------------------------------------------------------------------
+
+
+class BoxAPMetric:
+    """COCO bbox AP / AR backed by ``pycocotools.cocoeval.COCOeval``.
+
+    Accumulates per-detection result dicts during an epoch and runs
+    :meth:`compute` at the end to obtain the final AP/AR dict. Tests can
+    bypass the file system by passing an already-built ``pycocotools.coco.COCO``
+    via the ``coco`` argument.
+
+    Args:
+        ann_file: Path to a COCO-format annotation JSON. Mutually exclusive
+            with ``coco``.
+        coco: A pre-built :class:`pycocotools.coco.COCO` instance.
+        score_threshold: Skip detections whose score is strictly below this
+            threshold (default: 0.0 — keep everything).
+    """
+
+    def __init__(
+        self,
+        ann_file: str | None = None,
+        coco=None,
+        score_threshold: float = 0.0,
+    ) -> None:
+        if (ann_file is None) == (coco is None):
+            raise ValueError("provide exactly one of ann_file or coco")
+        if coco is not None:
+            self._coco_gt = coco
+        else:
+            from pycocotools.coco import COCO
+            self._coco_gt = COCO(ann_file)
+        # CrowdPose annotations do not include `area`/`ignore` fields required
+        # by pycocotools COCOeval. Populate them from `bbox`/`iscrowd` so that
+        # `iouType="bbox"` evaluation works without re-exporting annotations.
+        for ann in self._coco_gt.anns.values():
+            if "area" not in ann:
+                _, _, w, h = ann["bbox"]
+                ann["area"] = float(w) * float(h)
+            if "ignore" not in ann:
+                ann["ignore"] = int(ann.get("iscrowd", 0))
+        self._valid_img_ids = frozenset(self._coco_gt.getImgIds())
+        self._score_threshold = float(score_threshold)
+        self._results: list[dict] = []
+
+    def reset(self) -> None:
+        """Clear accumulated detections; ready for a new epoch."""
+        self._results = []
+
+    def update(
+        self,
+        pred_boxes_xywh: Tensor,  # (B, N, 4) pixel-space xywh
+        pred_scores: Tensor,      # (B, N)
+        image_ids: Tensor,        # (B,)
+        category_id: int = 1,
+    ) -> None:
+        """Accumulate one batch of detections. Tensors may be on GPU."""
+        boxes_np = pred_boxes_xywh.detach().cpu().numpy()
+        scores_np = pred_scores.detach().cpu().numpy()
+        ids_list = (
+            image_ids.detach().cpu().tolist()
+            if isinstance(image_ids, Tensor) else list(image_ids)
+        )
+
+        B, N, _ = boxes_np.shape
+        for b in range(B):
+            img_id = int(ids_list[b])
+            if img_id not in self._valid_img_ids:
+                continue
+            for n in range(N):
+                score = float(scores_np[b, n])
+                if score < self._score_threshold:
+                    continue
+                x, y, w, h = boxes_np[b, n].tolist()
+                if w <= 0.0 or h <= 0.0:
+                    continue
+                self._results.append({
+                    "image_id":    img_id,
+                    "category_id": int(category_id),
+                    "bbox":        [float(x), float(y), float(w), float(h)],
+                    "score":       score,
+                })
+
+    def compute(self) -> dict[str, float]:
+        """Run COCOeval and return the AP / AR summary dict."""
+        if len(self._results) == 0:
+            return {}
+        import contextlib
+        import io
+
+        from pycocotools.cocoeval import COCOeval
+        coco_dt = self._coco_gt.loadRes(self._results)
+        evaluator = COCOeval(self._coco_gt, coco_dt, iouType="bbox")
+        evaluator.params.imgIds = list(self._valid_img_ids)
+        # COCOeval prints to stdout; redirect to keep training logs clean.
+        with contextlib.redirect_stdout(io.StringIO()):
+            evaluator.evaluate()
+            evaluator.accumulate()
+            evaluator.summarize()
+        stats = evaluator.stats
+        return {
+            "bbox/AP":         float(stats[0]),
+            "bbox/AP50":       float(stats[1]),
+            "bbox/AP75":       float(stats[2]),
+            "bbox/APs":        float(stats[3]),
+            "bbox/APm":        float(stats[4]),
+            "bbox/APl":        float(stats[5]),
+            "bbox/AR@1":       float(stats[6]),
+            "bbox/AR@10":      float(stats[7]),
+            "bbox/AR@100":     float(stats[8]),
+            "bbox/AR@100/s":   float(stats[9]),
+            "bbox/AR@100/m":   float(stats[10]),
+            "bbox/AR@100/l":   float(stats[11]),
+        }

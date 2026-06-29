@@ -43,6 +43,7 @@ from src.training.losses import (
     compute_oks,
     hungarian_match,
 )
+from src.training.base_module import BaseTrainingModule
 from src.training.optim import build_adamw_with_schedule
 from src.vis import save_prediction_plot
 
@@ -436,7 +437,7 @@ class QueryProbe(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class BackboneProbeModule(pl.LightningModule):
+class BackboneProbeModule(BaseTrainingModule):
     """Lightning module for the backbone probe benchmark.
 
     The probe head and slot decoder are constructed internally with fixed
@@ -524,34 +525,12 @@ class BackboneProbeModule(pl.LightningModule):
         self.save_hyperparameters(ignore=["backbone", "probe_head"])
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # State dict — exclude frozen backbone weights
     # ------------------------------------------------------------------
 
-    def on_save_checkpoint(self, checkpoint: dict) -> None:
-        frozen_keys = {name for name, p in self.named_parameters() if not p.requires_grad}
-        state = checkpoint["state_dict"]
-        for key in frozen_keys:
-            state.pop(key, None)
-
-    def on_load_checkpoint(self, checkpoint: dict) -> None:
-        state = checkpoint["state_dict"]
-        for key, value in self.state_dict().items():
-            if key not in state:
-                state[key] = value
-
-    def on_fit_start(self) -> None:
-        import logging
-        from pytorch_lightning.utilities.model_summary import ModelSummary
-        log = logging.getLogger(__name__)
-        summary = ModelSummary(self, max_depth=3)
-        log.info("Model summary:\n%s", summary)
-
-    def on_train_epoch_start(self) -> None:
-        opt = self.optimizers()
-        if isinstance(opt, list):
-            opt = opt[0]
-        lr = opt.param_groups[0]["lr"]
-        self.log("train/lr", lr, prog_bar=False, on_step=False, on_epoch=True)
+    def state_dict(self, *args, destination=None, prefix="", keep_vars=False):
+        sd = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
+        return {k: v for k, v in sd.items() if not k.startswith(prefix + "backbone.")}
 
     # ------------------------------------------------------------------
     # Forward

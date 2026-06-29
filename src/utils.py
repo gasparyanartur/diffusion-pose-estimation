@@ -72,7 +72,25 @@ def load_backbone_probe_module(
 
     ckpt_path = run_dir / "checkpoints" / ckpt_name
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
-    module.load_state_dict(state["state_dict"])
+    sd = state["state_dict"]
+    # Backward compat: probe_head.stem_proj was renamed to probe_head.proj
+    sd = {k.replace("probe_head.stem_proj.", "probe_head.proj."): v for k, v in sd.items()}
+    # Backward compat: probe_head.proj was a Conv2d(1×1); now it is nn.Linear.
+    # Conv2d weight shape [D, C, 1, 1] → Linear weight shape [D, C].
+    if "probe_head.proj.weight" in sd and sd["probe_head.proj.weight"].ndim == 4:
+        sd["probe_head.proj.weight"] = sd["probe_head.proj.weight"].squeeze(-1).squeeze(-1)
+    # Backward compat: concat backbone used to emit "tokens"; now emits "spatial".
+    # Patch the probe's feature_key so inference works with the updated backbone.
+    if hasattr(module, "probe_head") and getattr(module.probe_head, "feature_key", None) == "tokens":
+        module.probe_head.feature_key = "spatial"
+
+    # Backbone weights are not saved in checkpoints (frozen pretrained model).
+    # Inject them from the freshly built module so strict loading works.
+    # Use nn.Module.state_dict directly to bypass BackboneProbeModule's override.
+    import torch.nn as nn
+    backbone_sd = {k: v for k, v in nn.Module.state_dict(module).items() if k.startswith("backbone.")}
+    sd = {**backbone_sd, **sd}
+    module.load_state_dict(sd, strict=True)
     module.to(device)
     module.eval()
 

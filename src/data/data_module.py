@@ -48,6 +48,29 @@ def resize_and_pad_to_square(img: Tensor, size: int, mask_value: float = 0.0) ->
     return padded, mask
 
 
+def _boxes_to_padded_canonical_batch(
+    boxes_xywh_pixel: Tensor,  # [B, P, 4]
+    img_hw: Tensor,            # [B, 2]   (H, W) original
+) -> Tensor:
+    """Vectorised batched form of :func:`boxes_xywh_to_padded_canonical`.
+
+    Each row uses its own original ``max(H, W)``. Padding entries (all zeros)
+    stay all zeros after this transform (they get mapped to ``(-1, -1, 0, 0)``
+    which is still a sentinel-only region; the ``gt_box_labeled`` mask is the
+    source of truth for which slots are real).
+    """
+    side = img_hw.amax(dim=-1).clamp_min(1.0).unsqueeze(-1)  # [B, 1]
+    x = boxes_xywh_pixel[..., 0]
+    y = boxes_xywh_pixel[..., 1]
+    w = boxes_xywh_pixel[..., 2]
+    h = boxes_xywh_pixel[..., 3]
+    cx = (x + w / 2.0) / side * 2.0 - 1.0
+    cy = (y + h / 2.0) / side * 2.0 - 1.0
+    cw = w / side * 2.0
+    ch = h / side * 2.0
+    return torch.stack([cx, cy, cw, ch], dim=-1)
+
+
 class PoseDataModule(pl.LightningDataModule, ABC):
     """Contract: training module reads these attributes after construction."""
 
@@ -230,6 +253,10 @@ class CrowdPoseDataModule(PoseDataModule):
             pairs = [resize_and_pad_to_square(img, self.max_size) for img in normalized]
             batch["image"]        = torch.stack([p for p, _ in pairs])   # [B, 3, S, S]
             batch["padding_mask"] = torch.stack([m for _, m in pairs])   # [B, S, S]
+            if "gt_boxes_pixel" in batch:
+                batch["gt_boxes_canon"] = _boxes_to_padded_canonical_batch(
+                    batch["gt_boxes_pixel"], batch["img_hw"],
+                )
         else:
             batch["image"] = normalized
         return batch

@@ -89,3 +89,36 @@ def color_jitter(
         saturation=saturation,
     )
     return jitter(image)
+
+
+def random_hflip_image_and_boxes(
+    image: Tensor,         # [B, C, H, W]
+    boxes_canon: Tensor,   # [B, N, 4]  (cx, cy, w, h) in canonical space
+    p: float,
+) -> tuple[Tensor, Tensor]:
+    """Horizontally flip images + canonical boxes with per-sample probability ``p``.
+
+    Boxes are in padded-square canonical space where ``cx`` lives in
+    ``[-1, 1]``. A horizontal flip negates ``cx`` and leaves ``cy, w, h``
+    unchanged. Padded sentinel boxes ``(0, 0, 0, 0)`` are invariant under
+    this transform.
+
+    Returns the (possibly-flipped) image and boxes. When ``p == 0`` the inputs
+    are returned unchanged.
+    """
+    if p <= 0.0:
+        return image, boxes_canon
+    B = image.shape[0]
+    flip_mask = torch.bernoulli(
+        torch.full((B,), float(p), device=image.device)
+    ).bool()
+    if not flip_mask.any():
+        return image, boxes_canon
+
+    image_out = image.clone()
+    image_out[flip_mask] = torch.flip(image[flip_mask], dims=(-1,))
+
+    boxes_out = boxes_canon.clone()
+    boxes_out[flip_mask, :, 0] = -boxes_canon[flip_mask, :, 0]
+    return image_out, boxes_out
+

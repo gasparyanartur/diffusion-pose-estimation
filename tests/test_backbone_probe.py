@@ -12,6 +12,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from src.embedders.spatial_attention import make_patch_centers
 from src.features.cnn import CNNFeatureExtractor
 from src.training.backbone_probe import BackboneProbeModule, ConvProbe, QueryProbe
 from src.training.diagnostics import compute_probe_diagnostics
@@ -111,7 +112,11 @@ def test_cross_attention_block_single_kv_token():
 
 def test_query_probe_output_shapes():
     head = QueryProbe(in_channels=128, feature_dim=64, num_heads=4, num_slots=10, num_keypoints=K)
-    feat = {"spatial": torch.rand(2, 128, 16, 12)}
+    spatial = torch.rand(2, 128, 16, 12)
+    feat = {
+        "spatial": spatial,
+        "patch_centers": make_patch_centers(16, 12, spatial.device, spatial.dtype),
+    }
     out = head(feat)
     assert out["keypoints"].shape == (2, 10, K, 2)
     assert out["scores"].shape == (2, 10)
@@ -121,13 +126,21 @@ def test_query_probe_output_shapes():
 def test_query_probe_varied_input_sizes():
     head = QueryProbe(in_channels=64, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
     for h, w in [(8, 6), (16, 12), (32, 24)]:
-        out = head({"spatial": torch.rand(2, 64, h, w)})
+        spatial = torch.rand(2, 64, h, w)
+        out = head({
+            "spatial": spatial,
+            "patch_centers": make_patch_centers(h, w, spatial.device, spatial.dtype),
+        })
         assert out["scores"].shape == (2, 5), f"Failed for {h}x{w}"
 
 
 def test_query_probe_gradient_flows():
     head = QueryProbe(in_channels=32, feature_dim=64, num_heads=4, num_slots=5, num_keypoints=K)
-    out = head({"spatial": torch.rand(2, 32, 8, 6, requires_grad=True)})
+    spatial = torch.rand(2, 32, 8, 6, requires_grad=True)
+    out = head({
+        "spatial": spatial,
+        "patch_centers": make_patch_centers(8, 6, spatial.device, spatial.detach().dtype),
+    })
     
     loss = out["scores"].sum() + out["keypoints"].sum() + out["vis_logits"].sum()
     loss.backward()
@@ -320,6 +333,46 @@ def test_backbone_probe_config_build():
     assert isinstance(module, BackboneProbeModule)
     assert module.probe_head.num_slots == 5
     assert module.probe_head.feature_dim == 64
+
+
+# ---------------------------------------------------------------------------
+# state_dict / load_state_dict — backbone excluded from checkpoint
+# ---------------------------------------------------------------------------
+
+
+def test_state_dict_excludes_backbone_keys():
+    module = _make_probe_module()
+    sd = module.state_dict()
+    backbone_keys = [k for k in sd if k.startswith("backbone.")]
+    assert backbone_keys == [], f"backbone keys found in state_dict: {backbone_keys[:3]}"
+    probe_keys = [k for k in sd if k.startswith("probe_head.")]
+    assert probe_keys, "probe_head keys missing from state_dict"
+
+
+def test_load_state_dict_without_backbone_keys_succeeds():
+    """A checkpoint without backbone keys loads cleanly via the pattern used
+    in load_backbone_probe_module: backbone weights are injected from the
+    freshly built module before calling load_state_dict(strict=True)."""
+    import torch.nn as nn
+
+    module = _make_probe_module()
+
+    # state_dict() omits backbone keys — this is the checkpoint on disk
+    checkpoint_sd = {k: v.clone() for k, v in module.state_dict().items()}
+    assert not any(k.startswith("backbone.") for k in checkpoint_sd)
+
+    # Simulate load_backbone_probe_module: inject backbone weights via nn.Module.state_dict
+    module2 = _make_probe_module()
+    backbone_sd = {k: v for k, v in nn.Module.state_dict(module2).items() if k.startswith("backbone.")}
+    merged = {**backbone_sd, **checkpoint_sd}
+    module2.load_state_dict(merged, strict=True)  # must not raise
+
+    # Probe head weights from the checkpoint must be loaded into module2
+    for key in checkpoint_sd:
+        assert torch.equal(
+            nn.Module.state_dict(module)[key],
+            nn.Module.state_dict(module2)[key],
+        ), f"probe_head weight mismatch for {key}"
 
 
 # ---------------------------------------------------------------------------

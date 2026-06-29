@@ -302,4 +302,52 @@ TensorBoard logs, CSV logs, and Lightning checkpoints (`last.ckpt`, `best.ckpt`)
 | `scripts/precompute_dino.py`       | Pre-extract DINOv3-ConvNeXt features to `results/cache/`       |
 | `scripts/benchmark_diffusion_refiner.py` | Benchmark the trained refiner end-to-end                 |
 | `scripts/prepare_crowdpose.py`     | Download and prepare CrowdPose annotations                     |
+| `scripts/train_box_diffusion.py`   | Train the set-prediction box-diffusion model (see below)       |
+
+---
+
+## Box-diffusion pipeline (object detection)
+
+A parallel pipeline performs **set-prediction object detection** (boxes only,
+no keypoints) using a DETR-style query set denoised by EDM continuous-time
+diffusion. The pipeline shares the backbone + data module with the pose
+pipeline but uses its own decoder, Lightning module, loss, and entry script.
+
+| Stage                 | Class                                                     | File |
+|-----------------------|-----------------------------------------------------------|------|
+| Data (set format)     | `SetPoseDataset` + `set_pose_collate`                     | [src/data/datasets.py](../src/data/datasets.py) |
+| Padded-canonical box transform | `_boxes_to_padded_canonical_batch` (in `on_after_batch_transfer`) | [src/data/data_module.py](../src/data/data_module.py) |
+| Backbone (image tokens)| `BaseFeatureExtractor` (e.g. `CNNFeatureExtractor`)      | [src/features/](../src/features) |
+| Diffusion decoder     | `BoxSetDiffusionDecoder`                                  | [src/decoders/diffusion/box_set.py](../src/decoders/diffusion/box_set.py) |
+| Loss + Hungarian match| `SetBoxDiffusionLoss` (L1 + GIoU + diff-L2 + BCE-objectness) | [src/training/losses.py](../src/training/losses.py) |
+| Lightning module      | `BoxSetDiffusionModule` (+ `Config`)                      | [src/training/box_diffusion_module.py](../src/training/box_diffusion_module.py) |
+| AP metric             | `BoxAPMetric` (COCO bbox AP via `pycocotools`)            | [src/metrics.py](../src/metrics.py) |
+
+Box parameterisation: `(cx, cy, w, h)` in padded-canvas canonical units,
+`cx, cy ∈ [-1, 1]`. Targets predicted as `x₀`. Validation `val/bbox/AP` is
+the `ModelCheckpoint` monitor; multi-step (Heun-style EDM) and single-step
+inference are both reported.
+
+Hydra root config: [conf/benchmark_box_diffusion.yaml](../conf/benchmark_box_diffusion.yaml)
+(defaults: `backbone=cnn`, `decoder=box_set`, `training_module=box_diffusion`,
+`data=crowdpose_set_prediction`). Run via:
+
+```
+python scripts/train_box_diffusion.py
+```
+
+Smoke run on a tiny CPU subset (used to validate the wiring):
+
+```
+python scripts/train_box_diffusion.py \
+    data=crowdpose_set_prediction +data.subset_frac=0.001 \
+    data.batch_size=2 data.num_workers=0 data.ap_batch_size=2 \
+    training_module.max_epochs=2 training_module.val_ap_every_n_epochs=1 \
+    hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
+```
+
+Note: `data=crowdpose_debug` cannot be used directly because it inherits
+`target_format=refinement` (no images in the batch). Use
+`data=crowdpose_set_prediction` with `+data.subset_frac=...` overrides.
+
 

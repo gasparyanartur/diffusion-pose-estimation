@@ -1,0 +1,45 @@
+]633;E;echo "date: $(date -Iseconds)";1b854a29-96b6-496f-837b-f4ca5a3c1c17]633;Cdate: 2026-05-26T23:52:25+02:00
+python: Python 3.10.20
+python_path: /home/gasparyanartur/dev/pose-graph-diff/venv/bin/python
+uv: uv 0.6.14
+cuda_home: /usr/local/cuda-12.9
+nvcc: /usr/local/cuda-13.0/bin/nvcc
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:58:59_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+
+Tue May 26 23:52:25 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.71.05              Driver Version: 595.71.05      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3090        Off |   00000000:01:00.0  On |                  N/A |
+|  0%   48C    P5             40W /  350W |     938MiB /  24576MiB |     29%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            1944      G   /usr/lib/xorg/Xorg                      333MiB |
+|    0   N/A  N/A            3540      G   /usr/bin/gnome-shell                     39MiB |
+|    0   N/A  N/A            3764      G   /opt/freedownloadmanager/fdm              4MiB |
+|    0   N/A  N/A            5159      G   .../8364/usr/lib/firefox/firefox        234MiB |
+|    0   N/A  N/A            6495      G   /usr/share/code/code                    164MiB |
+|    0   N/A  N/A           19969      G   /usr/bin/nautilus                        30MiB |
+|    0   N/A  N/A          139539      G   ...rack-uuid=3190708988185955192         31MiB |
++-----------------------------------------------------------------------------------------+
+
+Distributor ID:	Ubuntu
+Description:	Ubuntu 24.04.4 LTS
+Release:	24.04
+Codename:	noble
+
+ldd (Ubuntu GLIBC 2.39-0ubuntu8.7) 2.39

@@ -1,0 +1,12 @@
+# Debug preset for set-prediction format.
+# ~0.1% of full splits (≈10 train / 2 val / 8 test images).
+# Override subset_frac on the CLI for a larger smoke run.
+
+defaults:
+  - crowdpose_set_prediction
+  - _self_
+
+batch_size: 2
+num_workers: 0
+ap_batch_size: 2
+subset_frac: 0.001

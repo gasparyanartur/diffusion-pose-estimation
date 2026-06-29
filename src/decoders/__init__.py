@@ -12,6 +12,8 @@ from src.decoders.denoise import (
 from src.decoders.diffusion import (
     BaseDiffusionDecoder,
     BaseDiffusionDecoderConfig,
+    BoxSetDiffusionDecoder,
+    BoxSetDiffusionDecoderConfig,
     GraphDiffusionDecoder,
     GraphDiffusionDecoderConfig,
 )
@@ -24,6 +26,8 @@ __all__ = [
     "BaseDenoiseNetworkConfig",
     "BaseDiffusionDecoder",
     "BaseDiffusionDecoderConfig",
+    "BoxSetDiffusionDecoder",
+    "BoxSetDiffusionDecoderConfig",
     "GraphDenoiseNetwork",
     "GraphDenoiseNetworkConfig",
     "GraphDiffusionDecoder",
