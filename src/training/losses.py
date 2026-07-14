@@ -640,3 +640,256 @@ class SetBoxDiffusionLoss(nn.Module):
         return F.binary_cross_entropy_with_logits(
             obj_logits, target, pos_weight=pos_weight,
         )
+
+
+# ---------------------------------------------------------------------------
+# Graph-diffusion pipeline loss (boxes + keypoints, end-to-end Hungarian)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GraphPipelineLossWeights:
+    """Multipliers for :class:`GraphPipelineLoss` components."""
+
+    box_l1: float = 5.0
+    box_giou: float = 2.0
+    box_l2: float = 1.0
+    kpt_l2: float = 5.0
+    obj_bce: float = 1.0
+    rank: float = 1.0
+    # Matcher cost weights.
+    matcher_lambda_l1: float = 5.0
+    matcher_lambda_giou: float = 2.0
+    matcher_lambda_kpt: float = 1.0
+    matcher_lambda_obj: float = 0.1
+
+
+def _graph_pipeline_matching_cost(
+    pred_boxes: Tensor,       # [N, 4]  cxcywh canonical
+    gt_boxes: Tensor,         # [P, 4]  cxcywh canonical
+    pred_joints_abs: Tensor,  # [N, K, 2] canonical absolute
+    gt_joints_abs: Tensor,    # [P, K, 2] canonical absolute
+    gt_labeled: Tensor,       # [P, K]  {0, 1}
+    obj_logits: Tensor,       # [N]
+    lambda_l1: float,
+    lambda_giou: float,
+    lambda_kpt: float,
+    lambda_obj: float,
+    eps: float = 1e-6,
+) -> Tensor:                  # [N, P]
+    """Combined box + keypoint + objectness cost for per-image Hungarian matching."""
+    N, P = pred_boxes.shape[0], gt_boxes.shape[0]
+    if N == 0 or P == 0:
+        return pred_boxes.new_zeros(N, P)
+
+    # Box costs.
+    l1_cost = (pred_boxes[:, None, :] - gt_boxes[None, :, :]).abs().sum(dim=-1)
+    giou = pairwise_giou(
+        box_cxcywh_to_xyxy(pred_boxes), box_cxcywh_to_xyxy(gt_boxes),
+    )
+    giou_cost = -giou                                                  # [N, P]
+
+    # Keypoint cost: mean L2 over labeled joints.
+    valid = gt_labeled[None, :, :].float()                             # [1, P, K]
+    diff  = pred_joints_abs[:, None, :, :] - gt_joints_abs[None, :, :, :]  # [N, P, K, 2]
+    kpt_cost = (diff.pow(2).sum(dim=-1) * valid).sum(dim=-1) / valid.sum(dim=-1).clamp_min(eps)
+
+    # Objectness cost.
+    obj_cost = -F.logsigmoid(obj_logits)[:, None].expand(N, P)
+
+    return (
+        lambda_l1  * l1_cost
+        + lambda_giou * giou_cost
+        + lambda_kpt  * kpt_cost
+        + lambda_obj  * obj_cost
+    )
+
+
+class GraphPipelineLoss(nn.Module):
+    """End-to-end Hungarian loss for :class:`GraphDiffusionPipelineDecoder`.
+
+    Matches N predicted slots to P GT instances per image using a combined
+    box (L1 + GIoU) + keypoint (mean L2) + objectness cost.  Matched pairs
+    receive box and keypoint regression losses; all slots receive objectness
+    BCE and ranking loss.
+
+    forward inputs
+    --------------
+    pred:
+        pred_boxes      [B, N, 4]    (cx, cy, w, h) canonical predicted x₀.
+        pred_joints_rel [B, N, K, 2] joint offsets relative to pred_box_centres.
+        obj_logits      [B, N]
+
+    targets:
+        gt_boxes_canon   [B, P_max, 4]    (cx, cy, w, h) canonical.
+        gt_joints_canon  [B, P_max, K, 2] absolute canonical keypoints.
+        gt_box_labeled   [B, P_max]       {0, 1} — padded slots have 0.
+        gt_visibility    [B, P_max, K]    {0, 1, 2}; >0 → labeled.
+
+    forward outputs
+    ---------------
+    total         weighted sum of all components.
+    box_l1        mean L1 on matched boxes.
+    box_giou      mean (1 − GIoU) on matched boxes.
+    box_l2        mean MSE on matched boxes.
+    kpt_l2        mean MSE on matched labeled joints (absolute coords).
+    obj_loss      BCE with dynamic pos_weight on all slots.
+    ranking_loss  pairwise RankNet on objectness logits.
+    matched       total matched count across batch (float tensor).
+    """
+
+    _max_pos_weight: float = 20.0
+
+    def __init__(self, weights: GraphPipelineLossWeights | None = None) -> None:
+        super().__init__()
+        self.weights = weights or GraphPipelineLossWeights()
+        self._ranking_loss = RankingLoss()
+
+    def forward(
+        self,
+        pred: dict[str, Tensor],
+        targets: dict[str, Tensor],
+    ) -> dict[str, Tensor]:
+        pred_boxes  = pred["pred_boxes"]       # [B, N, 4]
+        pred_jrel   = pred["pred_joints_rel"]  # [B, N, K, 2]
+        obj_logits  = pred["obj_logits"]       # [B, N]
+
+        gt_boxes    = targets["gt_boxes_canon"].to(pred_boxes.device)    # [B, P_max, 4]
+        gt_joints   = targets["gt_joints_canon"].to(pred_boxes.device)   # [B, P_max, K, 2]
+        gt_labeled  = (targets["gt_box_labeled"].to(pred_boxes.device) > 0)  # [B, P_max]
+        gt_vis_raw  = targets["gt_visibility"].to(pred_boxes.device)     # [B, P_max, K]
+        gt_jlabeled = (gt_vis_raw > 0).float()                           # labeled joints mask
+
+        B = pred_boxes.shape[0]
+        component_keys = ("box_l1", "box_giou", "box_l2", "kpt_l2", "obj_loss", "ranking_loss")
+        accum: dict[str, list[Tensor]] = {k: [] for k in component_keys}
+        matched_total = 0
+
+        for b in range(B):
+            per = self._forward_single(
+                pred_boxes[b], pred_jrel[b], obj_logits[b],
+                gt_boxes[b], gt_joints[b], gt_labeled[b], gt_jlabeled[b],
+            )
+            for k in component_keys:
+                accum[k].append(per[k])
+            matched_total += per["matched_count"]
+
+        components = {k: torch.stack(accum[k]).mean() for k in component_keys}
+        w = self.weights
+        total = (
+            w.box_l1  * components["box_l1"]
+            + w.box_giou * components["box_giou"]
+            + w.box_l2   * components["box_l2"]
+            + w.kpt_l2   * components["kpt_l2"]
+            + w.obj_bce  * components["obj_loss"]
+            + w.rank     * components["ranking_loss"]
+        )
+        return {
+            "total":        total,
+            "box_l1":       components["box_l1"],
+            "box_giou":     components["box_giou"],
+            "box_l2":       components["box_l2"],
+            "kpt_l2":       components["kpt_l2"],
+            "obj_loss":     components["obj_loss"],
+            "ranking_loss": components["ranking_loss"],
+            "matched":      torch.tensor(float(matched_total), device=pred_boxes.device),
+        }
+
+    def _forward_single(
+        self,
+        pred_boxes: Tensor,    # [N, 4]
+        pred_jrel: Tensor,     # [N, K, 2]
+        obj_logits: Tensor,    # [N]
+        gt_boxes: Tensor,      # [P_max, 4]
+        gt_joints: Tensor,     # [P_max, K, 2]
+        gt_labeled: Tensor,    # [P_max]  bool
+        gt_jlabeled: Tensor,   # [P_max, K]  float
+    ) -> dict[str, Tensor | int]:
+        N = pred_boxes.shape[0]
+        K = pred_jrel.shape[1]
+        device = pred_boxes.device
+        zero = pred_boxes.new_zeros(())
+
+        # Keep only labeled GT instances.
+        gt_boxes_kept   = gt_boxes[gt_labeled]    # [P, 4]
+        gt_joints_kept  = gt_joints[gt_labeled]   # [P, K, 2]
+        gt_jlab_kept    = gt_jlabeled[gt_labeled]  # [P, K]
+        P = gt_boxes_kept.shape[0]
+
+        objectness_target = torch.zeros(N, device=device)
+        if P == 0:
+            obj_loss = self._objectness_bce(obj_logits, objectness_target, 0)
+            return {
+                "box_l1": zero, "box_giou": zero, "box_l2": zero,
+                "kpt_l2": zero, "obj_loss": obj_loss, "ranking_loss": zero,
+                "matched_count": 0,
+            }
+
+        # Convert predicted joints to absolute canonical for cost and loss.
+        box_ctr = pred_boxes[:, :2]                              # [N, 2]
+        pred_jabs = box_ctr.unsqueeze(1) + pred_jrel             # [N, K, 2]
+
+        # Compute matching cost.
+        cost = _graph_pipeline_matching_cost(
+            pred_boxes, gt_boxes_kept, pred_jabs, gt_joints_kept, gt_jlab_kept,
+            obj_logits,
+            lambda_l1=self.weights.matcher_lambda_l1,
+            lambda_giou=self.weights.matcher_lambda_giou,
+            lambda_kpt=self.weights.matcher_lambda_kpt,
+            lambda_obj=self.weights.matcher_lambda_obj,
+        )
+        slot_idx, gt_idx = hungarian_box_match(cost)
+        matched_count = slot_idx.numel()
+        objectness_target[slot_idx] = 1.0
+
+        matched_pred_boxes  = pred_boxes[slot_idx]    # [M, 4]
+        matched_gt_boxes    = gt_boxes_kept[gt_idx]   # [M, 4]
+        matched_pred_jabs   = pred_jabs[slot_idx]     # [M, K, 2]
+        matched_gt_jabs     = gt_joints_kept[gt_idx]  # [M, K, 2]
+        matched_jlab        = gt_jlab_kept[gt_idx]    # [M, K]
+
+        all_slots   = torch.arange(N, device=device)
+        unmatched   = all_slots[~torch.isin(all_slots, slot_idx)]
+
+        box_l1   = (matched_pred_boxes - matched_gt_boxes).abs().sum(dim=-1).mean()
+        giou_mat = pairwise_giou(
+            box_cxcywh_to_xyxy(matched_pred_boxes),
+            box_cxcywh_to_xyxy(matched_gt_boxes),
+        )
+        box_giou = (1.0 - giou_mat.diagonal()).mean()
+        box_l2   = ((matched_pred_boxes - matched_gt_boxes) ** 2).sum(dim=-1).mean()
+
+        # Keypoint L2 loss on labeled joints only.
+        jdiff  = (matched_pred_jabs - matched_gt_jabs) ** 2   # [M, K, 2]
+        jdiff  = jdiff.sum(dim=-1) * matched_jlab              # [M, K]
+        denom  = matched_jlab.sum().clamp_min(1.0)
+        kpt_l2 = jdiff.sum() / denom
+
+        obj_loss     = self._objectness_bce(obj_logits, objectness_target, matched_count)
+        ranking_loss = self._ranking_loss(obj_logits, slot_idx, unmatched)
+
+        return {
+            "box_l1":       box_l1,
+            "box_giou":     box_giou,
+            "box_l2":       box_l2,
+            "kpt_l2":       kpt_l2,
+            "obj_loss":     obj_loss,
+            "ranking_loss": ranking_loss,
+            "matched_count": matched_count,
+        }
+
+    def _objectness_bce(
+        self,
+        obj_logits: Tensor,
+        target: Tensor,
+        matched_count: int,
+    ) -> Tensor:
+        N = obj_logits.shape[0]
+        pos_weight_val = min(
+            (N - matched_count) / max(matched_count, 1),
+            self._max_pos_weight,
+        )
+        pos_weight = obj_logits.new_tensor([pos_weight_val])
+        return F.binary_cross_entropy_with_logits(
+            obj_logits, target, pos_weight=pos_weight,
+        )

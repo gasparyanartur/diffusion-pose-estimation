@@ -1,3 +1,24 @@
+[2026-07-01] GraphDiffusionPipeline: unified box+pose diffusion denoiser
+
+New files:
+- src/decoders/diffusion/graph_pipeline.py: GraphDiffusionPipelineDecoder +
+  GraphDiffusionPipelineDecoderConfig. Two-stage denoiser: Stage 1 = attention
+  trunk (instance slots × image tokens, joint path × instance latents; follows
+  QueryProbe pattern); Stage 2 = GNN refiner (PoseGraphLayer stack, visual
+  features bilinearly sampled from spatial_feat at Stage 1 joint predictions).
+  Diffusion state = (boxes [B,N,4], joints_rel [B,N,K,2]) with EDM Heun sampling.
+- src/training/graph_pipeline_module.py: GraphDiffusionPipelineModule (Lightning)
+  + GraphDiffusionPipelineModuleConfig. Pads GT to N slots with random noise,
+  shuffles, adds σ·ε, forwards through decoder, computes GraphPipelineLoss.
+  Uses RadioFeatureExtractor (frozen backbone).
+
+Modified files:
+- src/training/losses.py: added GraphPipelineLossWeights, _graph_pipeline_matching_cost,
+  and GraphPipelineLoss (Hungarian matching on combined box L1+GIoU+kpt L2 cost;
+  box L1/GIoU/L2, keypoint L2, objectness BCE, and ranking losses).
+- tests/test_graph_pipeline.py: 18 unit tests (decoder forward, EDM schedule,
+  sample, config round-trip, loss). All pass.
+
 [2026-05-26] Self-conditioning for BoxSetDiffusionDecoder
 
 - src/decoders/diffusion/box_set.py: added self_cond flag + self_cond_in

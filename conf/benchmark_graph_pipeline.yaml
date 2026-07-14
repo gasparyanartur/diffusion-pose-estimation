@@ -1,0 +1,36 @@
+# Hydra root config for scripts/train_graph_pipeline.py
+#
+# Architecture: RADIO backbone (frozen) → GraphDiffusionPipelineDecoder
+# (EDM diffusion over boxes + keypoints, two-stage denoiser, Hungarian loss).
+#
+# Quick start:
+#   python scripts/train_graph_pipeline.py
+#
+# Smoke run on a tiny subset:
+#   python scripts/train_graph_pipeline.py data=crowdpose_set_prediction_debug \
+#       training_module.max_epochs=2 training_module.val_ap_every_n_epochs=1 \
+#       hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
+#
+# Skip training and evaluate a checkpoint:
+#   python scripts/train_graph_pipeline.py skip_training=true \
+#       training_module.resume=results/graph_pipeline/.../checkpoints/last.ckpt
+
+defaults:
+  - backbone: c-radio-v3-b
+  - decoder: graph_pipeline
+  - training_module: graph_pipeline
+  - data: crowdpose_set_prediction
+  - hardware: auto
+  - _self_
+
+run_name: graph_pipeline_benchmark
+out_dir: results/graph_pipeline
+
+skip_training: false
+compile: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false
