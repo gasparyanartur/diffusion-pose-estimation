@@ -196,4 +196,5 @@ zipp==3.23.0
 torch-linear-assignment
 pydantic
 einops
+seaborn
 -e .
