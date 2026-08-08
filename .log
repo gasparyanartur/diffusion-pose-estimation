@@ -1,3 +1,16 @@
+[2026-08-08] Validated DiffusionRegPose training prerequisites without training
+
+- Confirmed the shared environment imports Python 3.10.20, Torch 2.4.1+cu121,
+  `MultiScaleDeformableAttention`, `tensorboardX`, the external config, and
+  `DiffusionRegPose.main` successfully.
+- Confirmed no ED-Pose/DiffusionRegPose pretrained checkpoint is present; only
+  the DEKR and RTMPose checkpoints exist in the repository.
+- Validated the external CrowdPose loader with a temporary `images`/`json`
+  compatibility tree pointing to the repository data. The train constructor
+  generated temporary `data.mat`, and one test sample loaded successfully.
+- Did not run training. The external CLI requires `--pretrain_model_path`, and
+  its full train split contains 12,000 images with no checked-in subset mode.
+
 [2026-08-08] Added explicit graph diffusion variant names
 
 - Canonical graph pipeline names are now `GraphDiffusionOnestageDecoder` and
