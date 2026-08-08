@@ -1,7 +1,7 @@
-# GraphDiffusionPipelineDecoder config.
+# Compatibility config for the one-stage graph diffusion pose decoder.
 # ``image_token_dim`` and ``spatial_feat_dim`` are set automatically from
 # backbone.out_channels at runtime; no manual override needed.
-_target_: src.decoders.diffusion.graph_pipeline.GraphDiffusionPipelineDecoderConfig
+_target_: src.decoders.diffusion.graph_pipeline.GraphDiffusionOnestageDecoderConfig
 
 num_slots: 20
 num_keypoints: 14

@@ -4,7 +4,7 @@
 # of DiffusionTrainingModuleConfig. Override on the command line:
 #   training_module.lr=3e-4 training_module.augmentations.aug_jitter=false
 
-_target_: src.training.DiffusionTrainingModuleConfig
+_target_: src.training.GraphDiffusionRefinerModuleConfig
 
 # optimiser / schedule
 lr: 1e-3

@@ -1,9 +1,10 @@
 # pose-graph-diff
 
-A graph-neural-network diffusion model for refining 2D human pose estimates on
-[CrowdPose](https://github.com/Jeff-sjtu/CrowdPose), with a supporting toolkit
-for running MMPose baselines, extracting prediction caches, and evaluating
-refined results.
+A toolkit for image-conditioned 2D human pose estimation and object detection
+on [CrowdPose](https://github.com/Jeff-sjtu/CrowdPose). The shared pose model is
+always image → features → pose. The default is one-stage image-to-pose set
+prediction; the legacy graph-diffusion refiner can optionally consume existing
+detector keypoints. Pure box detection is a separate model family.
 
 ---
 
@@ -75,6 +76,9 @@ CUDA/Torch pair remains preferable.
 
 The script uses `CUDA_HOME` when set. Otherwise it uses the toolkit detected by
 PyTorch. To select a toolkit explicitly, set `CUDA_HOME` before running it.
+It also registers the compiled DiffusionRegPose extension in the target
+environment and links it against that environment's Torch libraries, so no
+manual `PYTHONPATH` export or import-order workaround is required.
 
 ### MMPose and MMDetection
 
@@ -107,9 +111,27 @@ python scripts/prepare_crowdpose.py
 
 ---
 
-## 3. Extracting prediction caches
+## 3. One-stage pose smoke run
 
-Before training the refinement model you need `.pkl` prediction caches for
+The default pose workflow does not require prediction caches or precomputed
+DINO features. The smallest end-to-end smoke run uses the one-stage graph
+diffusion pipeline and a tiny CrowdPose subset:
+
+```bash
+python scripts/train_graph_pipeline.py \
+    data=crowdpose_set_prediction_debug \
+    training_module.max_epochs=2 \
+    training_module.val_ap_every_n_epochs=1 \
+    hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
+```
+
+The root configuration selects the CNN set-prediction pose model by default.
+The graph pipeline is an explicit one-stage variant selected by
+`conf/benchmark_graph_pipeline.yaml`.
+
+## 4. Extracting prediction caches for the refiner
+
+The legacy `graph_diffusion_refiner` model requires `.pkl` prediction caches for
 in-training AP evaluation.
 
 ```bash
@@ -124,7 +146,7 @@ Caches are written to `results/cache/<model-short-name>_predictions.pkl`.
 
 ---
 
-## 4. Precomputing DINO features
+## 5. Precomputing DINO features for the refiner
 
 The refinement model uses precomputed [DINOv3 ConvNeXt-Small](https://huggingface.co/facebook/dinov3-convnext-small-pretrain-lvd1689m)
 features for image conditioning. Features are extracted once and cached to disk
@@ -174,24 +196,50 @@ config changes are needed after running the commands above.
 
 ---
 
-## 5. Data API
+## 6. Data API
 
 See [`src/data.py`](src/data.py) for full documentation of `PoseDataset`,
 `PredictionDataset`, `SceneGraphSampler`, and `prepare_pose_graph_batch`.
 
 ---
 
-## 6. Training the refinement model
+## 7. Training pose models
 
 Config is managed by [Hydra](https://hydra.cc). All hyperparameters live in
 `conf/` as composable YAML groups. Run from the project root so relative data
 paths resolve correctly.
 
-### Quick start
+### One-stage pose models
+
+The canonical runnable one-stage graph-pipeline command is
+`scripts/train_graph_pipeline.py`:
 
 ```bash
-python scripts/train_pose_refinement.py
+python scripts/train_graph_pipeline.py
 ```
+
+The root config also defaults to the CNN set-prediction pose model:
+`pose_estimator=cnn_set_prediction`, `training_module=set_prediction`, and
+`data=crowdpose_set_prediction`.
+
+### Legacy graph-diffusion refiner
+
+Use the refiner only when starting from existing detector keypoints:
+
+```bash
+python scripts/train_pose_refinement.py \
+    pose_estimator=dino_diffusion_legacy \
+    training_module=graph_diffusion_refiner \
+    data=crowdpose
+```
+
+The refiner path preserves optional `initial_keypoints` support for debugging,
+but it is not the default evaluation path.
+
+`scripts/train_pose_refinement.py` is the historical refiner entry point. Use
+it with a refinement-compatible configuration; do not run it with the
+one-stage root defaults until its training-loop callbacks are migrated to the
+set-prediction module.
 
 Checkpoints and logs are written to
 `results/diffusion_training/<run-name>/<timestamp>/`.  

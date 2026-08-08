@@ -2,12 +2,20 @@
 
 ## Overview
 
-This project trains a graph-neural-network diffusion model to refine 2D human
-pose estimates on the [CrowdPose](https://github.com/Jeff-sjtu/CrowdPose) benchmark.
-A baseline detector (DEKR or RTMPose, run via MMPose) produces an initial set of
-noisy keypoint predictions. The model takes those predictions, extracts per-keypoint
-visual features from a pretrained DINO backbone, and iteratively denoises the
-keypoints using a graph transformer.
+This project provides image-conditioned 2D human pose estimation and object
+detection on the [CrowdPose](https://github.com/Jeff-sjtu/CrowdPose) benchmark.
+All pose models share the composition
+`image → features → pose`. An optional `initial_keypoints` input supports
+debugging and refiner-style experiments, but it is not required by one-stage
+models. The repository distinguishes the following model families:
+
+- **One-stage pose** — image-to-pose prediction without requiring cached
+  detector keypoints. Set prediction is a one-stage pose implementation.
+- **Refiner pose** — the legacy graph diffusion variant, normally initialized
+  from cached detector keypoints. It remains useful for explicit refinement
+  experiments and debugging.
+- **Object detection** — a separate image-to-box model family with no keypoint
+  output.
 
 All configuration is managed by [Hydra](https://hydra.cc/). Every major component
 is a pydantic `BaseConfig` subclass with a `build()` factory method, so you can
@@ -25,17 +33,19 @@ conf/               Hydra config groups
   hardware/         device selection
 
 src/                core library
-  pose_estimator.py 3-stage model + PoseEstimatorConfig
+  pose_estimator.py shared image → features → pose model + config
   base_config.py    BaseConfig (pydantic + Hydra dispatch)
-  features/         stage 1: feature extractors
-  embedders/        stage 2: feature embedders
-  decoders/         stage 3: decoders (diffusion, denoise networks)
+  features/         image feature extractors
+  embedders/        feature embedders
+  decoders/         pose and box decoders
   training/         Lightning module, training config, augmentations, losses
   data/             datasets, data modules, data configs, graph utilities
   metrics.py        AP metric wrapping MMPose CocoMetric
 
 scripts/            CLI entry points
-  train_pose_refinement.py   main training script
+  train_graph_pipeline.py    one-stage graph diffusion pose training
+  train_pose_refinement.py   legacy graph diffusion refiner training
+  train_box_diffusion.py     standalone object detection training
   benchmark_mmpose.py        run MMPose baseline
   extract_predictions.py     write prediction cache files
   precompute_dino.py         pre-extract DINO features to disk
@@ -63,8 +73,8 @@ Hydra config groups in `conf/` map directly to the three top-level config object
 
 | Hydra group        | Python type                | Default yaml            |
 |--------------------|---------------------------|-------------------------|
-| `pose_estimator`   | `PoseEstimatorConfig`      | `default.yaml`          |
-| `training_module`  | `DiffusionTrainingModuleConfig` | `diffusion.yaml`   |
+| `pose_estimator`   | `PoseEstimatorConfig`      | `cnn_set_prediction.yaml` |
+| `training_module`  | one-stage/refiner training config | `set_prediction.yaml` / `graph_diffusion_refiner.yaml` |
 | `data`             | `CrowdPoseDataConfig`      | `crowdpose.yaml`        |
 | `hardware`         | *(plain dict)*             | `auto.yaml`             |
 
@@ -74,25 +84,30 @@ Override individual values: `training_module.lr=3e-4 training_module.max_epochs=
 
 ---
 
-## Model: PoseEstimator
+## Shared pose model: PoseEstimator
 
 [`PoseEstimator`](../src/pose_estimator.py) is an `nn.Module` built from three
 sequential stages:
 
 ```
-image_ids  ──►  FeatureExtractor  ──►  feature dict
+image      ──►  FeatureExtractor  ──►  feature dict
                                           │
-keypoints  ──────────────────────►  FeatureEmbedder  ──►  per-node embeddings
+optional initial_keypoints ─────►  FeatureEmbedder  ──►  embeddings
                                                                │
                                                          Decoder  ──►  predicted keypoints
 ```
+
+One-stage decoders can ignore `initial_keypoints`; refiner decoders use it as
+the initial pose state. Both remain valid implementations of the shared
+`PoseEstimator` interface.
 
 ### Stage 1 — Feature Extractor
 
 Abstract base: [`BaseFeatureExtractor`](../src/features/base.py)
 
-Takes a list of image IDs and returns a feature dictionary. The only production
-implementation is [`CachedDinoFeatureExtractor`](../src/features/cached_dino.py),
+Takes images for online extraction or image IDs for cached extraction and returns
+a feature dictionary. One-stage configurations use an online image backbone;
+the legacy refiner commonly uses [`CachedDinoFeatureExtractor`](../src/features/cached_dino.py),
 which loads precomputed DINOv3-ConvNeXt-small features from per-image `.pt` files
 on disk (produced by `scripts/precompute_dino.py`). Each cache file contains:
 
@@ -136,7 +151,7 @@ Abstract base: [`BaseDecoder`](../src/decoders/base.py)
 Takes per-node embeddings and an optional initial keypoint state, and returns
 predicted keypoints in *canonical space* `(V, 2)` where `V = B × N × K`.
 
-The production implementation is [`GraphDiffusionDecoder`](../src/decoders/diffusion/graph.py).
+The legacy refiner implementation is [`GraphDiffusionRefinerDecoder`](../src/decoders/diffusion/graph.py).
 It implements EDM-style continuous-time diffusion over the pose graph:
 
 **During training** — a random noise level `σ` is sampled; the input keypoints
@@ -280,12 +295,11 @@ returns standard AP / AP50 / AP75 / APM / APL numbers.
 
 | Use case                     | Command                                                            |
 |------------------------------|--------------------------------------------------------------------|
-| Full training (defaults)     | `python scripts/train_pose_refinement.py`                         |
-| DINO + bilinear conditioning | `pose_estimator=dino_bilinear`                                     |
-| Smoke run (2 epochs, tiny)   | `training_module=diffusion_minimal data=crowdpose_debug`           |
-| Tiny debug subset            | `data=crowdpose_debug` (0.1 % of data, batch 2, 0 workers)        |
+| One-stage graph pose smoke   | `python scripts/train_graph_pipeline.py data=crowdpose_set_prediction_debug training_module.max_epochs=2 hardware.accelerator=cpu hardware.devices=1 hardware.precision=32` |
+| One-stage set prediction     | `pose_estimator=cnn_set_prediction training_module=set_prediction data=crowdpose_set_prediction` |
+| Legacy refiner               | `pose_estimator=dino_diffusion_legacy training_module=graph_diffusion_refiner data=crowdpose` |
+| Object detection             | `python scripts/train_box_diffusion.py`                            |
 | Resume from checkpoint       | `training_module.resume=results/.../last.ckpt`                     |
-| Override LR and epochs       | `training_module.lr=3e-4 training_module.max_epochs=50`            |
 
 Outputs land in `results/pose_estimator_training/<run_name>/<timestamp>/`, including
 TensorBoard logs, CSV logs, and Lightning checkpoints (`last.ckpt`, `best.ckpt`).
@@ -296,7 +310,8 @@ TensorBoard logs, CSV logs, and Lightning checkpoints (`last.ckpt`, `best.ckpt`)
 
 | Script                             | Purpose                                                        |
 |------------------------------------|----------------------------------------------------------------|
-| `scripts/train_pose_refinement.py` | Main training loop                                             |
+| `scripts/train_graph_pipeline.py` | One-stage graph diffusion pose training                      |
+| `scripts/train_pose_refinement.py` | Legacy graph diffusion refiner training                     |
 | `scripts/benchmark_mmpose.py`      | Run DEKR / RTMPose baselines via MMPose, write result CSVs     |
 | `scripts/extract_predictions.py`   | Write per-image prediction caches for use as decoder input     |
 | `scripts/precompute_dino.py`       | Pre-extract DINOv3-ConvNeXt features to `results/cache/`       |

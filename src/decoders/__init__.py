@@ -16,6 +16,10 @@ from src.decoders.diffusion import (
     BoxSetDiffusionDecoderConfig,
     GraphDiffusionDecoder,
     GraphDiffusionDecoderConfig,
+    GraphDiffusionOnestageDecoder,
+    GraphDiffusionOnestageDecoderConfig,
+    GraphDiffusionRefinerDecoder,
+    GraphDiffusionRefinerDecoderConfig,
 )
 from src.decoders.pose_slot import PoseSlotDecoder, PoseSlotDecoderConfig
 
@@ -32,6 +36,10 @@ __all__ = [
     "GraphDenoiseNetworkConfig",
     "GraphDiffusionDecoder",
     "GraphDiffusionDecoderConfig",
+    "GraphDiffusionOnestageDecoder",
+    "GraphDiffusionOnestageDecoderConfig",
+    "GraphDiffusionRefinerDecoder",
+    "GraphDiffusionRefinerDecoderConfig",
     "MlpDenoiseNetwork",
     "MlpDenoiseNetworkConfig",
     "PoseSlotDecoder",

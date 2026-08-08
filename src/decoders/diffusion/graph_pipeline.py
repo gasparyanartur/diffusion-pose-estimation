@@ -42,8 +42,8 @@ from src.embedders.spatial_attention import make_pe_from_centers
 from src.training.diffusion_modules import FourierFeatures, TimeFiLMTransformerBlock
 
 
-class GraphDiffusionPipelineDecoder(nn.Module):
-    """Diffusion denoiser for joint (box, pose) prediction.
+class GraphDiffusionOnestageDecoder(nn.Module):
+    """One-stage diffusion denoiser for joint (box, pose) prediction.
 
     Args:
         num_slots:            N — number of instance slots.
@@ -478,8 +478,8 @@ class GraphDiffusionPipelineDecoder(nn.Module):
         return last_pred
 
 
-class GraphDiffusionPipelineDecoderConfig(BaseConfig):
-    """Pydantic config for :class:`GraphDiffusionPipelineDecoder`."""
+class GraphDiffusionOnestageDecoderConfig(BaseConfig):
+    """Pydantic config for :class:`GraphDiffusionOnestageDecoder`."""
 
     num_slots: int = 20
     num_keypoints: int = 14
@@ -504,8 +504,8 @@ class GraphDiffusionPipelineDecoderConfig(BaseConfig):
     pe_scale: float = 1000.0
     dropout: float = 0.1
 
-    def build(self) -> GraphDiffusionPipelineDecoder:
-        return GraphDiffusionPipelineDecoder(
+    def build(self) -> GraphDiffusionOnestageDecoder:
+        return GraphDiffusionOnestageDecoder(
             num_slots=self.num_slots,
             num_keypoints=self.num_keypoints,
             dim=self.dim,
@@ -529,3 +529,8 @@ class GraphDiffusionPipelineDecoderConfig(BaseConfig):
             pe_scale=self.pe_scale,
             dropout=self.dropout,
         )
+
+
+# Compatibility names retained for existing scripts, checkpoints, and imports.
+GraphDiffusionPipelineDecoder = GraphDiffusionOnestageDecoder
+GraphDiffusionPipelineDecoderConfig = GraphDiffusionOnestageDecoderConfig

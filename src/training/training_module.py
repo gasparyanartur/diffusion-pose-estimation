@@ -8,7 +8,7 @@ The model itself (extractor + embedder + decoder) is :class:`PoseEstimator`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytorch_lightning as pl
 import torch
@@ -26,7 +26,6 @@ from src.data import (
 )
 from src.decoders.diffusion.base import BaseDiffusionDecoder
 from src.metrics import KeypointAPMetric, canonical_to_pixel, compute_mpjpe, compute_pck
-from src.pose_estimator import PoseEstimator
 from src.training.augmentations import (
     image_dropout,
     joint_dropout,
@@ -35,6 +34,9 @@ from src.training.augmentations import (
     pose_dropout,
 )
 from src.training.losses import compute_bone_loss, compute_joint_loss
+
+if TYPE_CHECKING:
+    from src.pose_estimator import PoseEstimator
 
 
 @dataclass
@@ -78,8 +80,8 @@ def _read_img_wh(img_paths: list[str], B: int, device: torch.device) -> Tensor:
     return torch.tensor(wh, dtype=torch.float32, device=device)
 
 
-class PoseEstimatorTrainingModule(pl.LightningModule):
-    """Lightning wrapper for :class:`PoseEstimator` with diffusion-style training."""
+class GraphDiffusionRefinerModule(pl.LightningModule):
+    """Legacy graph-diffusion refiner training module."""
 
     def __init__(
         self,
@@ -464,3 +466,7 @@ class PoseEstimatorTrainingModule(pl.LightningModule):
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
         )
+
+
+# Compatibility name retained for existing checkpoints, scripts, and imports.
+PoseEstimatorTrainingModule = GraphDiffusionRefinerModule

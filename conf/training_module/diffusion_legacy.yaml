@@ -11,7 +11,7 @@
 #
 # Pair with `pose_estimator=dino_diffusion_legacy` and `data=crowdpose`.
 
-_target_: src.training.DiffusionTrainingModuleConfig
+_target_: src.training.GraphDiffusionRefinerModuleConfig
 
 # optimiser / schedule
 lr: 3e-4

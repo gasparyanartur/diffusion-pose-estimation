@@ -20,8 +20,8 @@ from src.training.losses import SetPredictionLossWeights
 from src.training.set_prediction_module import SetPredictionTrainingModule
 from src.training.training_module import (
     AugmentationConfig,
+    GraphDiffusionRefinerModule,
     LossConfig,
-    PoseEstimatorTrainingModule,
 )
 
 if TYPE_CHECKING:
@@ -42,8 +42,8 @@ class TrainingModuleConfig(BaseConfig):
         ...
 
 
-class DiffusionTrainingModuleConfig(TrainingModuleConfig):
-    """Builds :class:`PoseEstimatorTrainingModule` with all training params."""
+class GraphDiffusionRefinerModuleConfig(TrainingModuleConfig):
+    """Builds the legacy cached-pose graph-diffusion refiner module."""
 
     # optimiser / schedule
     lr: float = 1e-3
@@ -78,8 +78,8 @@ class DiffusionTrainingModuleConfig(TrainingModuleConfig):
         self,
         pose_estimator: "PoseEstimator",
         data: "PoseDataModule",
-    ) -> PoseEstimatorTrainingModule:
-        return PoseEstimatorTrainingModule(
+    ) -> GraphDiffusionRefinerModule:
+        return GraphDiffusionRefinerModule(
             pose_estimator=pose_estimator,
             augmentations=self.augmentations,
             losses=self.losses,
@@ -101,6 +101,10 @@ class DiffusionTrainingModuleConfig(TrainingModuleConfig):
             raw_refiner=self.raw_refiner,
             disable_noise=self.disable_noise,
         )
+
+
+# Compatibility name retained for existing Hydra configs and imports.
+DiffusionTrainingModuleConfig = GraphDiffusionRefinerModuleConfig
 
 
 class SetPredictionLossWeightsConfig(BaseConfig):

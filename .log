@@ -1,3 +1,92 @@
+[2026-08-08] Added explicit graph diffusion variant names
+
+- Canonical graph pipeline names are now `GraphDiffusionOnestageDecoder` and
+  `GraphDiffusionOnestageModule`.
+- The legacy graph decoder is now canonically named
+  `GraphDiffusionRefinerDecoder`.
+- Old class/config names remain compatibility aliases.
+- Added `graph_diffusion_onestage` Hydra presets and switched the graph
+  pipeline benchmark root to them.
+- Legacy pose-estimator presets now target the explicit refiner decoder.
+- Focused validation passed: 30 tests in the training/config and
+  set-prediction suites.
+
+[2026-08-08] Completed one-stage graph-pipeline smoke run
+
+- Ran the documented tiny CPU smoke command using
+  `data=crowdpose_set_prediction_debug`, two epochs, and AP every epoch.
+- The run completed end-to-end: model construction, validation AP, training,
+  checkpoint restore, and test evaluation.
+- The resolved model used `GraphDiffusionOnestageDecoderConfig` and
+  `GraphDiffusionOnestageModuleConfig`.
+- Test AP was 0.0; this is an expected untrained wiring result, not a model
+  quality measurement.
+- Test results were written under
+  `results/graph_pipeline/graph_pipeline_benchmark/20260808_232101/`.
+
+[2026-08-08] Cleaned model-family naming and documentation
+
+- Added canonical `GraphDiffusionRefinerModule` and
+  `GraphDiffusionRefinerModuleConfig` names with compatibility aliases.
+- Added the explicit `graph_diffusion_refiner` training preset.
+- Updated legacy diffusion presets to resolve to the canonical refiner config.
+- Reworked README, `docs/architecture.md`, and `docs/project.md` around the
+  shared image → features → pose interface.
+- Documented one-stage pose, refiner pose, and standalone object detection as
+  separate concepts without removing optional `initial_keypoints` support.
+- Focused validation passed: 30 tests and fresh-process canonical refiner
+  import checks.
+
+[2026-08-08] Hardened pose/training imports against circular dependencies
+
+- Confirmed the current checkout imports `src.pose_estimator`, decoder modules,
+  and set-prediction training successfully in fresh processes.
+- Removed runtime `PoseEstimator` imports from training modules where the symbol
+  is only used for annotations; imports are now guarded by `TYPE_CHECKING`.
+- Added a fresh-process regression test for the previously failing import path.
+- Focused validation passed: 31 tests.
+
+[2026-08-08] Made root configuration default to zero-stage set prediction
+
+- Changed `conf/config.yaml` defaults to the existing
+  `cnn_set_prediction` + `set_prediction` + `crowdpose_set_prediction` stack.
+- The root config now documents image → set prediction as the primary path and
+  cached refinement as explicit.
+- Updated the Hydra configuration regression test to assert nested CNN/slot
+  decoder targets, set-format data, and null prediction caches.
+- Focused validation passed: 28 tests in `test_training_data_config.py` and
+  `test_set_prediction_module.py`.
+
+[2026-08-08] Removed extension import-order dependency
+
+- Diagnosed direct `MultiScaleDeformableAttention` imports failing because the
+  compiled shared object had no runtime search path for `libc10.so` and related
+  Torch libraries.
+- Added the selected Torch `lib` directory as an RPATH in the extension build.
+- Updated setup and installation documentation to state that direct imports no
+  longer require importing Torch first.
+- Static validation passed with `bash -n`, `py_compile`, and `git diff --check`.
+
+[2026-08-08] Fixed training package circular import
+
+- Replaced eager imports in `src/training/__init__.py` with lazy public-export
+  resolution so `src.pose_estimator` can initialize without importing a
+  training module that points back to it.
+- Preserved the full `src.training.__all__` public API and missing-name
+  `AttributeError` behavior.
+- Fresh-process import checks passed, and the focused training data/config
+  suite passed: 14 tests.
+- The one-epoch smoke run completed training and validation and reached test
+  evaluation without the original import failure.
+
+[2026-08-08] Registered DiffusionRegPose extension automatically
+
+- Updated `scripts/setup_shared_env.sh` to write the compiled extension path to
+  `pose_graph_diffusionregpose_ops.pth` in the selected environment.
+- Removed the extension directory from the smoke check's temporary
+  `PYTHONPATH`.
+- Documented that manual `PYTHONPATH` exports are no longer required.
+
 [2026-08-08] Restored pyenv prerequisite documentation
 
 - Restored the explicit Python 3.10.20 setup path with `pyenv install` and

@@ -17,8 +17,8 @@
 
 defaults:
   - backbone: c-radio-v3-b
-  - decoder: graph_pipeline
-  - training_module: graph_pipeline
+  - decoder: graph_diffusion_onestage
+  - training_module: graph_diffusion_onestage
   - data: crowdpose_set_prediction
   - hardware: auto
   - _self_

@@ -16,8 +16,8 @@ from src.decoders.diffusion.base import (
 )
 
 
-class GraphDiffusionDecoder(BaseDiffusionDecoder):
-    """Graph-structured diffusion decoder.
+class GraphDiffusionRefinerDecoder(BaseDiffusionDecoder):
+    """Legacy graph-structured pose-refinement decoder.
 
     Embeddings:
       h   (M, hidden)   = LN(pos_emb(noisy) + idx_emb(joint_type))
@@ -116,8 +116,8 @@ class GraphDiffusionDecoder(BaseDiffusionDecoder):
         return self.denoise_network(h, graph.edge_index, e, v, g)
 
 
-class GraphDiffusionDecoderConfig(BaseDiffusionDecoderConfig):
-    """Config for :class:`GraphDiffusionDecoder`.
+class GraphDiffusionRefinerDecoderConfig(BaseDiffusionDecoderConfig):
+    """Config for :class:`GraphDiffusionRefinerDecoder`.
 
     The inner denoise network is built from ``denoise_network`` (a polymorphic
     sub-config). ``hidden_dim`` etc. must match between this config and the
@@ -134,8 +134,8 @@ class GraphDiffusionDecoderConfig(BaseDiffusionDecoderConfig):
     dim_global_image_cond: int = 0
     dropout_rate: float = 0.1
 
-    def build(self) -> GraphDiffusionDecoder:
-        return GraphDiffusionDecoder(
+    def build(self) -> GraphDiffusionRefinerDecoder:
+        return GraphDiffusionRefinerDecoder(
             denoise_network=self.denoise_network.build(),
             num_keypoints=self.num_keypoints,
             hidden_dim=self.hidden_dim,
@@ -149,3 +149,8 @@ class GraphDiffusionDecoderConfig(BaseDiffusionDecoderConfig):
             sigma_min=self.sigma_min,
             sigma_max=self.sigma_max,
         )
+
+
+# Compatibility names retained for existing refinement configs and imports.
+GraphDiffusionDecoder = GraphDiffusionRefinerDecoder
+GraphDiffusionDecoderConfig = GraphDiffusionRefinerDecoderConfig

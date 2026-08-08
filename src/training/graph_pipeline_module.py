@@ -204,7 +204,7 @@ def _build_noisy_input(
 # Lightning module
 # ---------------------------------------------------------------------------
 
-class GraphDiffusionPipelineModule(BaseTrainingModule):
+class GraphDiffusionOnestageModule(BaseTrainingModule):
     """Lightning module training GraphDiffusionPipelineDecoder.
 
     Args:
@@ -552,8 +552,8 @@ class GraphPipelineLossWeightsConfig(BaseConfig):
         )
 
 
-class GraphDiffusionPipelineModuleConfig(BaseConfig):
-    """Hydra-instantiable config for :class:`GraphDiffusionPipelineModule`."""
+class GraphDiffusionOnestageModuleConfig(BaseConfig):
+    """Hydra-instantiable config for :class:`GraphDiffusionOnestageModule`."""
 
     # optimiser / schedule
     lr: float = 1e-3
@@ -590,11 +590,11 @@ class GraphDiffusionPipelineModuleConfig(BaseConfig):
     def build(
         self,
         backbone: BaseFeatureExtractor,
-        decoder: "GraphDiffusionPipelineDecoder",
+        decoder: "GraphDiffusionOnestageDecoder",
         val_ann_file: str | None = None,
         test_ann_file: str | None = None,
-    ) -> GraphDiffusionPipelineModule:
-        return GraphDiffusionPipelineModule(
+    ) -> GraphDiffusionOnestageModule:
+        return GraphDiffusionOnestageModule(
             backbone=backbone,
             decoder=decoder,
             weights=self.weights.to_dataclass(),
@@ -618,3 +618,8 @@ class GraphDiffusionPipelineModuleConfig(BaseConfig):
             saturation=self.saturation,
             grad_clip=self.grad_clip,
         )
+
+
+# Compatibility names retained for existing scripts, checkpoints, and imports.
+GraphDiffusionPipelineModule = GraphDiffusionOnestageModule
+GraphDiffusionPipelineModuleConfig = GraphDiffusionOnestageModuleConfig

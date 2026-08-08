@@ -1,14 +1,17 @@
 # Root Hydra config. Override any value from the command line:
 #
-#   python scripts/train_pose_refinement.py run_name=exp1
-#   python scripts/train_pose_refinement.py pose_estimator=dino_bilinear
-#   python scripts/train_pose_refinement.py training_module.lr=3e-4 training_module.max_epochs=200
-#   python scripts/train_pose_refinement.py training_module=diffusion_minimal data=crowdpose_minimal
+#   python scripts/benchmark_backbone.py run_name=exp1
+#   python scripts/benchmark_backbone.py backbone=cnn
+#   python scripts/benchmark_backbone.py training_module.lr=3e-4 training_module.max_epochs=200
+#
+# The default project model is zero-stage set prediction: image → person slots
+# → keypoints. Cached-prediction refinement remains available explicitly via
+# scripts/train_pose_refinement.py and the diffusion/refinement config groups.
 
 defaults:
-  - pose_estimator: default
-  - training_module: diffusion
-  - data: crowdpose
+  - pose_estimator: cnn_set_prediction
+  - training_module: set_prediction
+  - data: crowdpose_set_prediction
   - hardware: auto
   - _self_
 

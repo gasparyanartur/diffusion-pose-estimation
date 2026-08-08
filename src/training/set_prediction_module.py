@@ -14,6 +14,7 @@ score is ``sigmoid(vis_logits)``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytorch_lightning as pl
 import torch
@@ -22,7 +23,6 @@ from torch import Tensor
 from src.metrics import KeypointAPMetric, canonical_to_pixel
 from src.metrics import CROWDPOSE_SIGMAS
 from src.vis import save_prediction_plot
-from src.pose_estimator import PoseEstimator
 from src.training.losses import (
     SetPredictionLoss,
     SetPredictionLossWeights,
@@ -30,6 +30,9 @@ from src.training.losses import (
     hungarian_match,
 )
 from src.training.optim import build_adamw_with_schedule
+
+if TYPE_CHECKING:
+    from src.pose_estimator import PoseEstimator
 
 
 class SetPredictionTrainingModule(pl.LightningModule):

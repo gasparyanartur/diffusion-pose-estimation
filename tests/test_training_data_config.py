@@ -6,13 +6,14 @@ Validates:
     with matching attributes
   * CrowdPoseDataConfig.build returns a CrowdPoseDataModule with the expected
     contract attributes
-  * Hydra root config composes successfully for both diffusion and
-    diffusion_minimal training presets
+    * Hydra root config defaults to cache-free set prediction
+    * Hydra root config still composes successfully for diffusion presets
 """
 
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,15 +30,20 @@ from src.data import (
     DataConfig,
     PoseDataModule,
 )
-from src.decoders import GraphDiffusionDecoderConfig, MlpDenoiseNetworkConfig
+from src.decoders import (
+    GraphDiffusionDecoderConfig,
+    GraphDiffusionOnestageDecoderConfig,
+    GraphDiffusionRefinerDecoderConfig,
+    MlpDenoiseNetworkConfig,
+)
 from src.embedders import NoneEmbedderConfig
 from src.features import NoneFeatureExtractorConfig
 from src.pose_estimator import PoseEstimatorConfig
 from src.training import (
-    AugmentationConfig,
     DiffusionTrainingModuleConfig,
-    LossConfig,
+    GraphDiffusionOnestageModuleConfig,
     PoseEstimatorTrainingModule,
+    SetPredictionTrainingModuleConfig,
     TrainingModuleConfig,
 )
 
@@ -73,12 +79,74 @@ def test_hydra_root_composes(training_module_group):
             overrides=[f"training_module={training_module_group}"],
         )
     # _target_ keys present at root of training_module + data
-    assert cfg.training_module._target_.endswith("DiffusionTrainingModuleConfig")
+    assert cfg.training_module._target_.endswith("GraphDiffusionRefinerModuleConfig")
     assert cfg.data._target_.endswith("CrowdPoseDataConfig")
     # Sub-configs flat (no _target_), sanity-check a couple
     assert "augmentations" in cfg.training_module
     assert "losses" in cfg.training_module
     assert "batch_size" in cfg.data
+
+
+def test_hydra_root_defaults_to_set_prediction():
+    with initialize_config_dir(version_base="1.3", config_dir=CONF_DIR):
+        cfg = compose(config_name="config")
+
+    assert cfg.pose_estimator.feature_extractor._target_.endswith(
+        "CNNFeatureExtractorConfig"
+    )
+    assert cfg.pose_estimator.decoder._target_.endswith("PoseSlotDecoderConfig")
+    assert cfg.training_module._target_.endswith("SetPredictionTrainingModuleConfig")
+    assert cfg.data.target_format == "set"
+    assert cfg.data.val_pred_cache is None
+    assert cfg.data.test_pred_cache is None
+
+
+def test_graph_diffusion_variant_configs_have_explicit_names():
+    with initialize_config_dir(version_base="1.3", config_dir=CONF_DIR):
+        cfg = compose(config_name="benchmark_graph_pipeline")
+
+    assert cfg.decoder._target_.endswith("GraphDiffusionOnestageDecoderConfig")
+    assert cfg.training_module._target_.endswith("GraphDiffusionOnestageModuleConfig")
+
+    with initialize_config_dir(version_base="1.3", config_dir=CONF_DIR):
+        legacy = compose(config_name="config", overrides=[
+            "pose_estimator=default",
+            "training_module=diffusion",
+            "data=crowdpose",
+        ])
+    assert legacy.pose_estimator.decoder._target_.endswith(
+        "GraphDiffusionRefinerDecoderConfig"
+    )
+
+
+def test_graph_diffusion_compatibility_aliases_preserve_identity():
+    assert GraphDiffusionDecoderConfig is GraphDiffusionRefinerDecoderConfig
+    assert GraphDiffusionOnestageDecoderConfig.__name__ == (
+        "GraphDiffusionOnestageDecoderConfig"
+    )
+    assert GraphDiffusionOnestageModuleConfig.__name__ == (
+        "GraphDiffusionOnestageModuleConfig"
+    )
+
+
+def test_pose_training_imports_are_cycle_free_in_fresh_process():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import src.pose_estimator; "
+                "from src.decoders.diffusion import BoxSetDiffusionDecoder; "
+                "from src.training import SetPredictionTrainingModule; "
+                "print('ok')"
+            ),
+        ],
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "ok"
 
 
 def test_diffusion_minimal_overrides_apply():
@@ -102,9 +170,7 @@ def test_training_module_config_from_hydra_dispatches_subclass():
     with initialize_config_dir(version_base="1.3", config_dir=CONF_DIR):
         cfg = compose(config_name="config")
     tm_cfg = TrainingModuleConfig.from_hydra_config(cfg.training_module)
-    assert isinstance(tm_cfg, DiffusionTrainingModuleConfig)
-    assert isinstance(tm_cfg.augmentations, AugmentationConfig)
-    assert isinstance(tm_cfg.losses, LossConfig)
+    assert isinstance(tm_cfg, SetPredictionTrainingModuleConfig)
 
 
 def test_diffusion_training_module_build_propagates_attrs():

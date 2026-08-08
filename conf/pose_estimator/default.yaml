@@ -1,4 +1,4 @@
-# Default PoseEstimator: no image features, graph-diffusion decoder.
+# Legacy refiner PoseEstimator: no image features, graph-diffusion decoder.
 # Override sub-trees from the command line, e.g.:
 #   python ... pose_estimator.decoder.denoise_network.num_layers=6
 #   python ... pose_estimator.decoder.num_train_steps=200
@@ -10,7 +10,7 @@ feature_embedder:
   _target_: src.embedders.NoneEmbedderConfig
 
 decoder:
-  _target_: src.decoders.GraphDiffusionDecoderConfig
+  _target_: src.decoders.GraphDiffusionRefinerDecoderConfig
   num_train_steps: 100
   sigma_min: 0.002
   sigma_max: 0.5

@@ -8,6 +8,12 @@ from src.decoders.diffusion.base import (
 from src.decoders.diffusion.graph import (
     GraphDiffusionDecoder,
     GraphDiffusionDecoderConfig,
+    GraphDiffusionRefinerDecoder,
+    GraphDiffusionRefinerDecoderConfig,
+)
+from src.decoders.diffusion.graph_pipeline import (
+    GraphDiffusionOnestageDecoder,
+    GraphDiffusionOnestageDecoderConfig,
 )
 from src.decoders.diffusion.box_set import (
     BoxSetDiffusionDecoder,
@@ -21,5 +27,9 @@ __all__ = [
     "BoxSetDiffusionDecoderConfig",
     "GraphDiffusionDecoder",
     "GraphDiffusionDecoderConfig",
+    "GraphDiffusionOnestageDecoder",
+    "GraphDiffusionOnestageDecoderConfig",
+    "GraphDiffusionRefinerDecoder",
+    "GraphDiffusionRefinerDecoderConfig",
     "TimestepSinusoidalEmbedding",
 ]

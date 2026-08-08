@@ -1,9 +1,9 @@
-# GraphDiffusionPipelineModuleConfig — joint box+pose diffusion training preset.
+# Compatibility config for the one-stage graph diffusion pose module.
 #
 # Pairs with conf/decoder/graph_pipeline.yaml and conf/benchmark_graph_pipeline.yaml.
 # Override on the CLI:
 #   training_module.lr=3e-4 training_module.max_epochs=200
-_target_: src.training.graph_pipeline_module.GraphDiffusionPipelineModuleConfig
+_target_: src.training.graph_pipeline_module.GraphDiffusionOnestageModuleConfig
 
 # optimiser / schedule
 lr: 2e-4

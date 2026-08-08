@@ -124,8 +124,15 @@ fi
   "$PYTHON" -c 'import runpy; import torch.utils.cpp_extension as cpp; cpp._check_cuda_version = lambda *args, **kwargs: None; runpy.run_path("setup.py", run_name="__main__")' build_ext --inplace
 )
 
-PYTHONPATH="$ROOT_DIR:$ROOT_DIR/external/DiffusionRegPose:$OPS_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-  "$PYTHON" - <<'PY'
+# Register the source-tree extension directory in this environment so imports
+# work from the repository root without requiring a manual PYTHONPATH export.
+# The extension itself embeds the selected Torch library path at link time, so
+# direct imports also work without requiring `import torch` first.
+SITE_PACKAGES="$($PYTHON -c 'import site; print(site.getsitepackages()[0])')"
+mkdir -p "$SITE_PACKAGES"
+printf '%s\n' "$OPS_DIR" > "$SITE_PACKAGES/pose_graph_diffusionregpose_ops.pth"
+
+PYTHONPATH="$ROOT_DIR:$ROOT_DIR/external/DiffusionRegPose" "$PYTHON" - <<'PY'
 import importlib
 
 for name in (

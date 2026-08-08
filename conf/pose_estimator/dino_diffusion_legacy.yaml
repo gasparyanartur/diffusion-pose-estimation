@@ -23,7 +23,7 @@ feature_embedder:
   global_out_dim: 128   # projects 768-d pooled vector → 128-d for decoder
 
 decoder:
-  _target_: src.decoders.GraphDiffusionDecoderConfig
+  _target_: src.decoders.GraphDiffusionRefinerDecoderConfig
   num_train_steps: 100
   sigma_min: 0.002
   sigma_max: 0.5

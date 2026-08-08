@@ -106,3 +106,26 @@ Visible-mask: `visible = visibility == 2`.
 - Edge list in `src.data.skeleton.CROWDPOSE_EDGE_LIST`.
 - AP via `src.metrics.KeypointAPMetric` with `iou_type="keypoints_crowd"`.
   Standard reported metrics: `AP`, `AP .5`, `AP .75`, `AP (E/M/H)`, `AR (E/M/H)`.
+
+## Model families
+
+All pose models use the shared `PoseEstimator` composition:
+
+```text
+image → features → pose
+```
+
+`initial_keypoints` is optional at the shared interface. It may be supplied for
+debugging or for a refiner-style experiment, but one-stage models do not require
+it.
+
+- `graph_diffusion_onestage` is the direct image-to-box-and-pose set model.
+- `set_prediction` is a one-stage pose-estimation module using fixed pose slots
+  and Hungarian matching.
+- `graph_diffusion_refiner` is the legacy graph-diffusion refiner, normally
+  driven by cached detector keypoints.
+- Box diffusion and DiffusionDet are separate object-detection models whose
+  outputs are boxes and objectness scores, not poses.
+
+The root default is the cache-free one-stage set-prediction configuration.
+Refiner configurations and prediction caches must be selected explicitly.
