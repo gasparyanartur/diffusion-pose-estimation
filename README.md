@@ -22,120 +22,65 @@ tests/          ← unit tests
 ```
 
 ---
+## 1. Install the complete environment
 
-## 1. Prerequisites
+The repository uses one environment for the root project and
+`external/DiffusionRegPose`. The setup includes the mandatory CrowdPose APIs,
+Detectron2, MMPose 1.3.2, and MMDetection 3.3.0.
 
-### Python environment
+Prerequisites:
 
-Python 3.10 is required. [uv](https://github.com/astral-sh/uv) is recommended
-for fast, reproducible installs.
+- Python 3.10
+- `pyenv` (recommended for installing the exact Python version)
+- `uv`
+- A complete CUDA toolkit with `nvcc`
+- NVIDIA driver and a CUDA-capable GPU
 
-Do not use the system Python directly. Create a local virtual environment:
-
-```bash
-uv venv venv --python 3.10
-source venv/bin/activate
-```
-
-If Python 3.10 is not available on the system, install it with pyenv and then
-create the venv from that interpreter.
+If Python 3.10.20 is not already available, install and select it with pyenv:
 
 ```bash
 pyenv install 3.10.20
 pyenv local 3.10.20
+```
 
-python -m venv venv
+Do not use the system Python directly. The setup script creates the project
+environment from the selected Python 3.10 interpreter.
+
+From the repository root, run:
+
+```bash
+./scripts/setup_shared_env.sh
 source venv/bin/activate
 ```
 
-**CUDA / Compiler requirements:**
-The project uses CUDA PyTorch and includes at least one package that builds a CUDA extension, notably torch-linear-assignment.
-
-A CUDA 12.x toolkit with nvcc must be available. PyTorch’s pip wheels include CUDA runtime libraries, but they do not provide a full system CUDA compiler.
+To test in a separate environment, pass its path:
 
 ```bash
-export CUDA_HOME=YOUR_CUDA_PATH
-export PATH="$CUDA_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
-```
-See which nvcc to verify that the compiler is on the PATH:
-
-```bash
-which nvcc
-```
-It should be something like `/usr/local/cuda-12.1` depending on where CUDA is installed.
-
-
-**Step 1 — PyTorch (CUDA 12.1):**
-
-```bash
-uv pip install torch==2.4.1+cu121 torchvision==0.19.1+cu121 \
-    --index-url https://download.pytorch.org/whl/cu121
+./scripts/setup_shared_env.sh /tmp/pose-graph-diff-venv
 ```
 
-**Step 2 — mmcv (pre-built wheel for CUDA 12.1 + PyTorch 2.4):**
+The script installs the tested Torch 2.4.1 + CUDA 12.1 wheel, MMCV 2.2.0,
+MMEngine 0.10.7, local editable MMPose/MMDetection packages, CrowdPose,
+Detectron2, and the DiffusionRegPose CUDA operator. It does not install the
+legacy external requirements file wholesale because its broad Torch ranges can
+replace the repository's pinned Torch pair.
 
-```bash
-uv pip install mmcv==2.2.0 \
-    -f https://download.openmmlab.com/mmcv/dist/cu121/torch2.4/index.html
-```
+### CUDA note
 
-**Step 3 — build/install CUDA extension:**
+The preferred setup is a CUDA 12.1 toolkit matching the Torch wheel. On systems
+with the available CUDA 13.0 toolkit, the script uses the validated build
+workaround for the extension's strict PyTorch CUDA-version check. The extension
+compiled and imported successfully in that configuration, but a matching
+CUDA/Torch pair remains preferable.
 
-```bash
-uv pip install -U pip setuptools wheel ninja packaging numpy
-uv pip install --no-build-isolation --no-deps torch-linear-assignment==0.0.6
-``` 
+The script uses `CUDA_HOME` when set. Otherwise it uses the toolkit detected by
+PyTorch. To select a toolkit explicitly, set `CUDA_HOME` before running it.
 
-**Step 4 — remaining dependencies:**
+### MMPose and MMDetection
 
-```bash
-uv pip install -r requirements.txt --no-build-isolation
-```
-
-**Step 4 — local editable installs (mmdet and mmpose):**
-
-```bash
-uv pip install -e external/mmdet --no-build-isolation
-uv pip install -e external/mmpose --no-build-isolation
-```
-
-> `--no-build-isolation` is required because mmdet and mmpose import torch at
-> build time; without this flag uv's isolated build environment cannot see the
-> already-installed torch.
-
-Key runtime dependencies: `torch 2.4`, `torchvision 0.19`, `pytorch-lightning`,
-`torch-geometric`, `mmengine`, `mmcv 2.2`, `transformers 5.x`, `diffusers`.
-
-### MMPose and MMDet
-
-Both are cloned into `external/` and installed as editable packages (see Step 4
-above). The `external/mmdet` clone contains a one-line patch relaxing MMDet's
-`mmcv < 2.2.0` assertion to `<= 2.2.0`, which is necessary for the
-torch 2.4 + mmcv 2.2.0 stack.
-
-```bash
-git clone --depth 1 --branch v3.3.0 \
-    https://github.com/open-mmlab/mmdetection.git external/mmdet
-git clone https://github.com/open-mmlab/mmpose.git external/mmpose
-```
-
-> If you re-clone mmdet from upstream you will need to re-apply the patch
-> to `external/mmdet/mmdet/__init__.py`:
-> change `mmcv_version < digit_version(mmcv_maximum_version)` →
-> `mmcv_version <= digit_version(mmcv_maximum_version)`.
-
-### Environment variables
-
-Source `.env` before running any script.  It sets `PROJECT_DIR` and
-adds `external/mmpose` to `PYTHONPATH`:
-
-```bash
-source .env
-```
-
-> Add `source .env` to your shell rc or VS Code workspace settings to avoid
-> repeating it every session.
+The checked-in `external/mmpose` and `external/mmdet` trees are installed
+editable by the setup script. The local MMDetection tree contains the required
+MMCV compatibility patch for the pinned `mmcv==2.2.0` stack.
 
 ---
 
