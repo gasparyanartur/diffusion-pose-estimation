@@ -1,3 +1,37 @@
+[2026-08-10] DiffusionRegPose smoke run reached backward pass but failed
+
+- Started the bounded ResNet-50 run with batch size 1, one epoch, one worker,
+  the compatibility CrowdPose layout, and `edpose_r50_crowdpose.pth`.
+- Model and both datasets initialized successfully; the checkpoint loaded with
+  the expected non-strict missing/extra keys.
+- The first training batch reached `losses.backward()` and failed before the
+  first optimizer step with an in-place autograd mutation:
+  `one of the variables needed for gradient computation has been modified by
+  an inplace operation`, on a CUDA tensor shaped `[1400, 2]`.
+- The run stopped immediately; no completed epoch or checkpoint was produced.
+
+[2026-08-10] Created DiffusionRegPose CrowdPose compatibility layout
+
+- Created ignored `results/diffusionregpose_crowdpose/`.
+- Symlinked the existing CrowdPose images as `images/` and annotations as
+  `json/`, matching the external loader's expected layout.
+- Generated the loader-required `data.mat` artifact from the train split.
+- Validated 12,000 train images, 8,000 test images, required annotation files,
+  and one test sample with seven people and 14 keypoints per person.
+- No training or evaluation was run.
+
+[2026-08-10] Validated newly supplied DiffusionRegPose checkpoints
+
+- Found ResNet-50 CrowdPose ED-Pose initialization at
+  `external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth`, along
+  with trained DiffusionRegPose and alternate COCO/Swin-L checkpoints.
+- Built the ResNet-50 DiffusionRegPose model on CPU and loaded the ED-Pose
+  checkpoint successfully with the project's expected non-strict loading.
+  The checkpoint reports epoch 17, 18 missing keys, and 8 extra keys caused by
+  the architecture's pose-visibility/diffusion differences.
+- Model construction produced 49,527,324 parameters.
+- No dataset iteration, optimizer setup, training step, or evaluation was run.
+
 [2026-08-08] Validated DiffusionRegPose training prerequisites without training
 
 - Confirmed the shared environment imports Python 3.10.20, Torch 2.4.1+cu121,
