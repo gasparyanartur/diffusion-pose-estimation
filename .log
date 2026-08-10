@@ -1,3 +1,41 @@
+[2026-08-11] Validated and canceled DiffusionRegPose epoch-15 continuation
+
+- Changed only the resume model load in `external/DiffusionRegPose/main.py` to
+  `strict=False` and logged the incompatible-key report; diagnostics and
+  compilation passed.
+- Started the continuation from the five-epoch checkpoint with total
+  `epochs=15`, `batch_size=1`, `num_workers=0`, and CUDA.
+- The run successfully restored the checkpoint and reached epoch 5 training
+  batches, confirming the resume compatibility fix.
+- The user canceled the run before completion; no epoch-15 checkpoint or
+  evaluation metrics were produced.
+
+[2026-08-10] Completed DiffusionRegPose five-epoch evaluation
+
+- Added a guarded local `np.float = float` alias after the legacy evaluator
+  raised an `AttributeError` under NumPy 1.24+; the earlier local `unicode`
+  alias remains in place.
+- Re-evaluated `logs/crowdpose_r50_5epoch/checkpoint.pth` over all 8,000
+  CrowdPose test images with batch size 1 and zero workers.
+- Evaluation completed successfully in 26:49 and wrote `eval.pth` and
+  `log.txt` under `external/DiffusionRegPose/logs/crowdpose_r50_5epoch_eval_v2/`.
+- Bbox metrics: AP=0.0141, AP50=0.0564, AP75=0.0025; AR@1=0.0220,
+  AR@10=0.0951, AR@100=0.1475.
+- Keypoint metrics: AP=0.000157, AP50=0.000973, AP75=0.0000024; AR=0.0141.
+- No pretrained-baseline evaluation was run; the five-epoch diagnostic result
+  is available for review before committing to a longer run.
+
+[2026-08-10] Fixed DiffusionRegPose CrowdPose evaluation compatibility
+
+- Evaluation of the completed five-epoch checkpoint initially failed because
+  the legacy `crowdposetools.coco.COCO.loadRes()` references Python 2's
+  undefined `unicode` name under Python 3.
+- Added a local compatibility shim in
+  `external/DiffusionRegPose/datasets/crowdpose_eval.py`; no shared package was
+  modified.
+- File diagnostics pass. Re-running evaluation with the five-epoch checkpoint
+  under `external/DiffusionRegPose/logs/crowdpose_r50_5epoch_eval/`.
+
 [2026-08-10] DiffusionRegPose smoke run reached backward pass but failed
 
 - Started the bounded ResNet-50 run with batch size 1, one epoch, one worker,
