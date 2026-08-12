@@ -1,3 +1,127 @@
+[2026-08-12] Added controlled DiffusionRegPose gradient accumulation
+
+- Added `gradient_accumulation_steps=1` to
+  `external/DiffusionRegPose/config/diffusionregpose.cfg.py`, preserving legacy
+  behavior unless explicitly overridden.
+- Updated `external/DiffusionRegPose/engine.py::train_one_epoch()` so each
+  accumulation window scales losses by its actual microbatch count, clips and
+  steps only at a window boundary, resets gradients after each step, and
+  handles the final partial window correctly in AMP and non-AMP paths.
+- Kept model, matcher, loss, scheduler, inference, and EMA behavior unchanged.
+- Added `tests/test_diffusionregpose_gradient_accumulation.py` with a
+  deterministic CPU regression: four accumulated microbatches produce the
+  same SGD parameter update as one equivalent four-sample batch.
+- Validation: `venv/bin/python -m pytest
+  tests/test_diffusionregpose_gradient_accumulation.py -q` passed (1 test).
+- Next experiment is a fresh effective-batch-8 reproduction using
+  `batch_size=1 gradient_accumulation_steps=8`, not a resume of the invalid
+  batch-size-1 optimization trajectory.
+
+[2026-08-12] Completed DiffusionRegPose continuation evaluation (30 total epochs)
+
+- Resumed the local run from
+  `external/DiffusionRegPose/logs/crowdpose_r50_15epoch_resume_v3/checkpoint.pth`
+  and completed fifteen additional epochs, ending at checkpoint epoch 29
+  (30 total epochs). The `crowdpose_r50_25epoch_*` directory label is
+  historical and does not describe the actual final epoch.
+- Evaluated the resulting checkpoint on all 8,000 CrowdPose test images using
+  the same external evaluator and dataset path.
+- Evaluation output: `external/DiffusionRegPose/logs/crowdpose_r50_25epoch_eval/`.
+- Bbox metrics: AP=0.014296, AP50=0.056695, AP75=0.002700.
+- Keypoint metrics: AP=0.000233, AP50=0.001500, AP75=0.000006.
+- Compared with the local 15-epoch evaluation (bbox AP=0.017590, keypoint
+  AP=0.000270), ten additional epochs did not materially improve either task.
+- Compared with the supplied trained checkpoint (bbox AP=0.631, keypoint
+  AP=0.727), the local training path remains far from the expected result.
+- Conclusion: simple additional training time is not sufficient. The next step
+  should audit training reproduction factors—initialization provenance,
+  optimizer and scheduler state, batch-size/learning-rate scaling, EMA usage,
+  augmentation, and distributed-training assumptions—before any longer run or
+  matcher modification.
+
+[2026-08-12] Training-reproduction audit findings
+
+- Resume is continuous: continuation logging starts at epoch 15 and the final
+  checkpoint records epoch 29; optimizer state has 404 entries and scheduler
+  state is present.
+- Local parameters changed materially across epochs 5→15 and 15→30. This rules
+  out a frozen model or skipped optimizer-step explanation.
+- The local run used effective batch size 1 with no gradient accumulation. The
+  supplied trained checkpoint records world size 4 and per-process batch size 2
+  (effective batch size 8). The external loop hard-codes one optimizer update
+  per microbatch and does not scale learning rate, so the local run made eight
+  times as many noisier AdamW updates per dataset epoch at the same LR.
+- Local epoch 30 was still before the first schedule milestone (31); the
+  supplied high-AP checkpoint is from epoch 75 and records milestones 31 and
+  66. The two runs are not controlled training comparisons.
+- ED-Pose loading has the same 723 learned-tensor overlap expected by the
+  supplied trained model. The eight unused `pose_vis_embed` tensors and 18 new
+  DiffusionRegPose heads are expected architecture differences, not evidence of
+  a failed initialization.
+- EMA updates are commented out. This is an upstream defect, but evaluator
+  calls use the raw model, so stale EMA weights do not explain the observed AP.
+- Next controlled experiment: fresh effective-batch-8 training via tested
+  gradient accumulation (or physical batch 8), without changing matcher,
+  coordinates, decoder, or loss behavior.
+
+[2026-08-11] Completed supplied DiffusionRegPose checkpoint evaluation
+
+- Evaluated `external/DiffusionRegPose/pretrain_models/diffusionregpose_r50_crowdpose.pth`
+  on all 8,000 CrowdPose test images using the external evaluator, batch size 1,
+  zero workers, CUDA, ResNet-50, and 14 body points.
+- The checkpoint loaded with `Ignore keys: []` and `<All keys matched
+  successfully>`.
+- Evaluation output was written to
+  `external/DiffusionRegPose/logs/crowdpose_r50_supplied_eval/`; prediction and
+  metric artifacts were produced successfully.
+- Bbox metrics: AP=0.631, AP50=0.813, AP75=0.692; AR@1=0.204, AR@10=0.665,
+  AR@100=0.712.
+- Keypoint metrics: AP=0.727, AP50=0.912, AP75=0.792; AR=0.793.
+- Compared with the local 15-epoch checkpoint (bbox AP=0.017590, keypoint
+  AP=0.000270), the supplied trained checkpoint is dramatically better.
+- Conclusion: the dataset layout, checkpoint loading, model construction,
+  inference path, and evaluator are compatible. The low local result is caused
+  by the local training/reproduction path or training state, not by an
+  inherently broken evaluator or a universally incorrect keypoint decoder.
+- No production code or model behavior was changed in this evaluation.
+
+[2026-08-11] Completed DiffusionRegPose diagnostics notebook
+
+- Created and executed `notebooks/diffusionregpose-training.ipynb` without
+  starting another training run.
+- Confirmed the epoch-15 prediction file exists at the external engine's
+  concatenated path and contains 544,697 records for 8,000 images; every record
+  has 14 keypoints, but scores range only from 0.0835 to 0.1787 and average
+  about 68 records per image.
+- The GT/prediction overlay shows predictions scattered outside annotated
+  people. A nearest-person diagnostic gives mean visible-joint error about
+  171 px over 160,000 top-prediction comparisons.
+- Checkpoint tensors are finite. Raw and EMA states differ substantially enough
+  to require explicit raw-versus-EMA evaluation; this is consistent with the
+  commented EMA update path requiring further audit.
+- Corrected the log parser for the external unquoted/wrapped scalar format;
+  epochs 5–14 were parsed successfully. Keypoint loss remains roughly 16–24
+  while bbox AP improves.
+- Wrote `results/diffusionregpose_diagnostics_report.json`.
+- Conclusion: audit keypoint decoding, coordinate scaling, joint ordering,
+  visibility/matching, and raw-versus-EMA inference before more training.
+
+[2026-08-11] Completed DiffusionRegPose 15-epoch continuation and evaluation
+
+- Resumed `logs/crowdpose_r50_5epoch/checkpoint.pth` with the patched
+  non-strict model loading path and trained through total epoch 15.
+- Final checkpoint: `logs/crowdpose_r50_15epoch_resume_v3/checkpoint.pth`,
+  recording `epoch=14`.
+- Evaluated all 8,000 CrowdPose test images with batch size 1, zero workers,
+  CUDA, and the local Python 3/NumPy compatibility shims.
+- Evaluation output: `logs/crowdpose_r50_15epoch_eval/`.
+- Bbox metrics: AP=0.017590, AP50=0.066134, AP75=0.002752; AR@1=0.021222,
+  AR@10=0.090020, AR@100=0.153008.
+- Keypoint metrics: AP=0.000270, AP50=0.001858, AP75=0.0000832; AR=0.011277.
+- Compared with five epochs (bbox AP=0.0141, keypoint AP=0.000157), bbox and
+  keypoint AP improved, but keypoint AR decreased from 0.0141 to 0.011277.
+- No longer training run was started.
+
 [2026-08-11] Validated and canceled DiffusionRegPose epoch-15 continuation
 
 - Changed only the resume model load in `external/DiffusionRegPose/main.py` to
