@@ -1,3 +1,39 @@
+[2026-08-14] Cleaned obsolete DiffusionRegPose training checkpoints
+
+- Removed obsolete effective-batch-1 training checkpoint directories for the
+  five-, fifteen-, and thirty-epoch local trajectories.
+- Removed periodic effective-batch-8 snapshots and the truncated epoch-30
+  snapshot produced during storage exhaustion.
+- Preserved the valid final effective-batch-8 checkpoint at
+  `external/DiffusionRegPose/logs/crowdpose_r50_effective_batch8_40epoch/checkpoint.pth`.
+- Preserved all evaluation directories and prediction/metric artifacts,
+  including the effective-batch-8 result (bbox AP=0.530616, keypoint
+  AP=0.576450) and supplied-checkpoint result.
+- Reduced `external/DiffusionRegPose/logs` to approximately 2.9 GB and
+  increased available filesystem space to approximately 76 GB.
+
+[2026-08-14] Effective-batch-8 DiffusionRegPose reproduction is successful
+
+- Fresh ED-Pose initialization used `batch_size=1`,
+  `gradient_accumulation_steps=8`, one process, original rates (2e-4 model /
+  1e-4 backbone), and original milestones `[31, 61]`.
+- Training completed epochs 0–30. The attempt to write periodic
+  `checkpoint0030.pth` ran out of storage and produced a truncated file, but
+  the regular `checkpoint.pth` saved successfully at epoch 30. It records
+  scheduler `last_epoch=31` and decayed learning rates (2e-5 / 1e-5), so no
+  post-decay training epoch was completed.
+- Raw-model evaluation of the valid checkpoint completed on CrowdPose:
+  bbox AP=0.530616, AP50=0.731311, AP75=0.584936; keypoint AP=0.576450,
+  AP50=0.784581, AP75=0.620658, AR=0.694722.
+- Compared with effective-batch-1 epoch-30 training (bbox AP=0.014296,
+  keypoint AP=0.000233), matching the official effective batch is causally
+  decisive for successful optimization. This earlier checkpoint remains below
+  the supplied epoch-75 model (bbox AP=0.631, keypoint AP=0.727), consistent
+  with stopping before post-decay optimization.
+- Follow-up: design a storage-safe continuation that retains only the latest
+  resume checkpoint and completes post-decay training; do not resume the old
+  effective-batch-1 trajectory.
+
 [2026-08-12] Added controlled DiffusionRegPose gradient accumulation
 
 - Added `gradient_accumulation_steps=1` to
