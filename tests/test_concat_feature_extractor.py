@@ -12,8 +12,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
-from src.features.concat import ConcatFeatureExtractor, ConcatFeatureExtractorConfig
+from src.models.features.cnn import CNNFeatureExtractor, CNNFeatureExtractorConfig
+from src.models.features.concat import ConcatFeatureExtractor, ConcatFeatureExtractorConfig
 
 
 # ---------------------------------------------------------------------------

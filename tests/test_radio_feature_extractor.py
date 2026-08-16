@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from src.features.radio import RadioFeatureExtractor
+from src.models.features.radio import RadioFeatureExtractor
 
 
 def _make_extractor(out_channels: int = 64, patch_size: int = 16) -> RadioFeatureExtractor:

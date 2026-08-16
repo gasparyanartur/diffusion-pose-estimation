@@ -18,24 +18,24 @@ boundary between them.
 
 ### 2. Canonical space (model-internal, the standard)
 
-- **All decoders return keypoints in canonical space.**
+- **All pose pipelines return keypoints in canonical space.**
 - Definition: `canonical = pixel / [W, H] * 2 - 1`.
 - Range: `(-1, 1)` for in-frame joints (matches PyTorch `grid_sample`).
 - Inverse: `pixel = (canonical + 1) / 2 * [W, H]`.
-- Helper: `src.metrics.canonical_to_pixel(canonical, img_wh)`.
+- Helper: `src.eval.metrics.canonical_to_pixel(canonical, img_wh)`.
 - Builder: `src.data.graph.prepare_pose_graph_batch` produces `node_pos` here.
 
 ### 3. Resized-image normalized `[0, 1]` (do not use across stages)
 
 - Used inside per-image data preprocessing only (e.g. resizing for the CNN
-  backbone in the benchmark notebook). Convert to canonical $(-1, 1)$ at the
-  decoder boundary.
+  feature extractor in the benchmark notebook). Convert to canonical $(-1, 1)$
+  at the pipeline boundary.
 - Rationale: keeping $[0, 1]$ in some stages and $(-1, 1)$ in others creates
   silent off-by-half errors during loss / AP eval.
 
 ## Stage I/O contracts
 
-### Feature extractors (`src/features/`)
+### Feature extractors (`src/models/features/`)
 
 ```
 forward(image=None, image_ids=None, **kwargs) -> dict[str, Any]
@@ -44,42 +44,19 @@ forward(image=None, image_ids=None, **kwargs) -> dict[str, Any]
 - `image`: optional pixel tensor `[B, 3, H, W]` for online extractors.
 - `image_ids`: optional list of int for cached extractors.
 - Concrete subclasses validate which one they require (raise on missing input).
-- Output dict is consumed by an embedder; per-class keys are documented inline.
+- Feature extractors are consumed directly by complete pipelines; the former
+  generic embedder and decoder stages are removed.
 
-### Feature embedders (`src/embedders/`)
+### Model composition (`src/models/`)
 
-```
-forward(features, kpt_pixel=None, img_hw=None, joint_mask=None, **kwargs)
-    -> dict[str, Tensor]
-```
-
-Possible output keys (all optional unless required by the downstream consumer):
-
-- `feature`: `[B, D]` global vector (set-prediction head).
-- `tokens`: `[B, T, D]` spatial tokens (no pooling).
-- `node_feats`: `[B, N, K, D]` per-node (refinement decoder).
-- `global_feats`: `[B, D]` per-batch global (refinement).
-
-Refinement embedders read `kpt_pixel` / `img_hw`; set-prediction embedders ignore them.
-
-### Decoders (`src/decoders/`)
-
-```
-forward(embeddings, graph=None, initial_keypoints=None, **kwargs)
-    -> dict[str, Tensor]
-```
-
-Required output key:
-
-- `keypoints`: `[B, N, K, 2]` in canonical $(-1, 1)$.
-
-Optional output keys:
-
-- `scores`: `[B, N]` per-person/per-slot confidence in $[0, 1]$.
-- `keypoint_scores`: `[B, N, K]` per-keypoint confidence in $[0, 1]$.
-
-`graph` and `initial_keypoints` are only required by refinement decoders
-(graph diffusion); set-prediction decoders ignore them.
+- `src/models/features/` contains image-conditioned feature extractors and
+  their `BaseFeatureExtractorConfig` classes.
+- `src/models/common/` contains shared attention and positional utilities.
+- Graph message-passing and denoising layers that are specific to the graph
+  pose model live privately in `src/models/pipelines/pose_estimators/graph.py`.
+- `src/models/pipelines/` contains complete model-family Lightning modules.
+  Each pipeline owns its heads, losses, training lifecycle, sampling, metrics,
+  and optimizer configuration.
 
 ## Visibility encoding
 
@@ -102,30 +79,24 @@ Visible-mask: `visible = visibility == 2`.
 
 ## CrowdPose
 
-- 14 keypoints; joint sigmas live in `src.metrics.CROWDPOSE_SIGMAS`.
+- 14 keypoints; joint sigmas live in `src.eval.metrics.CROWDPOSE_SIGMAS`.
 - Edge list in `src.data.skeleton.CROWDPOSE_EDGE_LIST`.
-- AP via `src.metrics.KeypointAPMetric` with `iou_type="keypoints_crowd"`.
+- AP via `src.eval.metrics.KeypointAPMetric` with `iou_type="keypoints_crowd"`.
   Standard reported metrics: `AP`, `AP .5`, `AP .75`, `AP (E/M/H)`, `AR (E/M/H)`.
 
 ## Model families
 
-All pose models use the shared `PoseEstimator` composition:
-
-```text
-image → features → pose
-```
-
-`initial_keypoints` is optional at the shared interface. It may be supplied for
-debugging or for a refiner-style experiment, but one-stage models do not require
-it.
-
-- `graph_diffusion_onestage` is the direct image-to-box-and-pose set model.
-- `set_prediction` is a one-stage pose-estimation module using fixed pose slots
-  and Hungarian matching.
-- `graph_diffusion_refiner` is the legacy graph-diffusion refiner, normally
-  driven by cached detector keypoints.
+- `BaselinePosePipeline` is the direct image-to-fixed-pose-slot model. It owns
+  its CNN feature extractor, spatial-attention pooling, Hungarian matching loss, AP
+  lifecycle, and optimizer setup.
+- `GraphPosePipeline` is the direct image-to-box-and-pose diffusion set model.
+- Cached-DINO graph-diffusion refinement is unsupported and has no
+  configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose
-  outputs are boxes and objectness scores, not poses.
+  outputs are boxes and objectness scores, not poses. Box diffusion is the
+  tensor-native `BoxDiffusionPipeline`; it accepts image tensors and does not
+  implement the path-based `BoxDetector` contract retained for DiffusionDet.
 
-The root default is the cache-free one-stage set-prediction configuration.
-Refiner configurations and prediction caches must be selected explicitly.
+The root default is the cache-free fixed-slot baseline configuration. It accepts
+image tensors and returns canonical keypoints plus slot and keypoint confidence
+scores.

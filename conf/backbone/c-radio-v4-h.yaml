@@ -1,5 +1,5 @@
 # C-RADIOv4-H backbone (nvidia/C-RADIOv4-H, ~653M params, ViT-H/16).
 # Patch size 16 → stride 16. Frozen weights (no fine-tuning).
 # Warning: large model; may OOM on GPUs with less than ~24 GB VRAM.
-_target_: src.features.CRadioV4HFeatureExtractorConfig
+_target_: src.models.features.CRadioV4HFeatureExtractorConfig
 frozen: true

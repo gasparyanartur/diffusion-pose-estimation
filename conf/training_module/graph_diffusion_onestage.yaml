@@ -1,7 +1,0 @@
-# Canonical one-stage graph diffusion pose training module.
-# Compatibility alias: conf/training_module/graph_pipeline.yaml.
-defaults:
-  - graph_pipeline
-  - _self_
-
-_target_: src.training.graph_pipeline_module.GraphDiffusionOnestageModuleConfig

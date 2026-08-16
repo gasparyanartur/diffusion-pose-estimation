@@ -1,9 +1,0 @@
-# Tiny CrowdPose data preset — pairs with training_module=diffusion_minimal.
-
-defaults:
-  - crowdpose
-  - _self_
-
-batch_size: 4
-num_workers: 0
-ap_batch_size: 8

@@ -1,11 +1,11 @@
-"""Unit tests for src.training.diffusion_modules (I2)."""
+"""Unit tests for canonical shared diffusion modules (I2)."""
 
 from __future__ import annotations
 
 import pytest
 import torch
 
-from src.training.diffusion_modules import (
+from src.models.common.attention import (
     FourierFeatures,
     TimeFiLMFFN,
     TimeFiLMTransformerBlock,

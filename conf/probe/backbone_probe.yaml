@@ -1,0 +1,41 @@
+# Backbone-probe config for scripts/benchmark_backbone.py.
+_target_: src.models.pipelines.pose_estimators.backbone_probe.BackboneProbeConfig
+
+lr: 1e-3
+weight_decay: 1e-3
+cosine_lr: true
+lr_warmup_epochs: 0
+lr_min_frac: 1e-1
+max_epochs: 50
+seed: 42
+grad_clip: 5.0
+log_every_n_steps: 50
+resume: null
+gt_sanity_check: false
+feature_dim: 256
+proj_dim: 768
+conv_dim: 96
+target_size: 16
+num_conv_layers: 5
+num_attn_layers: 2
+num_heads: 4
+ffn_mult: 4
+conv_dropout: 0.1
+attn_dropout: 0.3
+ffn_dropout: 0.5
+feature_key: spatial
+hidden_dim: 256
+num_slots: 20
+proj_dropout: 0.2
+noise_std: 0.05
+brightness: 0.3
+contrast: 0.3
+saturation: 0.2
+val_ap_every_n_epochs: 10
+weights:
+  oks: 1.0
+  obj: 1.0
+  vis: 0.5
+  rank: 1.0
+  matcher_lambda_oks: 1.0
+  matcher_lambda_obj: 0.1

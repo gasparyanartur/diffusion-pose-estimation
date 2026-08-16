@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
 """
-Train the box-set diffusion decoder on CrowdPose.
-
-Architecture: backbone (e.g. cnn / resnet / radio) → BoxSetDiffusionDecoder.
-The decoder denoises a set of N bounding boxes conditioned on image tokens;
-matching is Hungarian (DETR-style) over (L1, GIoU, objectness).
+Train the canonical tensor-native box-diffusion pipeline on CrowdPose.
 
 Quick start:
     python scripts/train_box_diffusion.py
 
 Smoke run on a tiny subset:
     python scripts/train_box_diffusion.py data=crowdpose_set_prediction_debug \
-        training_module.max_epochs=2 training_module.val_ap_every_n_epochs=1 \
+        pipeline.max_epochs=2 pipeline.val_ap_every_n_epochs=1 \
         hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 
 Skip training and evaluate a checkpoint:
     python scripts/train_box_diffusion.py skip_training=true \
-        training_module.resume=results/box_diffusion_benchmark/.../checkpoints/last.ckpt
+        pipeline.resume=results/box_diffusion_benchmark/.../checkpoints/last.ckpt
 """
 
 from __future__ import annotations
@@ -40,11 +36,9 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 from lightning_fabric.plugins.io import TorchCheckpointIO
 
-from src.base_config import BaseConfig
+from src.configs.base_config import BaseConfig
 from src.data import DataConfig
-from src.decoders.diffusion.box_set import BoxSetDiffusionDecoderConfig
-from src.features import BaseFeatureExtractorConfig
-from src.training import BoxSetDiffusionModuleConfig
+from src.models.pipelines.object_detectors.box_diffusion import BoxDiffusionPipelineConfig
 from src.utils import resolve_checkpoint
 
 
@@ -122,25 +116,17 @@ def main(cfg: DictConfig) -> None:
     log.info("Output dir: %s", out_dir)
     log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
-    backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
-    decoder_cfg = BoxSetDiffusionDecoderConfig.from_hydra_config(cfg.decoder)
-    train_cfg = BoxSetDiffusionModuleConfig.from_hydra_config(cfg.training_module)
+    pipeline_cfg = BoxDiffusionPipelineConfig.from_hydra_config(cfg.pipeline)
     data_cfg = DataConfig.from_hydra_config(cfg.data)
 
-    pl.seed_everything(train_cfg.seed, workers=True)
+    pl.seed_everything(pipeline_cfg.seed, workers=True)
 
     use_gpu = cfg.hardware.accelerator in ("gpu", "cuda")
     if use_gpu:
         torch.backends.cudnn.benchmark = True
 
-    backbone = backbone_cfg.build()
-    decoder_cfg.image_token_dim = backbone.out_channels
-    log.info("decoder.image_token_dim set to backbone.out_channels=%d", backbone.out_channels)
-    decoder = decoder_cfg.build()
     data_module = data_cfg.build(pin_memory=use_gpu)
-    module = train_cfg.build(
-        backbone=backbone,
-        decoder=decoder,
+    module = pipeline_cfg.build(
         val_ann_file=str(data_module.val_ann_path),
         test_ann_file=str(data_module.test_ann_path),
     )
@@ -149,21 +135,21 @@ def main(cfg: DictConfig) -> None:
         module = torch.compile(module)
         log.info("torch.compile enabled")
 
-    n_backbone = sum(p.numel() for p in backbone.parameters() if p.requires_grad)
-    n_decoder = sum(p.numel() for p in decoder.parameters() if p.requires_grad)
+    n_backbone = sum(p.numel() for p in module.backbone.parameters() if p.requires_grad)
+    n_denoiser = sum(p.numel() for p in module.denoiser.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in module.parameters() if p.requires_grad)
-    log.info("Backbone : %s  (%s trainable params)", type(backbone).__name__, f"{n_backbone:,}")
-    log.info("Decoder  : %s  (%s trainable params)", type(decoder).__name__, f"{n_decoder:,}")
+    log.info("Backbone : %s  (%s trainable params)", type(module.backbone).__name__, f"{n_backbone:,}")
+    log.info("Denoiser : %s  (%s trainable params)", type(module.denoiser).__name__, f"{n_denoiser:,}")
     log.info("Total    : %s trainable params", f"{n_total:,}")
     log.info("DataModule: %s  (batch=%d)", type(data_module).__name__, data_cfg.batch_size)
-    log.info("val_ap_every: %d epochs", train_cfg.val_ap_every_n_epochs)
+    log.info("val_ap_every: %d epochs", pipeline_cfg.val_ap_every_n_epochs)
 
     skip_training = bool(cfg.get("skip_training", False))
-    resume = resolve_checkpoint(train_cfg.resume) if train_cfg.resume else None
-    if resume and resume != train_cfg.resume:
-        log.info("Checkpoint resolved: %s  ->  %s", train_cfg.resume, resume)
+    resume = resolve_checkpoint(pipeline_cfg.resume) if pipeline_cfg.resume else None
+    if resume and resume != pipeline_cfg.resume:
+        log.info("Checkpoint resolved: %s  ->  %s", pipeline_cfg.resume, resume)
 
-    n_steps = train_cfg.num_inference_steps
+    n_steps = pipeline_cfg.num_inference_steps
     callbacks: list[pl.Callback] = [
         _CheckpointAlsoOnLastEpoch(
             dirpath=ckpt_dir,
@@ -172,7 +158,7 @@ def main(cfg: DictConfig) -> None:
             mode="max",
             save_top_k=1,
             save_last=False,
-            every_n_epochs=train_cfg.val_ap_every_n_epochs,
+            every_n_epochs=pipeline_cfg.val_ap_every_n_epochs,
             auto_insert_metric_name=False,
         ),
         LearningRateMonitor(logging_interval="epoch"),
@@ -182,23 +168,23 @@ def main(cfg: DictConfig) -> None:
         CSVLogger(save_dir=str(out_dir), name="csv_logs", version=""),
     ]
 
-    grad_clip = train_cfg.grad_clip if train_cfg.grad_clip > 0 else None
+    grad_clip = pipeline_cfg.grad_clip if pipeline_cfg.grad_clip > 0 else None
     trainer = pl.Trainer(
         accelerator=cfg.hardware.accelerator,
         devices=_devices_arg(cfg.hardware.devices),
         precision=cfg.hardware.precision,
-        max_epochs=train_cfg.max_epochs,
+        max_epochs=pipeline_cfg.max_epochs,
         gradient_clip_val=grad_clip,
         callbacks=callbacks,
         logger=loggers,
-        log_every_n_steps=train_cfg.log_every_n_steps,
+        log_every_n_steps=pipeline_cfg.log_every_n_steps,
         deterministic=False,
         plugins=[_TrustedCheckpointIO()],
     )
 
     if skip_training:
         if not resume:
-            log.error("skip_training=true requires training_module.resume.")
+            log.error("skip_training=true requires pipeline.resume.")
             sys.exit(1)
         log.info("Skipping training; loading checkpoint: %s", resume)
         output = trainer.test(module, datamodule=data_module, ckpt_path=resume)
@@ -206,7 +192,7 @@ def main(cfg: DictConfig) -> None:
     else:
         log.info(
             "Training: epochs=%d  batch=%d  lr=%g",
-            train_cfg.max_epochs, data_cfg.batch_size, train_cfg.lr,
+            pipeline_cfg.max_epochs, data_cfg.batch_size, pipeline_cfg.lr,
         )
         if resume:
             log.info("Resuming from: %s", resume)

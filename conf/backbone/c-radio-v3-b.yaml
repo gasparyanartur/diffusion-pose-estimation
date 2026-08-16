@@ -1,4 +1,4 @@
 # C-RADIOv3-B backbone (nvidia/C-RADIOv3-B, ~90M params, ViT-B/16).
 # Patch size 16 → stride 16. Frozen weights (no fine-tuning).
-_target_: src.features.CRadioV3BFeatureExtractorConfig
+_target_: src.models.features.CRadioV3BFeatureExtractorConfig
 frozen: true

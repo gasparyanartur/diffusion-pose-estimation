@@ -1,7 +1,0 @@
-# Canonical legacy graph-diffusion refiner training preset.
-# Compatibility aliases: diffusion.yaml and diffusion_legacy.yaml.
-defaults:
-  - diffusion
-  - _self_
-
-_target_: src.training.GraphDiffusionRefinerModuleConfig

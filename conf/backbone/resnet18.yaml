@@ -1,7 +1,7 @@
 # ResNet18 backbone variant for the backbone probe benchmark.
 # Headless ResNet18 trained jointly with the probe (pretrained ImageNet init).
 # layer3 output: stride 16 → 16×12 spatial map on 256×192 images.
-_target_: src.features.ResNetFeatureExtractorConfig
+_target_: src.models.features.ResNetFeatureExtractorConfig
 variant: resnet18
 output_layer: layer3
 pretrained: true

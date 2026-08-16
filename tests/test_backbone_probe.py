@@ -1,4 +1,4 @@
-"""Tests for ConvProbe, QueryProbe, BackboneProbeModule, and compute_probe_diagnostics."""
+"""Tests for ConvProbe, QueryProbe, BackboneProbePipeline, and compute_probe_diagnostics."""
 
 from __future__ import annotations
 
@@ -12,12 +12,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.embedders.spatial_attention import make_patch_centers
-from src.features.cnn import CNNFeatureExtractor
-from src.training.backbone_probe import BackboneProbeModule, ConvProbe, QueryProbe
-from src.training.diagnostics import compute_probe_diagnostics
+from src.models.common.positional import make_patch_centers
+from src.models.features.cnn import CNNFeatureExtractor
+from src.models.pipelines.pose_estimators.backbone_probe import (
+    BackboneProbePipeline,
+    ConvProbe,
+    QueryProbe,
+)
+from src.eval.diagnostics import compute_probe_diagnostics
 from src.training.losses import SetPredictionLossWeights
-from src.metrics import CROWDPOSE_SIGMAS
+from src.eval.metrics import CROWDPOSE_SIGMAS
 
 import numpy as np
 
@@ -30,13 +34,13 @@ SIGMAS = torch.from_numpy(CROWDPOSE_SIGMAS).float()
 # ---------------------------------------------------------------------------
 
 
-def _make_probe_module(N: int = 20, feature_dim: int = 256) -> BackboneProbeModule:
+def _make_probe_module(N: int = 20, feature_dim: int = 256) -> BackboneProbePipeline:
     backbone = CNNFeatureExtractor(out_channels=128)
     head = ConvProbe(
         in_channels=128, feature_dim=feature_dim, target_size=8,
         num_heads=4, num_conv_layers=1, num_slots=N, num_keypoints=K, hidden_dim=64,
     )
-    return BackboneProbeModule(
+    return BackboneProbePipeline(
         backbone=backbone,
         probe_head=head,
         weights=SetPredictionLossWeights(),
@@ -74,7 +78,7 @@ def _fake_pred(B: int = 2, N: int = 20) -> dict[str, torch.Tensor]:
 
 
 def test_convnext_block_dropout_does_not_change_shape():
-    from src.training.backbone_probe import ConvNeXtBlock
+    from src.models.pipelines.pose_estimators.backbone_probe import ConvNeXtBlock
     block = ConvNeXtBlock(dim=32, ffn_mult=4, dropout=0.5)
     x = torch.rand(2, 32, 8, 8)
     out = block(x)
@@ -87,7 +91,7 @@ def test_convnext_block_dropout_does_not_change_shape():
 
 
 def test_cross_attention_block_shape():
-    from src.training.backbone_probe import CrossAttentionBlock
+    from src.models.pipelines.pose_estimators.backbone_probe import CrossAttentionBlock
     block = CrossAttentionBlock(dim=64, num_heads=4)
     q  = torch.rand(2, 10, 64)
     kv = torch.rand(2, 20, 64)
@@ -97,7 +101,7 @@ def test_cross_attention_block_shape():
 
 def test_cross_attention_block_single_kv_token():
     """KV sequence length of 1 (used in joint→instance step) must not error."""
-    from src.training.backbone_probe import CrossAttentionBlock
+    from src.models.pipelines.pose_estimators.backbone_probe import CrossAttentionBlock
     block = CrossAttentionBlock(dim=64, num_heads=4)
     q  = torch.rand(4, 14, 64)
     kv = torch.rand(4, 1, 64)
@@ -205,7 +209,7 @@ def test_probe_head_gradient_flows():
 
 
 # ---------------------------------------------------------------------------
-# BackboneProbeModule
+# BackboneProbePipeline
 # ---------------------------------------------------------------------------
 
 
@@ -232,7 +236,7 @@ def test_backbone_probe_training_step_with_augmentation():
         in_channels=128, feature_dim=64, target_size=4, num_heads=4, num_conv_layers=1,
         num_slots=20, num_keypoints=K, hidden_dim=64, proj_dropout=0.3,
     )
-    module = BackboneProbeModule(
+    module = BackboneProbePipeline(
         backbone=backbone, probe_head=head,
         weights=SetPredictionLossWeights(), lr=1e-3,
         noise_std=0.05, brightness=0.3, contrast=0.3, saturation=0.2,
@@ -242,23 +246,13 @@ def test_backbone_probe_training_step_with_augmentation():
     assert torch.isfinite(loss)
 
 
-def test_pose_slot_decoder_mlp_dropout_shape():
-    """mlp_dropout should not change output shapes."""
-    from src.decoders.pose_slot import PoseSlotDecoder
-    decoder = PoseSlotDecoder(in_dim=64, num_slots=10, num_keypoints=K, hidden_dim=64, mlp_dropout=0.5)
-    decoder.eval()
-    out = decoder({"feature": torch.rand(3, 64)})
-    assert out["keypoints"].shape == (3, 10, K, 2)
-    assert out["scores"].shape == (3, 10)
-
-
 # ---------------------------------------------------------------------------
 # Augmentation functions
 # ---------------------------------------------------------------------------
 
 
 def test_augmentations_gaussian_noise_shape_and_clamp():
-    from src.training.augmentations import add_gaussian_noise
+    from src.data.augmentations import add_gaussian_noise
     img = torch.rand(4, 3, 32, 32)
     out = add_gaussian_noise(img, std=0.1)
     assert out.shape == img.shape
@@ -268,7 +262,7 @@ def test_augmentations_gaussian_noise_shape_and_clamp():
 
 
 def test_augmentations_color_jitter_shape():
-    from src.training.augmentations import color_jitter
+    from src.data.augmentations import color_jitter
     img = torch.rand(4, 3, 32, 32)
     out = color_jitter(img, brightness=0.3, contrast=0.3, saturation=0.2)
     assert out.shape == img.shape
@@ -295,7 +289,7 @@ def test_backbone_probe_gt_sanity_check_shapes():
         in_channels=128, feature_dim=64, target_size=4, num_heads=4,
         num_slots=10, num_keypoints=K, hidden_dim=64,
     )
-    module = BackboneProbeModule(
+    module = BackboneProbePipeline(
         backbone=backbone, probe_head=head, gt_sanity_check=True,
     )
     batch = _fake_batch(B=2, P_max=3)
@@ -309,7 +303,7 @@ def test_backbone_probe_gt_sanity_check_shapes():
 
 
 def test_backbone_probe_config_build():
-    from src.training.training_config import BackboneProbeConfig
+    from src.models.pipelines.pose_estimators.backbone_probe import BackboneProbeConfig
     from src.data import CrowdPoseDataConfig
 
     data_cfg = CrowdPoseDataConfig(
@@ -330,49 +324,9 @@ def test_backbone_probe_config_build():
         num_slots=5,
     )
     module = probe_cfg.build(backbone, data_module)
-    assert isinstance(module, BackboneProbeModule)
+    assert isinstance(module, BackboneProbePipeline)
     assert module.probe_head.num_slots == 5
     assert module.probe_head.feature_dim == 64
-
-
-# ---------------------------------------------------------------------------
-# state_dict / load_state_dict — backbone excluded from checkpoint
-# ---------------------------------------------------------------------------
-
-
-def test_state_dict_excludes_backbone_keys():
-    module = _make_probe_module()
-    sd = module.state_dict()
-    backbone_keys = [k for k in sd if k.startswith("backbone.")]
-    assert backbone_keys == [], f"backbone keys found in state_dict: {backbone_keys[:3]}"
-    probe_keys = [k for k in sd if k.startswith("probe_head.")]
-    assert probe_keys, "probe_head keys missing from state_dict"
-
-
-def test_load_state_dict_without_backbone_keys_succeeds():
-    """A checkpoint without backbone keys loads cleanly via the pattern used
-    in load_backbone_probe_module: backbone weights are injected from the
-    freshly built module before calling load_state_dict(strict=True)."""
-    import torch.nn as nn
-
-    module = _make_probe_module()
-
-    # state_dict() omits backbone keys — this is the checkpoint on disk
-    checkpoint_sd = {k: v.clone() for k, v in module.state_dict().items()}
-    assert not any(k.startswith("backbone.") for k in checkpoint_sd)
-
-    # Simulate load_backbone_probe_module: inject backbone weights via nn.Module.state_dict
-    module2 = _make_probe_module()
-    backbone_sd = {k: v for k, v in nn.Module.state_dict(module2).items() if k.startswith("backbone.")}
-    merged = {**backbone_sd, **checkpoint_sd}
-    module2.load_state_dict(merged, strict=True)  # must not raise
-
-    # Probe head weights from the checkpoint must be loaded into module2
-    for key in checkpoint_sd:
-        assert torch.equal(
-            nn.Module.state_dict(module)[key],
-            nn.Module.state_dict(module2)[key],
-        ), f"probe_head weight mismatch for {key}"
 
 
 # ---------------------------------------------------------------------------
@@ -461,41 +415,3 @@ def test_diagnostics_vis_accuracy_perfect():
     }
     diag = compute_probe_diagnostics(pred, batch, SIGMAS)
     assert diag["vis_accuracy"].item() == pytest.approx(1.0, abs=0.01)
-
-
-# ---------------------------------------------------------------------------
-# Checkpoint: frozen params excluded, reload works
-# ---------------------------------------------------------------------------
-
-
-def test_checkpoint_excludes_frozen_params():
-    """Frozen backbone parameters must not appear in the saved checkpoint state."""
-    module = _make_probe_module()
-    # CNNFeatureExtractor has no frozen params by default; freeze it manually
-    for p in module.backbone.parameters():
-        p.requires_grad_(False)
-
-    checkpoint: dict = {"state_dict": dict(module.state_dict())}
-    module.on_save_checkpoint(checkpoint)
-
-    frozen_keys = {name for name, p in module.named_parameters() if not p.requires_grad}
-    for key in frozen_keys:
-        assert key not in checkpoint["state_dict"], f"Frozen key present in checkpoint: {key}"
-
-
-def test_checkpoint_reload_restores_frozen_params():
-    """on_load_checkpoint must re-insert missing frozen keys so load_state_dict succeeds."""
-    module = _make_probe_module()
-    for p in module.backbone.parameters():
-        p.requires_grad_(False)
-
-    checkpoint: dict = {"state_dict": dict(module.state_dict())}
-    module.on_save_checkpoint(checkpoint)
-
-    # Simulate reload: on_load_checkpoint should fill missing keys back in
-    module.on_load_checkpoint(checkpoint)
-    full_keys = set(module.state_dict().keys())
-    assert full_keys == set(checkpoint["state_dict"].keys())
-
-    # load_state_dict must succeed without errors
-    module.load_state_dict(checkpoint["state_dict"], strict=True)

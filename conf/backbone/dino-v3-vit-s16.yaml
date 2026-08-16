@@ -1,2 +1,2 @@
-_target_: src.features.DinoViTFeatureExtractorConfig
+_target_: src.models.features.DinoViTFeatureExtractorConfig
 frozen: true

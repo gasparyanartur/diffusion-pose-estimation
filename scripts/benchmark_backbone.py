@@ -2,22 +2,22 @@
 """
 Benchmark visual backbones for multi-person 2D pose estimation on CrowdPose.
 
-The probe architecture is fixed (ProbeHead + PoseSlotDecoder).
+The probe architecture is fixed (ProbeHead + fixed-slot prediction head).
 Only the backbone varies between runs.  See conf/backbone/ for variants.
 
 Quick start:
     python scripts/benchmark_backbone.py
 
 Override training hyperparameters:
-    python scripts/benchmark_backbone.py training_module.lr=3e-4 \
-        training_module.max_epochs=100 data.batch_size=8
+    python scripts/benchmark_backbone.py probe.lr=3e-4 \
+        probe.max_epochs=100 data.batch_size=8
 
 Swap backbone:
     python scripts/benchmark_backbone.py backbone=cnn
 
 Skip training and evaluate a checkpoint:
     python scripts/benchmark_backbone.py skip_training=true \
-        training_module.resume=results/backbone_benchmark/.../checkpoints/last.ckpt
+        probe.resume=results/backbone_benchmark/.../checkpoints/last.ckpt
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
 from src.data import DataConfig
-from src.features import BaseFeatureExtractorConfig
-from src.base_config import BaseConfig
+from src.models.features.base import BaseFeatureExtractorConfig
+from src.configs.base_config import BaseConfig
 
 
 def _devices_arg(raw) -> int | str | list[int]:
@@ -89,7 +89,7 @@ def main(cfg: DictConfig) -> None:
     log.info("Config:\n%s", OmegaConf.to_yaml(cfg, resolve=True))
 
     backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
-    probe_cfg    = BaseConfig.from_hydra_config(cfg.training_module)
+    probe_cfg    = BaseConfig.from_hydra_config(cfg.probe)
     data_cfg     = DataConfig.from_hydra_config(cfg.data)
 
     pl.seed_everything(probe_cfg.seed, workers=True)
@@ -155,7 +155,7 @@ def main(cfg: DictConfig) -> None:
     if skip_training:
         if not resume:
             log.error(
-                "skip_training=true requires training_module.resume to point "
+                "skip_training=true requires probe.resume to point "
                 "at a checkpoint."
             )
             sys.exit(1)
@@ -196,4 +196,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     main()
-

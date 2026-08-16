@@ -30,8 +30,8 @@ from pathlib import Path
 import torch
 import numpy as np
 
-from src import defaults
-from src.configs import REGISTRY
+from src.configs import defaults
+from src.configs.configs import REGISTRY
 from src.benchmark import download_checkpoint
 
 

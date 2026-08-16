@@ -1,4 +1,4 @@
-"""Shared optimiser/scheduler builder for training modules.
+"""Shared optimizer/scheduler builder for Lightning pipelines.
 
 Splits parameters into decay / no-decay groups, optionally adds linear warmup
 and cosine annealing.

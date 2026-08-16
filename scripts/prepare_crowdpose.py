@@ -21,7 +21,7 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-from src import defaults  # noqa: E402
+from src.configs import defaults  # noqa: E402
 
 _TAR_PREFIX = "crowdpose_annotations/"
 

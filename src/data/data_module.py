@@ -72,7 +72,7 @@ def _boxes_to_padded_canonical_batch(
 
 
 class PoseDataModule(pl.LightningDataModule, ABC):
-    """Contract: training module reads these attributes after construction."""
+    """Contract: active pipelines read these attributes after construction."""
 
     val_ann_path: Path
     test_ann_path: Path

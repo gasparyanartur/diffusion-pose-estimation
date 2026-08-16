@@ -488,7 +488,7 @@ class SetBoxDiffusionLossWeights:
 
 
 class SetBoxDiffusionLoss(nn.Module):
-    """Hungarian-matched diffusion loss for the box set decoder.
+    """Hungarian-matched diffusion loss for the box set pipeline.
 
     Matched (slot, gt) pairs receive L1 + GIoU + L2 (the diffusion ``x₀``
     regression term). All slots receive a BCE objectness loss with dynamic
@@ -706,7 +706,7 @@ def _graph_pipeline_matching_cost(
 
 
 class GraphPipelineLoss(nn.Module):
-    """End-to-end Hungarian loss for :class:`GraphDiffusionPipelineDecoder`.
+    """End-to-end Hungarian loss for :class:`GraphPosePipeline`.
 
     Matches N predicted slots to P GT instances per image using a combined
     box (L1 + GIoU) + keypoint (mean L2) + objectness cost.  Matched pairs

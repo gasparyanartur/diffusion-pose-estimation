@@ -1,3 +1,89 @@
+[2026-08-15] Completed approved baseline legacy-path deletion
+
+- Deleted the obsolete generic pose composition, split fixed-slot components,
+  cached-DINO/refiner path, its Hydra presets, benchmark script, direct tests,
+  and legacy sweep without compatibility aliases.
+- Preserved the independent backbone probe and reduced `src.modules` to its
+  active probe-oriented exports; removed stale `src.training` references.
+- Retargeted retained backbone presets and positional-helper imports, removed
+  stale documentation/notebook references, and kept graph pose, box diffusion,
+  DiffusionDet, and graph data helpers intact.
+- Validation: strict obsolete-reference check passed; default Hydra builds
+  `BaselinePosePipeline`; focused test suite passed 69 tests (six expected
+  dependency/standalone-Lightning warnings).
+
+[2026-08-15] Consolidated fixed-slot baseline into one tensor-native pipeline
+
+- Added `BaselinePosePipeline` and `BaselinePosePipelineConfig`; the pipeline
+  owns the CNN backbone, private spatial-attention pooling, fixed-slot heads,
+  matching loss, AP lifecycle, and optimizer.
+- Retargeted the default Hydra root and training entry point to one `pipeline`
+  config, and added baseline config, forward, training, and evaluation-boundary
+  contract tests.
+- Deleted the generic pose pipeline, slot decoder, spatial-attention embedder,
+  set-prediction Lightning wrapper, four pose-estimator presets, set-prediction
+  preset, and three split tests. No aliases or checkpoint compatibility remain.
+- Validation passed: 57 focused baseline, set-loss, and backbone-probe tests;
+  diagnostics report no errors in changed files. The benchmark-script test is
+  still blocked by the pre-existing stale `src.modules` → `src.training` export.
+  Cached-DINO/refiner source remains only as explicitly unconfigured legacy
+  cleanup work.
+
+[2026-08-15] Consolidated box diffusion into one tensor-native pipeline
+
+- Added `BoxDiffusionPipeline` and `BoxDiffusionPipelineConfig` under
+  `src/models/pipelines/object_detectors/`; the pipeline owns backbone,
+  denoiser, EDM sampling, losses, augmentations, AP metrics, and optimizer.
+- Simplified the Hydra root and training script to construct one `pipeline`
+  config; removed decoder/module/path-adapter wiring and unsupported checkpoint
+  compatibility.
+- Deleted the obsolete decoder, Lightning module, path-based adapter, related
+  configs, and legacy test files; added canonical pipeline contract tests.
+- Retained and repaired the independent DiffusionDet adapter base interface.
+- Validation passed: 18 focused tests, unified Hydra config construction, and
+  diagnostics with no changed-file errors.
+
+[2026-08-15] Consolidated graph pose into one tensor-native pipeline
+
+- Added `GraphPosePipeline` and `GraphPosePipelineConfig` under
+  `src/models/pipelines/pose_estimators/`; it owns the online backbone, private
+  attention/GNN denoiser, EDM diffusion, graph-pose loss, augmentations, AP,
+  and optimizer lifecycle.
+- Added `conf/pipeline/graph_pose.yaml`, and simplified the graph root config
+  and training script to build a single `pipeline` object.
+- Deleted the split graph decoder/module, their four obsolete one-stage Hydra
+  presets, their exports, and the decoder-specific test. No compatibility
+  aliases or checkpoint support were retained.
+- Added canonical forward/sample/config/training-step contract tests; focused
+  validation passes (4 tests). Diagnostics found no errors in changed Python
+  files. The broader legacy `test_training_data_config.py` remains blocked by
+  its pre-existing `src.modules` imports of deleted `src.training` modules.
+
+[2026-08-15] Deleted former CNN feature modules
+
+- Moved the base backbone contract and CNN implementation to
+  `src/models/networks/backbones/`.
+- Retargeted direct consumers and the affected Hydra configuration targets.
+- Deleted the former feature-base and CNN modules; removed the unsupported
+  checkpoint-reload regression.
+- Focused validation passed 66 tests.
+
+[2026-08-15] Deleted legacy graph and attention utility modules
+
+- Moved all shared denoise-network code into `src/models/networks/graph.py`.
+- Retargeted diffusion decoders, package exports, and tests to canonical network modules.
+- Deleted `src/modules/diffusion_modules.py` and all former denoise decoder files;
+  no compatibility re-exports remain.
+- Focused regression suite passed 53 tests.
+
+[2026-08-15] Canonical shared attention and positional networks
+
+- Added `src/models/networks/attention.py` and `positional.py` for reusable
+  Fourier/time-attention and positional utilities.
+- Replaced the duplicate legacy diffusion utility implementation with a
+  compatibility re-export and updated the active diffusion decoders.
+- Added canonical-import coverage; focused regression suite passed 45 tests.
+
 [2026-08-14] Cleaned obsolete DiffusionRegPose training checkpoints
 
 - Removed obsolete effective-batch-1 training checkpoint directories for the
@@ -676,3 +762,132 @@ Modified files:
   3. Build backbone + decoder from .hydra/config.yaml, load state_dict from checkpoint
   4. Sample N images from PoseDataset, run resize_and_pad_to_square → backbone → decoder.sample() → convert canonical boxes to pixel xyxy
   5. Grid visualization (GT green, predicted red with alpha by score) + objectness histogram
+[2026-08-16] Canonicalized and removed residual backbone-probe module layer
+
+- Switched `benchmark_backbone` Hydra configuration from `training_module` to
+  `probe`, with presets under `conf/probe/` targeting the canonical
+  `BackboneProbePipeline` configs.
+- Deleted duplicate/broken `src/modules` probe and training-config modules and
+  their obsolete Hydra presets.
+- Removed probe-specific checkpoint migration and custom state-dict behavior;
+  old probe checkpoints are intentionally unsupported.
+- Validation: `venv/bin/python -m pytest tests/test_backbone_probe.py
+  tests/test_benchmark_backbone_script.py -q` passed (33 tests).
+- Next reviewed refactor slice: audit and relocate/delete residual feature
+  namespaces and root shared training/evaluation utilities.
+[2026-08-16] Deleted legacy decoder and embedder namespaces
+
+- Removed `src/models/decoders/`, `src/models/embedders/`, and the unused
+  `src/dummy.py` composition example.
+- Removed the obsolete timestep-embedding regression while retaining graph
+  denoiser tests.
+- Active-reference scan found no remaining decoder/embedder imports or Hydra
+  targets. Notebook saved output text is historical only.
+- Validation: 50 focused tests passed.
+- Next reviewed cleanup: residual feature namespace audit and shared utility
+  ownership under `src/training/` and `src/eval/`.
+[2026-08-16] Moved base and CNN feature extractors into models/features
+
+- Added `src/models/features/base.py` and `cnn.py`; retained the
+  `BaseFeatureExtractor` naming as approved.
+- Retargeted feature implementations, pipelines, Hydra configs, benchmark
+  code, and tests; deleted `src/models/networks/backbones` sources.
+- Validation: 64 focused tests passed and no active `networks.backbones`
+  references remain.
+- Next slice: move positional/attention utilities to `models/common` and graph
+  networks to `models/graph`.
+[2026-08-16] Moved attention and positional utilities into models/common
+
+- Added `src/models/common/{attention,positional}.py` and retargeted feature
+  extractors, pipelines, and tests.
+- Deleted the old `src/models/networks/attention.py` and `positional.py`.
+- Validation: 78 focused tests passed with no active old imports.
+- Next slice: move graph networks into `src/models/graph` and remove the
+  temporary `src/models/networks` package.
+[2026-08-16] Moved graph networks into models/graph
+
+- Added `src/models/graph/networks.py` and retargeted the graph pipeline/tests.
+- Deleted the remaining `src/models/networks/` package.
+- Validation: 71 focused tests passed and no active `src.models.networks`
+  references remain.
+- Next slice: move the DiffusionDet adapter into the canonical object-detector
+  pipeline namespace and remove the second pipeline hierarchy.
+[2026-08-16] Removed the second pipeline hierarchy
+
+- Moved the DiffusionDet path adapter and interface to
+  `src/models/pipelines/object_detectors/`.
+- Retargeted benchmark/tests/config and deleted legacy `src/pipelines/` sources
+  and the generic `BasePipeline`.
+- Validation: 34 focused tests passed; stale pipeline-reference scan is clean.
+- Next: update architecture documentation, then move shared root utilities to
+  explicit training/evaluation packages.
+[2026-08-16] Updated architecture documentation for final model layout
+
+- Documented `src/models/features`, `common`, `graph`, and `pipelines`.
+- Removed obsolete generic embedder/decoder stage contracts and stale package
+  paths from the project and architecture docs.
+- Next slice: move shared root utilities into `src/training` and `src/eval`.
+[2026-08-16] Moved shared training primitives into src/training
+
+- Moved losses and optimizer construction to `src/training/{losses,optim}.py`.
+- Added the training package export surface and retargeted pipelines, tests,
+  and diagnostics.
+- Validation: 84 focused tests passed.
+- Next slice: move metrics, diagnostics, and visualization into `src/eval`.
+[2026-08-16] Moved evaluation utilities into src/eval
+
+- Moved metrics, diagnostics, and visualization helpers into
+  `src/eval/{metrics,diagnostics,vis}.py`.
+- Retargeted pipelines, scripts, tests, documentation, and notebooks.
+- Validation: 88 focused tests passed; no active root evaluation imports remain.
+- Next: final full-suite/stale-path audit and test organization cleanup.
+[2026-08-16] Removed generic graph denoiser abstraction
+
+- Centralized `FiLMLayer` in `src/models/common/conditioning.py`.
+- Inlined concrete graph message passing/refinement into `GraphPosePipeline`.
+- Deleted `src/models/graph/` and obsolete abstraction tests.
+- Validation: 81 focused tests passed; documentation now reflects pipeline-
+  private graph internals.
+- Next: full-suite and stale-path audit.
+[2026-08-16] Deleted redundant set_pose_dataset module
+
+- Removed the compatibility-only `src/data/set_pose_dataset.py` re-export.
+- Canonical implementations remain in `src/data/datasets.py`.
+- Validation: 41 current set-data and box-pipeline tests passed; stale-reference
+  scan is clean.
+- Next: full repository suite and final stale-path/package audit.
+[2026-08-16] Completed full architecture refactor audit
+
+- Full test suite: 225 passed, 15 expected warnings.
+- Source compile validation passed.
+- Stale active-import/config scan is clean for all deleted namespaces.
+- Final source layout is `models/features`, `models/common`,
+  `models/pipelines`, `data`, `training`, and `eval`.
+- No further implementation changes are required for this refactor pass.
+[2026-08-16] Removed orphan legacy workflows
+
+- Deleted obsolete minimal training configs, refiner ablation scripts, and
+  their sweep files.
+- Corrected the architecture entry-point table for the canonical baseline.
+- Two historical notebooks still reference the deleted refiner benchmark; the
+  README rewrite and notebook decision remain for the next documentation pass.
+[2026-08-16] Completed naming and documentation cleanup
+
+- Rewrote README usage and metrics for the current pipeline/Hydra architecture.
+- Normalized project, architecture, utility, and training terminology.
+- Marked the historical backbone benchmark specification and corrected stale
+  config-module references.
+- Validation: compileall passed; full suite 225 passed.
+- Remaining decision: delete or replace two legacy refiner notebooks.
+[2026-08-16] Reorganized and cleaned notebooks
+
+- Consolidated the singular `notebook/` directory into plural categorized
+  directories under `notebooks/`.
+- Moved architecture-stale and retired notebooks to `notebooks/legacy/`;
+  current investigations and visualizations are separated by purpose.
+- Added notebook organization guidance in `notebooks/README.md` and updated
+  the root README layout.
+- Marked `evaluate_results.ipynb` archival and removed its deleted loader and
+  model imports while preserving its historical content.
+- Validation: all 12 notebooks parse as valid JSON; stale notebook path and
+  deleted-loader scans are clean.

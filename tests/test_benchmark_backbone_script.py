@@ -19,9 +19,12 @@ import pytest
 from hydra import compose, initialize_config_dir
 
 from src.data import DataConfig
-from src.features import BaseFeatureExtractorConfig
-from src.base_config import BaseConfig
-from src.training import BackboneProbeConfig, BackboneProbeModule, TrainingModuleConfig
+from src.models.features.base import BaseFeatureExtractorConfig
+from src.configs.base_config import BaseConfig
+from src.models.pipelines.pose_estimators.backbone_probe import (
+    BackboneProbeConfig,
+    BackboneProbePipeline,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF_DIR = ROOT / "conf"
@@ -45,11 +48,11 @@ def test_script_imports_cleanly():
     sys.modules.pop("benchmark_backbone_script", None)
 
 
-def test_benchmark_config_composes_with_set_prediction_defaults():
+def test_benchmark_config_composes_with_probe_defaults():
     cfg = _compose()
-    # conf/benchmark_backbone.yaml wires backbone: cnn + training_module: backbone_probe.
+    # conf/benchmark_backbone.yaml wires a backbone and canonical probe config.
     assert cfg.backbone._target_.endswith("ResNetFeatureExtractorConfig")
-    assert cfg.training_module._target_.endswith("BackboneProbeConfig")
+    assert cfg.probe._target_.endswith("BackboneProbeConfig")
     assert cfg.data._target_.endswith("CrowdPoseDataConfig")
     assert cfg.data.target_format == "set"
     assert cfg.skip_training is False
@@ -63,14 +66,14 @@ def test_benchmark_config_skip_training_override():
 def test_benchmark_config_builds_module():
     cfg = _compose()
     backbone_cfg = BaseFeatureExtractorConfig.from_hydra_config(cfg.backbone)
-    tm_cfg = BaseConfig.from_hydra_config(cfg.training_module)
+    probe_cfg = BaseConfig.from_hydra_config(cfg.probe)
     data_cfg = DataConfig.from_hydra_config(cfg.data)
 
     backbone = backbone_cfg.build()
     data_module = data_cfg.build(pin_memory=False)
-    module = tm_cfg.build(backbone, data=data_module)
+    module = probe_cfg.build(backbone, data=data_module)
 
-    assert isinstance(module, BackboneProbeModule)
+    assert isinstance(module, BackboneProbePipeline)
     assert module.num_keypoints == 14
 
 
