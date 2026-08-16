@@ -12,7 +12,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.metrics import CROWDPOSE_SIGMAS
+from src.eval.metrics import CROWDPOSE_SIGMAS
 from src.training.losses import (
     SetPredictionLoss,
     SetPredictionLossWeights,

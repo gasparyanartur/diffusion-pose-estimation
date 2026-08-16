@@ -8,7 +8,7 @@
 # Then copy the output:
 #   cp results/diffusiondet_crowdpose/model_final.pth checkpoints/diffdet_crowdpose_res50.pth
 
-_target_: src.box_detectors.DiffusionDetConfig
+_target_: src.models.pipelines.object_detectors.diffusiondet.DiffusionDetConfig
 
 config_file: external/diffusiondet/configs/diffdet.crowdpose.res50.yaml
 checkpoint: checkpoints/diffdet_crowdpose_res50.pth

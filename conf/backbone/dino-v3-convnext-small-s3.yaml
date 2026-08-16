@@ -1,5 +1,5 @@
 # DINOv3-ConvNeXt-Small, stage 3 (stride 16, 384 channels).
 # Stride 16 matches ResNet layer3 and ViT patch-16 for fair comparison.
-_target_: src.features.DinoFeatureExtractorConfig
+_target_: src.models.features.DinoFeatureExtractorConfig
 stage: 3
 frozen: true

@@ -1,4 +1,9 @@
-Backbone Benchmark Specification
+Historical Backbone Benchmark Specification
+
+This document describes the earlier backbone-probe experiment. The current
+implementation uses the feature-extractor namespace under
+`src/models/features/`; the terminology below is retained to preserve the
+experiment's historical context.
 File: backbone-benchmark-spec.txt
 
 Purpose

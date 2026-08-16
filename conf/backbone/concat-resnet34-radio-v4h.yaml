@@ -1,10 +1,10 @@
-_target_: src.features.ConcatFeatureExtractorConfig
+_target_: src.models.features.ConcatFeatureExtractorConfig
 dim: 256
 feature_key: spatial
 backbones:
-  - _target_: src.features.ResNetFeatureExtractorConfig
+  - _target_: src.models.features.ResNetFeatureExtractorConfig
     variant: resnet34
     output_layer: layer3
     pretrained: true
-  - _target_: src.features.CRadioV4HFeatureExtractorConfig
+  - _target_: src.models.features.CRadioV4HFeatureExtractorConfig
     frozen: true

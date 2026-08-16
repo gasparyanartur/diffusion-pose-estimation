@@ -2,7 +2,8 @@
 Core benchmarking logic for MMPose models.
 
 The public entry point is run_benchmark(), which accepts a config dict
-(as defined in src/configs.py) plus per-run overrides (work_dir, out, show_dir).
+(as defined in src/configs/configs.py) plus per-run overrides (work_dir, out,
+show_dir).
 """
 
 from __future__ import annotations

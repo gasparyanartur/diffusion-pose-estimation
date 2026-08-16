@@ -35,9 +35,9 @@ import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
-from src.base_config import BaseConfig
-from src.box_detectors import BoxDetectorConfig
-from src.metrics import BoxAPMetric
+from src.configs.base_config import BaseConfig
+from src.models.pipelines.object_detectors import BoxDetectorConfig
+from src.eval.metrics import BoxAPMetric
 
 
 # ---------------------------------------------------------------------------

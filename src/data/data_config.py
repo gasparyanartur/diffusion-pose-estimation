@@ -9,7 +9,7 @@ from typing import Literal
 from hydra.utils import to_absolute_path
 from pydantic import field_validator
 
-from src.base_config import BaseConfig
+from src.configs.base_config import BaseConfig
 from src.data.data_module import CrowdPoseDataModule, PoseDataModule
 
 

@@ -1,0 +1,62 @@
+_target_: src.models.pipelines.pose_estimators.graph.GraphPosePipelineConfig
+
+backbone:
+  _target_: src.models.features.cnn.CNNFeatureExtractorConfig
+  out_channels: 128
+
+lr: 2e-4
+weight_decay: 1e-4
+cosine_lr: true
+lr_warmup_epochs: 1
+lr_min_frac: 1e-2
+max_epochs: 100
+seed: 42
+grad_clip: 1.0
+log_every_n_steps: 50
+resume: null
+
+sigma_min: 0.002
+sigma_max: 10.0
+rho: 7.0
+sigma_p_mean: -1.2
+sigma_p_std: 1.2
+num_inference_steps: 5
+val_ap_every_n_epochs: 10
+
+noise_std: 0.02
+brightness: 0.2
+contrast: 0.2
+saturation: 0.1
+
+num_slots: 20
+num_keypoints: 14
+dim: 256
+num_heads: 8
+num_trunk_blocks: 3
+num_joint_blocks: 2
+time_dim: 256
+ffn_mult: 4.0
+dim_vis: 128
+dim_edge: 64
+num_refiner_layers: 3
+fourier_box_bands: 16
+fourier_box_scale: 1000.0
+fourier_joint_bands: 16
+fourier_joint_scale: 1000.0
+fourier_sigma_bands: 16
+fourier_sigma_scale: 1.0
+sigma_log_offset: 1.0e-4
+pe_scale: 1000.0
+dropout: 0.1
+
+weights:
+  box_l1: 5.0
+  box_giou: 2.0
+  box_l2: 1.0
+  kpt_l2: 5.0
+  obj_bce: 1.0
+  rank: 1.0
+  matcher_lambda_l1: 5.0
+  matcher_lambda_giou: 2.0
+  matcher_lambda_kpt: 1.0
+  matcher_lambda_obj: 0.1

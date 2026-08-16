@@ -1,7 +1,0 @@
-# Canonical one-stage graph diffusion pose decoder.
-# Compatibility alias: conf/decoder/graph_pipeline.yaml.
-defaults:
-  - graph_pipeline
-  - _self_
-
-_target_: src.decoders.diffusion.graph_pipeline.GraphDiffusionOnestageDecoderConfig

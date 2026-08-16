@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from src.features.vit import ViTFeatureExtractor
+from src.models.features.vit import ViTFeatureExtractor
 
 
 def test_output_shape():

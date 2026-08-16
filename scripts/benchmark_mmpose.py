@@ -23,9 +23,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from src import defaults
+from src.configs import defaults
 from src.benchmark import run_benchmark
-from src.configs import REGISTRY
+from src.configs.configs import REGISTRY
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(

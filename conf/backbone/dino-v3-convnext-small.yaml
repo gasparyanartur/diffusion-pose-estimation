@@ -1,2 +1,2 @@
-_target_: src.features.DinoFeatureExtractorConfig
+_target_: src.models.features.DinoFeatureExtractorConfig
 frozen: true

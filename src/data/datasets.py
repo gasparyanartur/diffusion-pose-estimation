@@ -21,7 +21,7 @@ import torchvision.io as tvio
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
-from src.base_config import BaseConfig
+from src.configs.base_config import BaseConfig
 from src.data.io import load_gt_annotations, read_image
 from src.data.sampler import SceneGraphSampler
 from src.data.transforms import (

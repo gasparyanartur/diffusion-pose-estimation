@@ -26,7 +26,7 @@ import numpy as np
 from tqdm import tqdm
 from ultralytics import YOLO
 
-from src import defaults
+from src.configs import defaults
 
 # ---------------------------------------------------------------------------
 # Constants

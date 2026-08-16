@@ -7,7 +7,7 @@ from pycocotools.coco import COCO
 
 import pytest
 
-from src.metrics import BoxAPMetric
+from src.eval.metrics import BoxAPMetric
 
 
 def _build_synthetic_coco() -> COCO:

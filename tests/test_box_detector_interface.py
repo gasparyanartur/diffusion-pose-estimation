@@ -8,9 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-from src.box_detectors.base import BoxDetector, BoxDetectorConfig
-from src.box_detectors.box_diffusion import BoxDiffusionDetectorConfig
-from src.box_detectors.diffusiondet import (
+from src.models.pipelines.object_detectors.base import BoxDetector, BoxDetectorConfig
+from src.models.pipelines.object_detectors.diffusiondet import (
     DiffusionDetConfig,
     _DETECTRON2_INSTALL_MSG,
     _xyxy_to_xywh,
@@ -111,18 +110,3 @@ def test_diffusiondet_build_raises_without_detectron2():
         with pytest.raises(ImportError, match="Detectron2"):
             cfg.build()
 
-
-# ---------------------------------------------------------------------------
-# BoxDiffusionDetectorConfig construction
-# ---------------------------------------------------------------------------
-
-
-def test_box_diffusion_config_construction():
-    cfg = BoxDiffusionDetectorConfig(
-        checkpoint="results/my_run/checkpoints/last.ckpt",
-        num_inference_steps=3,
-        score_threshold=0.5,
-        device="cpu",
-    )
-    assert cfg.num_inference_steps == 3
-    assert cfg.score_threshold == 0.5

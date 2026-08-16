@@ -1,0 +1,32 @@
+_target_: src.models.pipelines.pose_estimators.baseline.BaselinePosePipelineConfig
+
+backbone:
+  _target_: src.models.features.cnn.CNNFeatureExtractorConfig
+  out_channels: 128
+
+lr: 1.0e-3
+weight_decay: 1.0e-4
+cosine_lr: true
+lr_warmup_epochs: 0
+lr_min_frac: 1.0e-1
+max_epochs: 50
+seed: 42
+grad_clip: 5.0
+log_every_n_steps: 50
+
+feature_dim: 256
+num_heads: 8
+hidden_dim: 512
+num_slots: 20
+num_keypoints: 14
+mlp_dropout: 0.0
+feature_key: spatial
+gt_sanity_check: false
+
+weights:
+  oks: 1.0
+  obj: 1.0
+  vis: 0.5
+  rank: 1.0
+  matcher_lambda_oks: 1.0
+  matcher_lambda_obj: 0.1
