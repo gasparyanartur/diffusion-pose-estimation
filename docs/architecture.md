@@ -179,6 +179,11 @@ training entry point is
 with the `pipeline=diffusionregpose` and
 `data=crowdpose_diffusionregpose` presets.
 
+Its evaluation path is independent of the external repository. CUDA inference
+uses a lazily compiled native deformable-attention kernel whose scalar
+bilinear accumulation matches the checkpoint operator; training and
+unsupported environments retain the differentiable PyTorch sampler.
+
 ---
 
 ## Config presets and common run patterns

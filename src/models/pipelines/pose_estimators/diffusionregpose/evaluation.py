@@ -28,12 +28,42 @@ def box_cxcywh_to_xyxy(boxes: Tensor) -> Tensor:
     )
 
 
+def _crowdpose_pose_nms_keep(keypoints: Tensor, scores: Tensor, num_body_points: int) -> Tensor:
+    """Reproduce the reference CrowdPose keypoint-overlap suppression."""
+    coordinates = torch.stack((keypoints[:, :num_body_points], keypoints[:, num_body_points : num_body_points * 2]), dim=-1)
+    pose_area = (
+        coordinates.amax(dim=1) - coordinates.amin(dim=1)
+    ).square().sum(dim=-1)
+    pairwise_distance = (coordinates[:, None] - coordinates[None]).square().sum(-1).sqrt()
+    threshold = 0.04 * pose_area[:, None, None].sqrt()
+    nearby_joint_count = (pairwise_distance < threshold).sum(-1)
+    suppress = (nearby_joint_count > 10) & (scores[None] > 0.05)
+
+    ignored: set[int] = set()
+    keep: list[int] = []
+    for index in range(suppress.shape[0]):
+        if index in ignored:
+            continue
+        candidates = suppress[index].nonzero(as_tuple=False).flatten().tolist()
+        if candidates:
+            best = candidates[int(scores[candidates].argmax().item())]
+        else:
+            best = 0
+        if best in ignored:
+            continue
+        keep.append(best)
+        ignored.update(set(candidates) - set(ignored))
+    return torch.tensor(keep, dtype=torch.long, device=keypoints.device)
+
+
 @torch.no_grad()
 def postprocess_crowdpose(
     outputs: dict[str, Tensor],
     target_sizes: Tensor,
     *,
     num_body_points: int = 14,
+    pose_nms: bool = True,
+    nms_target_sizes: Tensor | None = None,
 ) -> list[dict[str, Tensor]]:
     """Convert normalized model predictions into CrowdPose result records."""
     logits = outputs["pred_logits"]
@@ -44,6 +74,8 @@ def postprocess_crowdpose(
     if logits.shape[:2] != boxes.shape[:2] or logits.shape[:2] != keypoints.shape[:2]:
         raise ValueError("prediction tensors must agree on batch and query dimensions")
     if target_sizes.shape != (logits.shape[0], 2):
+        if nms_target_sizes is not None and nms_target_sizes.shape != (logits.shape[0], 2):
+            raise ValueError("nms_target_sizes must have shape [batch, 2]")
         raise ValueError("target_sizes must have shape [batch, 2] containing height and width")
     if keypoints.shape[-1] != num_body_points * 3:
         raise ValueError("keypoint channel count does not match num_body_points")
@@ -51,18 +83,25 @@ def postprocess_crowdpose(
     batch_size, query_count, class_count = logits.shape
     select_count = query_count
     probabilities = logits.sigmoid()
-    scores, flattened_indices = torch.topk(
-        probabilities.flatten(1), select_count, dim=1
-    )
+    # The reference performs this top-k independently on each flattened
+    # image tensor.  Keeping the one-dimensional operation preserves its
+    # candidate order, which the subsequent pose NMS intentionally uses.
+    selected = [
+        image_probabilities.flatten(0, 1).topk(select_count, sorted=False)
+        for image_probabilities in probabilities
+    ]
+    scores = torch.stack([item.values for item in selected])
+    flattened_indices = torch.stack([item.indices for item in selected])
     query_indices = flattened_indices // class_count
     labels = flattened_indices % class_count
 
-    boxes = box_cxcywh_to_xyxy(boxes)
-    boxes = torch.gather(boxes, 1, query_indices[..., None].expand(-1, -1, 4))
+    raw_boxes = box_cxcywh_to_xyxy(boxes)
+    boxes = torch.gather(raw_boxes, 1, query_indices[..., None].expand(-1, -1, 4))
     height, width = target_sizes.unbind(1)
     box_scale = torch.stack((width, height, width, height), dim=1)
     boxes = boxes * box_scale[:, None]
 
+    raw_keypoints = keypoints
     selected_keypoints = torch.gather(
         keypoints,
         1,
@@ -76,6 +115,54 @@ def postprocess_crowdpose(
     serialized_keypoints[..., 0::3] = coordinates[..., 0::2]
     serialized_keypoints[..., 1::3] = coordinates[..., 1::2]
     serialized_keypoints[..., 2::3] = visibility
+
+    if nms_target_sizes is None:
+        nms_target_sizes = target_sizes
+    nms_height, nms_width = nms_target_sizes.unbind(1)
+    # The evaluator passes the raw xy...y channels to its legacy NMS helper.
+    # That helper expects all x channels followed by all y channels, so it
+    # scales the first half by width and the second half by height.
+    nms_coordinate_scale = torch.cat(
+        (
+            nms_width[:, None].expand(-1, num_body_points),
+            nms_height[:, None].expand(-1, num_body_points),
+        ),
+        dim=1,
+    )
+    nms_coordinates = selected_keypoints[..., : num_body_points * 2] * nms_coordinate_scale[:, None]
+    if pose_nms:
+        nms_keypoints = torch.cat((nms_coordinates, visibility), dim=-1)
+        results = []
+        for batch_index, (image_scores, image_labels, image_boxes, image_keypoints, nms_image_keypoints) in enumerate(
+            zip(scores, labels, boxes, serialized_keypoints, nms_keypoints)
+        ):
+            keep = _crowdpose_pose_nms_keep(nms_image_keypoints, image_scores, num_body_points)
+            # The reference first suppresses the class-expanded candidates,
+            # then runs its normal PostProcess top-k on the surviving raw
+            # query logits.
+            # The reference sampler keeps candidate boxes/keypoints from its
+            # first top-k selection, but indexes the raw query logits with the
+            # NMS candidate indices before the final PostProcess top-k.
+            kept_logits = logits[batch_index].index_select(0, keep)
+            kept_boxes = image_boxes.index_select(0, keep)
+            kept_keypoints = image_keypoints.index_select(0, keep)
+            second_count = kept_logits.shape[0]
+            second_scores, second_indices = torch.topk(
+                kept_logits.sigmoid().flatten(), second_count, sorted=True
+            )
+            second_labels = second_indices.remainder(class_count)
+            second_queries = second_indices.div(class_count, rounding_mode="floor")
+            final_boxes = kept_boxes.index_select(0, second_queries)
+            final_serialized = kept_keypoints.index_select(0, second_queries)
+            results.append(
+                {
+                    "scores": second_scores,
+                    "labels": second_labels,
+                    "boxes": final_boxes,
+                    "keypoints": final_serialized,
+                }
+            )
+        return results
 
     return [
         {
@@ -105,23 +192,26 @@ def resize_crowdpose_eval_image(
         image = image[:3]
     _, height, width = image.shape
     if width <= height:
-        resized_width = shortest_side
-        resized_height = int(shortest_side * height / width)
+        resized_short_side = shortest_side
+        if height / width * resized_short_side > max_size:
+            resized_short_side = int(round(max_size * width / height))
+        resized_width = resized_short_side
+        resized_height = int(resized_short_side * height / width)
     else:
-        resized_height = shortest_side
-        resized_width = int(shortest_side * width / height)
-    if max(resized_height, resized_width) > max_size:
-        if width <= height:
-            resized_width = int(round(max_size * width / height))
-            resized_height = max_size
-        else:
-            resized_height = int(round(max_size * height / width))
-            resized_width = max_size
-    image = TF.resize(
-        image,
-        [resized_height, resized_width],
-        interpolation=InterpolationMode.BILINEAR,
-        antialias=True,
+        resized_short_side = shortest_side
+        if width / height * resized_short_side > max_size:
+            resized_short_side = int(round(max_size * height / width))
+        resized_height = resized_short_side
+        resized_width = int(resized_short_side * width / height)
+    # The evaluation transform receives a PIL image in the original data
+    # pipeline.  Keeping the resize in PIL space avoids a different sampling
+    # kernel from torchvision's tensor path.
+    image = TF.to_tensor(
+        TF.resize(
+            TF.to_pil_image(image),
+            [resized_height, resized_width],
+            interpolation=InterpolationMode.BILINEAR,
+        )
     )
     return TF.normalize(
         image,

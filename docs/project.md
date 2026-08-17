@@ -93,7 +93,9 @@ Visible-mask: `visible = visibility == 2`.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
   pose model. Its training criterion reproduces the reference Hungarian,
   focal-classification, box, keypoint, and OKS losses; its model-only
-  evaluation path loads the downloaded reference checkpoint strictly.
+  evaluation path loads the downloaded reference checkpoint strictly. Exact
+  CUDA evaluation uses the repository-owned native deformable-attention
+  kernel; the PyTorch sampler remains the differentiable fallback.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

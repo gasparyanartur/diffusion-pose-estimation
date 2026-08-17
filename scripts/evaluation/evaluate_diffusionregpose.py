@@ -29,14 +29,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--sampling-timesteps", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--metrics", type=Path, default=None)
     return parser.parse_args()
 
 
 def main() -> None:
+    torch.backends.cuda.matmul.allow_tf32 = False
+    # Keep the external evaluator's cuDNN setting; it only disables TF32 for
+    # matrix multiplications explicitly.
+    torch.backends.cudnn.allow_tf32 = True
     args = parse_args()
+    # The original evaluation seeds PyTorch before model construction and
+    # consumes the global CUDA generator for each diffusion proposal tensor.
+    torch.manual_seed(args.seed)
     if not args.checkpoint.exists():
         raise FileNotFoundError(args.checkpoint)
     if not args.annotations.exists():
@@ -54,17 +61,18 @@ def main() -> None:
 
     dataset = PoseDataset.from_path(args.annotations, img_root=args.image_root, num_keypoints=14)
     records = []
-    generator = torch.Generator(device=args.device).manual_seed(args.seed)
-    samples = dataset.samples if args.limit is None else dataset.samples[: args.limit]
+    ordered_samples = sorted(dataset.samples, key=lambda sample: sample["image_id"])
+    samples = ordered_samples if args.limit is None else ordered_samples[: args.limit]
     with torch.no_grad():
         for index, sample in enumerate(samples, start=1):
             if sample["img_hw"] is None:
                 raise ValueError(f"annotation is missing image dimensions: {sample['image_id']}")
             image = resize_crowdpose_eval_image(read_image(sample["img_path"]).float().div(255.0))
             image = image.to(args.device)
-            output = model.sample_keypoints(image[None], generator=generator)
+            output = model.sample_keypoints(image[None])
             target_size = torch.tensor([sample["img_hw"]], dtype=torch.float32, device=args.device)
-            results = postprocess_crowdpose(output, target_size)
+            nms_target_size = torch.tensor([image.shape[-2:]], dtype=torch.float32, device=args.device)
+            results = postprocess_crowdpose(output, target_size, nms_target_sizes=nms_target_size)
             records.extend(crowdpose_result_records(sample["image_id"], results))
             print(f"[{index}/{len(samples)}] image_id={sample['image_id']}")
 

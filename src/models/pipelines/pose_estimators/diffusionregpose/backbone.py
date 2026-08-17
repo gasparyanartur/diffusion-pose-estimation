@@ -81,7 +81,8 @@ class FrozenBatchNorm2d(nn.Module):
         running_var = self.running_var.reshape(1, -1, 1, 1)
         running_mean = self.running_mean.reshape(1, -1, 1, 1)
         scale = weight * (running_var + 1e-5).rsqrt()
-        return inputs * scale + bias - running_mean * scale
+        bias = bias - running_mean * scale
+        return inputs * scale + bias
 
 
 class DiffusionRegPoseResNetBackbone(nn.Module):

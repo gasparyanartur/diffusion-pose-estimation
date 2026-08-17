@@ -243,6 +243,12 @@ Use `--limit` for a smoke run and `--sampling-timesteps` to select the DDIM
 schedule. The default seed and one-step schedule match the reference
 evaluation path used for checkpoint parity.
 
+On CUDA, the evaluator lazily builds the repository's independent native
+deformable-attention kernel in PyTorch's extension cache. This kernel is
+required for bit-for-bit checkpoint parity with the reference CUDA operator;
+if it cannot be built, the differentiable PyTorch sampler remains available as
+a functional fallback.
+
 ```bash
 # List available configurations
 python scripts/evaluation/benchmark_mmpose.py --list

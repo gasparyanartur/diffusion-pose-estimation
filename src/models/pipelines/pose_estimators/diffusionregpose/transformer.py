@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import math
 import warnings
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +14,33 @@ from torch import Tensor, nn
 
 def _is_power_of_two(value: int) -> bool:
     return value > 0 and value & (value - 1) == 0
+
+
+_native_msda = None
+_native_msda_error: Exception | None = None
+
+
+def _load_native_msda():
+    global _native_msda, _native_msda_error
+    if _native_msda is not None or _native_msda_error is not None:
+        return _native_msda
+    try:
+        from torch.utils.cpp_extension import load
+
+        _native_msda = load(
+            name="pose_graph_diffusionregpose_msda",
+            sources=[str(Path(__file__).with_name("deformable_attention_cuda.cu"))],
+            extra_cuda_cflags=["-O3"],
+            verbose=False,
+        )
+    except Exception as error:  # pragma: no cover - depends on local CUDA toolchain
+        _native_msda_error = error
+        warnings.warn(
+            f"native CUDA deformable attention is unavailable; using the PyTorch fallback: {error}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return _native_msda
 
 
 class MultiScaleDeformableAttention(nn.Module):
@@ -24,6 +52,7 @@ class MultiScaleDeformableAttention(nn.Module):
             warnings.warn("attention head dimension is not a power of two", stacklevel=2)
         self.d_model, self.num_levels, self.num_heads, self.num_points = d_model, num_levels, num_heads, num_points
         self.use_4d_normalizer = use_4d_normalizer
+        self.use_native_cuda_kernel = True
         self.sampling_offsets = nn.Linear(d_model, num_heads * num_levels * num_points * 2)
         self.attention_weights = nn.Linear(d_model, num_heads * num_levels * num_points)
         self.value_proj = nn.Linear(d_model, d_model)
@@ -58,6 +87,26 @@ class MultiScaleDeformableAttention(nn.Module):
             locations = reference_points[:, :, None, :, None, :2] + offsets / self.num_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:
             raise ValueError("reference_points must have last dimension 2 or 4")
+        if self.use_native_cuda_kernel and not self.training and not torch.is_grad_enabled() and query.is_cuda:
+            native_msda = _load_native_msda()
+            if native_msda is not None:
+                native_value = value
+                native_locations = locations
+                native_weights = weights
+                if value.dtype == torch.float16:
+                    native_value = value.float()
+                    native_locations = locations.float()
+                    native_weights = weights.float()
+                native_output = native_msda.forward(
+                    native_value.contiguous(),
+                    input_spatial_shapes.contiguous(),
+                    input_level_start_index.contiguous(),
+                    native_locations.contiguous(),
+                    native_weights.contiguous(),
+                )
+                if value.dtype == torch.float16:
+                    native_output = native_output.to(torch.float16)
+                return self.output_proj(native_output)
         head_dim = self.d_model // self.num_heads
         heights, widths = input_spatial_shapes[:, 0], input_spatial_shapes[:, 1]
         max_height, max_width = int(heights.max()), int(widths.max())
@@ -224,6 +273,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.ref_point_head = MLP(query_dim // 2 * d_model, d_model, d_model, 2)
         self.query_scale = self.bbox_embed = self.class_embed = self.pose_embed = self.pose_hw_embed = None
         self.num_box_decoder_layers, self.d_model = num_box_decoder_layers, d_model
+        self.num_heads = decoder_layer.self_attn.num_heads
         self.deformable_decoder, self.num_group, self.num_body_points, self.num_dn = True, num_group, num_body_points, 100
         self.emb_Q, self.emb_K, self.emb_V = nn.Linear(2, d_model), nn.Linear(2, d_model), nn.Linear(2, 2)
         self.emb_SQ, self.emb_SK, self.emb_SV = nn.Linear(2, d_model), nn.Linear(2, d_model), nn.Linear(2, 2)
@@ -237,7 +287,8 @@ class DeformableTransformerDecoder(nn.Module):
             references.append(reference_points)
             reference_points_input = reference_points[:, :, None] * torch.cat((valid_ratios, valid_ratios), -1)[None]
             query_pos = self.ref_point_head(sine_embedding_for_position(reference_points_input[:, :, 0, :]))
-            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=tgt_mask)
+            layer_mask = tgt_mask if layer_id >= self.num_box_decoder_layers else None
+            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask)
             intermediate.append(self.norm(output))
 
             if self.bbox_embed is not None and layer_id < self.num_box_decoder_layers:

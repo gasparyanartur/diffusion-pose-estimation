@@ -1122,3 +1122,35 @@ Modified files:
 - Validation: 39 DiffusionRegPose tests passed, including a reduced real-model
   backward smoke; Hydra config resolution, compileall, and diff checks passed.
 - Full dataset training remains unrun because local CrowdPose images are absent.
+[2026-08-17 07:00] Checkpoint parity investigation
+
+- Corrected evaluation resize rounding and switched to the exact external PIL interpolation path; preprocessing is pixel-identical on image 106848.
+- Added external keypoint channel-layout conversion and two-stage post-processing after pose NMS.
+- Focused tests: 12 passed.
+- 100-image seed-42 subset: 2,461 predictions, AP 0.005885; parity remains unresolved, so full evaluation was intentionally deferred.
+- Found that native annotation order started at image 106848 while the external test dataset sorts image IDs; this changes per-image diffusion RNG assignment. Native evaluation now sorts image IDs before sampling.
+
+[2026-08-17 08:30] CUDA parity investigation
+
+- Found CPU parity was insufficient: CUDA backbone divergence was caused by reduced-precision execution and is reduced to ~2.5e-5 with TF32 disabled.
+- Added exact per-level attention sampling, sorted image order, resized-coordinate NMS, and literal external NMS coordinate handling.
+- Native/external direct CUDA raw-state forward now matches within 1.8e-5 logits.
+- External wrapper probe still produces raw top score 0.595 versus native/direct raw top about 0.777; full evaluation remains intentionally deferred.
+
+[2026-08-17 11:15] Full-size masked decoder investigation
+
+- Reproduced the external `use_dn=true` evaluation attention mask and applied it after keypoint-query expansion.
+- Corrected the mask to allow box queries to attend to every keypoint query, matching the external literal mask.
+- Corrected the native post-processing candidate ordering and external second-stage indexing behavior.
+- Focused tests: 12 passed.
+- The reduced masked parity case matches, but full 900-query/100-group proposal selection diverges at decoder layer 2; current 100-image AP is 0.0109, so parity is unresolved.
+- Layer-1 full-tensor hook comparison on image 100003 shows max error ~3.18 and mean error ~0.056 before expansion; top-100 proposal indices overlap 96/100. The remaining issue is upstream of the masked attention, not the mask or final NMS.
+
+[2026-08-17 18:57] Exact DiffusionRegPose checkpoint verification completed
+
+- Added an independent native CUDA deformable-attention kernel for exact inference arithmetic.
+- Corrected capped-aspect-ratio resize rounding after the full oracle isolated a first mismatch at image 100317.
+- Native and official external evaluators produced exactly equal JSON: 202,878 records.
+- Matching CrowdPose metrics: AP 0.5764496075033877, AP-E 0.6748, AP-M 0.5818, AP-H 0.4701.
+- Focused DiffusionRegPose tests: 34 passed; compile and diff checks passed.
+- Full repository suite: 270 passed.

@@ -23,6 +23,21 @@ EXTERNAL = ROOT / "external" / "DiffusionRegPose"
 CHECKPOINT = EXTERNAL / "logs" / "crowdpose_r50_effective_batch8_40epoch" / "checkpoint.pth"
 
 
+def build_inference_attention_mask(batch_size: int, group_count: int, body_point_count: int, device):
+    group_size = body_point_count + 1
+    query_count = group_count * group_size
+    mask = torch.zeros(batch_size, 8, query_count, query_count, dtype=torch.bool, device=device)
+    for query_index in range(query_count):
+        group_start = (query_index // group_size) * group_size
+        group_end = group_start + group_size
+        mask[:, :, query_index, :group_start] = True
+        mask[:, :, query_index, group_end:] = True
+    box_indices = torch.arange(query_count, device=device)
+    box_indices = box_indices[box_indices.remainder(group_size) == 0]
+    mask[:, :, box_indices[:, None], box_indices[None, :]] = False
+    return mask.flatten(0, 1)
+
+
 def install_deformable_attention_fallback() -> None:
     operator = types.ModuleType("MultiScaleDeformableAttention")
 
@@ -185,22 +200,31 @@ def reference_prediction(
                 lambda _module, inputs, kwargs: (
                     diagnostics.setdefault("reference_expanded_query", kwargs["tgt"].detach()),
                     diagnostics.setdefault("reference_expanded_reference", kwargs["tgt_reference_points"].detach()),
+                    diagnostics.setdefault("reference_expanded_query_pos", kwargs["tgt_query_pos"].detach()),
                     None,
-                )[2],
+                )[3],
                 with_kwargs=True,
             )
         )
+        handles.append(
+            model.transformer.decoder.layers[2].self_attn.register_forward_hook(
+                lambda _module, _inputs, output: diagnostics.update(reference_masked_self_attention=output[0].detach())
+            )
+        )
+    inference_mask = build_inference_attention_mask(
+        images.shape[0], diffusion_keypoints.shape[1], 14, images.device
+    )
     _, output = model.model_predictions(
         torch.tensor([[images.shape[-1], images.shape[-2], images.shape[-1], images.shape[-2]]]),
         None,
         sources,
         masks,
         diffusion_keypoints * 2.0 - 1.0,
-        torch.tensor([timestep]),
+        torch.tensor([timestep], device=images.device),
         positions,
         None,
         None,
-        None,
+        inference_mask,
         torch.tensor([timestep]),
         None,
     )
@@ -220,7 +244,7 @@ def native_prediction(images, diffusion_keypoints, timestep, query_count, group_
     )
     checkpoint = torch.load(CHECKPOINT, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model"], strict=True)
-    model.eval()
+    model.to(images.device).eval()
     handle = None
     if diagnostics is not None:
         handle = model.transformer.decoder.register_forward_hook(
@@ -249,12 +273,20 @@ def native_prediction(images, diffusion_keypoints, timestep, query_count, group_
                 lambda _module, inputs, kwargs: (
                     diagnostics.setdefault("native_expanded_query", inputs[0].detach()),
                     diagnostics.setdefault("native_expanded_reference", kwargs["tgt_reference_points"].detach()),
+                    diagnostics.setdefault("native_expanded_query_pos", kwargs["tgt_query_pos"].detach()),
                     None,
-                )[2],
+                )[3],
                 with_kwargs=True,
             )
+            masked_self_attention_handle = model.transformer.decoder.layers[2].self_attn.register_forward_hook(
+                lambda _module, _inputs, output: diagnostics.update(native_masked_self_attention=output[0].detach())
+            )
     with torch.no_grad():
-        output = model(images, diffusion_keypoints * 2.0 - 1.0, torch.tensor([timestep]))
+        output = model(
+            images,
+            diffusion_keypoints * 2.0 - 1.0,
+            torch.tensor([timestep], device=images.device),
+        )
     if handle is not None:
         handle.remove()
     if diagnostics is not None and query_pos_handle is not None:
@@ -262,6 +294,7 @@ def native_prediction(images, diffusion_keypoints, timestep, query_count, group_
         query_sine_handle.remove()
         decoder_reference_handle.remove()
         expanded_query_handle.remove()
+        masked_self_attention_handle.remove()
     return output, model
 
 
@@ -403,6 +436,22 @@ def main() -> None:
     print(
         f"expanded_reference: max_abs={expanded_reference_difference.max().item():.6g} "
         f"mean_abs={expanded_reference_difference.mean().item():.6g}"
+    )
+    expanded_query_pos_difference = (
+        diagnostics["native_expanded_query_pos"].float()
+        - diagnostics["reference_expanded_query_pos"].float()
+    ).abs()
+    print(
+        f"expanded_query_pos: max_abs={expanded_query_pos_difference.max().item():.6g} "
+        f"mean_abs={expanded_query_pos_difference.mean().item():.6g}"
+    )
+    masked_self_attention_difference = (
+        diagnostics["native_masked_self_attention"].float()
+        - diagnostics["reference_masked_self_attention"].float()
+    ).abs()
+    print(
+        f"masked_self_attention: max_abs={masked_self_attention_difference.max().item():.6g} "
+        f"mean_abs={masked_self_attention_difference.mean().item():.6g}"
     )
     from src.models.pipelines.pose_estimators.diffusionregpose.transformer import sine_embedding_for_position
 

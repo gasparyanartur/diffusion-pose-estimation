@@ -239,6 +239,33 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             valid_ratios=valid_ratios,
         )
 
+    def inference_attention_mask(self, batch_size: int, device: torch.device) -> Tensor:
+        """Build the evaluation mask for each expanded proposal group.
+
+        Each group contains one box query followed by its body-point queries.
+        A box query may attend to every box query, while body-point queries
+        may only attend within their own group.
+        """
+        group_size = self.transformer.decoder.num_body_points + 1
+        query_count = self.transformer.decoder.num_group * group_size
+        mask = torch.zeros(
+            batch_size,
+            self.transformer.decoder.num_heads,
+            query_count,
+            query_count,
+            dtype=torch.bool,
+            device=device,
+        )
+        for group_index in range(self.transformer.decoder.num_group):
+            start = group_index * group_size
+            end = start + group_size
+            mask[:, :, start:end, :start] = True
+            mask[:, :, start:end, end:] = True
+            box_indices = torch.arange(query_count, device=device)
+            box_indices = box_indices[box_indices.remainder(group_size) == 0]
+            mask[:, :, start, box_indices] = False
+        return mask.flatten(0, 1)
+
     def forward(
         self, images: Tensor, diffusion_keypoints: Tensor, timesteps: Tensor
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
@@ -256,6 +283,10 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             valid_ratios=inputs.valid_ratios,
             memory_key_padding_mask=inputs.padding_mask,
             pos=inputs.position,
+            # The evaluation sampler supplies this mask as its second
+            # attention-mask argument; the decoder applies it only after
+            # diffusion keypoint queries are expanded.
+            tgt_mask=self.inference_attention_mask(images.shape[0], images.device),
             diffusion_keypoints=((diffusion_keypoints / self.scale) + 1.0) / 2.0,
         )
         decoder_outputs = []
@@ -281,9 +312,12 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
                 point_count = self.transformer.decoder.num_body_points
                 keypoint_xy = keypoint_xy.view(features.shape[0], -1, point_count, 2)
                 visibility = visibility.view(features.shape[0], -1, point_count, 1)
-                keypoints = torch.cat(
-                    (keypoint_xy.flatten(2), visibility.flatten(2)), dim=-1
-                )
+                interleaved_keypoints = torch.cat((keypoint_xy, visibility), dim=-1)
+                interleaved_keypoints = interleaved_keypoints.flatten(2)
+                keypoints = torch.zeros_like(interleaved_keypoints)
+                keypoints[..., : point_count * 2 : 2] = interleaved_keypoints[..., 0::3]
+                keypoints[..., 1 : point_count * 2 : 2] = interleaved_keypoints[..., 1::3]
+                keypoints[..., point_count * 2 :] = interleaved_keypoints[..., 2::3]
                 logits = class_head(box_features)
             else:
                 boxes = (box_head(features) + inverse_sigmoid(references)).sigmoid()

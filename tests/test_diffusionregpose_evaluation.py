@@ -18,7 +18,9 @@ def test_postprocess_crowdpose_selects_top_class_scores_and_scales_coordinates()
         ),
     }
 
-    result = postprocess_crowdpose(outputs, torch.tensor([[100.0, 200.0]]))[0]
+    result = postprocess_crowdpose(
+        outputs, torch.tensor([[100.0, 200.0]]), pose_nms=False
+    )[0]
 
     assert result["scores"].shape == (2,)
     assert result["labels"].tolist() == [0, 1]
@@ -69,6 +71,16 @@ def test_crowdpose_resize_uses_reference_integer_aspect_ratio() -> None:
     resized = resize_crowdpose_eval_image(image, shortest_side=80, max_size=1333)
 
     assert resized.shape == (3, 80, 266)
+
+    image = torch.ones(3, 640, 963)
+    resized = resize_crowdpose_eval_image(image)
+
+    assert resized.shape == (3, 800, 1203)
+
+    image = torch.ones(3, 284, 500)
+    resized = resize_crowdpose_eval_image(image)
+
+    assert resized.shape == (3, 757, 1332)
 
 
 def test_crowdpose_resize_normalizes_non_rgb_images() -> None:

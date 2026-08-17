@@ -10,6 +10,9 @@ from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     MultiScaleDeformableAttention,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
+    _load_native_msda,
+)
+from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     DeformableTransformerEncoder,
     DeformableTransformerEncoderLayer,
     build_input_projections,
@@ -219,6 +222,51 @@ def test_loop_free_deformable_attention_matches_reference(
     )
 
     assert torch.equal(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention kernel")
+def test_native_cuda_deformable_attention_matches_grid_sample_reference() -> None:
+    native_msda = _load_native_msda()
+    if native_msda is None:
+        pytest.skip("the local CUDA extension toolchain is unavailable")
+
+    device = torch.device("cuda")
+    shapes = torch.tensor([[3, 4], [2, 2]], device=device, dtype=torch.long)
+    starts = torch.cat((shapes.new_zeros(1), shapes.prod(1).cumsum(0)[:-1]))
+    value = torch.arange(16 * 2, device=device, dtype=torch.float32).view(1, 16, 2, 1)
+    locations = torch.tensor(
+        [[[[[[0.2, 0.3], [0.7, 0.8]], [[0.4, 0.5], [0.6, 0.2]]]]]],
+        device=device,
+    ).expand(1, 1, 2, 2, 2, 2).contiguous()
+    weights = torch.tensor(
+        [[[[[0.1, 0.2], [0.3, 0.4]]]]], device=device
+    ).expand(1, 1, 2, 2, 2).contiguous()
+
+    expected_levels = []
+    value_levels = value.split((12, 4), dim=1)
+    for level, (height, width) in enumerate(shapes.tolist()):
+        level_value = value_levels[level].flatten(2).transpose(1, 2).reshape(2, 1, height, width)
+        grid = (2.0 * locations[:, :, :, level] - 1.0).transpose(1, 2).flatten(0, 1)
+        expected_levels.append(
+            F.grid_sample(
+                level_value,
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )
+        )
+    expected = (
+        torch.stack(expected_levels, dim=-2)
+        .flatten(-2)
+        .reshape(1, 1, 2, 4)
+        .mul(weights.reshape(1, 1, 2, 4))
+        .sum(-1)
+        .reshape(1, 1, 2)
+    )
+    actual = native_msda.forward(value, shapes, starts, locations, weights)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
 
 
 def test_encoder_parameter_shapes_match_available_checkpoint() -> None:
