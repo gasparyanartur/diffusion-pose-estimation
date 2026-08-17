@@ -2,7 +2,7 @@
 # Run a single task from a sweep parameter file.
 #
 # Usage:
-#   scripts/run_sweep.sh <sweep_file> <task_id> [extra_hydra_overrides...]
+#   scripts/training/run_sweep.sh <sweep_file> <task_id> [extra_hydra_overrides...]
 #
 # Arguments:
 #   sweep_file              Path to a .sweep file. Each non-blank, non-comment line is one
@@ -13,14 +13,14 @@
 #
 # The script creates results/sweeps/<sweep_name>/task_<task_id>/ as the output
 # directory for the run.  Training and final test evaluation are handled by
-# scripts/train_pose_refinement.py; no separate test step is needed.
+# scripts/training/train_pose_refinement.py; no separate test step is needed.
 #
 # Example (run task 3 from sweeps/my_sweep.sweep):
-#   scripts/run_sweep.sh sweeps/my_sweep.sweep 3
+#   scripts/training/run_sweep.sh sweeps/my_sweep.sweep 3
 #
 # To run all tasks in a sweep file sequentially:
 #   for i in $(seq 1 $(grep -cve '^\s*#\|^\s*$' sweeps/my_sweep.sweep)); do
-#       scripts/run_sweep.sh sweeps/my_sweep.sweep $i
+#       scripts/training/run_sweep.sh sweeps/my_sweep.sweep $i
 #   done
 
 set -euo pipefail

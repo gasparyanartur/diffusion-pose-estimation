@@ -1,20 +1,21 @@
-# Hydra root config for scripts/train_box_diffusion.py
+# Hydra root config for scripts/training/train_box_diffusion.py
 #
 # Architecture: BoxDiffusionPipeline (backbone + EDM box denoiser + Lightning
 # lifecycle) over a DETR-style matched set of bounding boxes.
 #
 # Examples:
-#   python scripts/train_box_diffusion.py
-#   python scripts/train_box_diffusion.py pipeline.max_epochs=200
-#   python scripts/train_box_diffusion.py data=crowdpose_debug \
-#       pipeline.max_epochs=2 pipeline.val_ap_every_n_epochs=1
-#   python scripts/train_box_diffusion.py skip_training=true \
-#       pipeline.resume=results/.../checkpoints/last.ckpt
+#   python scripts/training/train_box_diffusion.py
+#   python scripts/training/train_box_diffusion.py training.max_epochs=200
+#   python scripts/training/train_box_diffusion.py data=crowdpose_debug \
+#       training.max_epochs=2 pipeline.val_ap_every_n_epochs=1
+#   python scripts/training/train_box_diffusion.py skip_training=true \
+#       training.resume=results/.../checkpoints/last.ckpt
 
 defaults:
   - pipeline: box_diffusion
   - data: crowdpose_set_prediction
   - hardware: auto
+  - training: box_diffusion
   - _self_
 
 run_name: box_diffusion_benchmark

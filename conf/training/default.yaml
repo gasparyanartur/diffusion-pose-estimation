@@ -1,0 +1,31 @@
+# Shared runtime policy for the training runner.
+#
+# Pipeline-specific optimizer schedules remain in conf/pipeline; this group
+# owns the runtime horizon and execution policy.
+
+accelerator: ${hardware.accelerator}
+devices: ${hardware.devices}
+precision: ${hardware.precision}
+max_epochs: 50
+grad_clip: 5.0
+log_every_n_steps: 50
+seed: 42
+resume: null
+skip_training: false
+test_after_fit: true
+
+checkpoint:
+  monitor: val/loss
+  mode: min
+  filename: "epoch{epoch:03d}-val_loss{val/loss:.4f}"
+  save_top_k: 1
+  save_last: true
+  every_n_epochs: null
+  final_epoch: false
+
+logging:
+  logger_name: training
+  tensorboard: true
+  csv: true
+  tensorboard_name: tb_logs
+  csv_name: csv_logs

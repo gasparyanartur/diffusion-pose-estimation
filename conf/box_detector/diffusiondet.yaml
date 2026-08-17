@@ -4,7 +4,7 @@
 # See external/diffusiondet/GETTING_STARTED.md for setup instructions.
 #
 # Train the checkpoint first:
-#   bash scripts/train_diffusiondet_crowdpose.sh
+#   bash scripts/training/train_diffusiondet_crowdpose.sh
 # Then copy the output:
 #   cp results/diffusiondet_crowdpose/model_final.pth checkpoints/diffdet_crowdpose_res50.pth
 

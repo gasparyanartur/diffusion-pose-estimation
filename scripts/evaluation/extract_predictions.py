@@ -5,19 +5,19 @@ Extract and cache predictions from any MMPose model.
 Works with both top-down (RTMPose) and bottom-up (DEKR) models.
 
 Usage:
-    source .env && python scripts/extract_predictions.py \\
+    source .env && python scripts/evaluation/extract_predictions.py \\
         rtmpose-m_8xb64-210e_crowdpose-256x192
 
-    source .env && python scripts/extract_predictions.py \\
+    source .env && python scripts/evaluation/extract_predictions.py \\
         dekr-hrnet-w32_8xb10-300e_crowdpose-512x512
 
     # With custom cache path
-    source .env && python scripts/extract_predictions.py \\
+    source .env && python scripts/evaluation/extract_predictions.py \\
         rtmpose-m_8xb64-210e_crowdpose-256x192 \\
         --cache results/cache/my_custom_name.pkl
 
     # Force re-extraction (overwrite existing cache)
-    source .env && python scripts/extract_predictions.py \\
+    source .env && python scripts/evaluation/extract_predictions.py \\
         rtmpose-m_8xb64-210e_crowdpose-256x192 \\
         --force
 """

@@ -1,7 +1,7 @@
 # Root Hydra config. Override any value from the command line:
 #
-#   python scripts/train_pose_refinement.py run_name=exp1
-#   python scripts/train_pose_refinement.py pipeline.lr=3e-4 pipeline.max_epochs=200
+#   python scripts/training/train_pose_refinement.py run_name=exp1
+#   python scripts/training/train_pose_refinement.py pipeline.lr=3e-4 training.max_epochs=200
 #
 # The default project model is fixed-slot pose prediction: image → person slots
 # → keypoints.
@@ -10,6 +10,7 @@ defaults:
   - pipeline: baseline_pose
   - data: crowdpose_set_prediction
   - hardware: auto
+  - training: default
   - _self_
 
 run_name: pose_estimator

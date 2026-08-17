@@ -1,27 +1,28 @@
-# Hydra root config for scripts/benchmark_backbone.py
+# Hydra root config for scripts/investigation/benchmark_backbone.py
 #
 # Architecture: backbone → ProbeHead (fixed) → fixed-slot prediction head
 # Only the 'backbone' group varies between benchmark runs.
 #
 # Examples:
-#   python scripts/benchmark_backbone.py
-#   python scripts/benchmark_backbone.py probe.max_epochs=100
-#   python scripts/benchmark_backbone.py probe.val_ap_every_n_epochs=5
-#   python scripts/benchmark_backbone.py skip_training=true \
-#       probe.resume=results/.../checkpoints/last.ckpt
+#   python scripts/investigation/benchmark_backbone.py
+#   python scripts/investigation/benchmark_backbone.py training.max_epochs=100
+#   python scripts/investigation/benchmark_backbone.py probe.val_ap_every_n_epochs=5
+#   python scripts/investigation/benchmark_backbone.py skip_training=true \
+#       training.resume=results/.../checkpoints/last.ckpt
 
 defaults:
   - backbone: resnet18
   - probe: backbone_probe_query
   - data: crowdpose_set_prediction
   - hardware: auto
+  - training: backbone_probe
   - _self_
 
 run_name: backbone_benchmark
 out_dir: results/backbone_benchmark
 
 # When true, skip trainer.fit and only run trainer.test on the checkpoint at
-# `probe.resume`. Use `+skip_training=true` on the command line.
+# `training.resume`. Use `+skip_training=true` on the command line.
 skip_training: false
 
 # Set to true to enable torch.compile on the Lightning module.

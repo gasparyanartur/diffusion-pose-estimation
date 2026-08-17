@@ -1,24 +1,25 @@
-# Hydra root config for scripts/train_graph_pipeline.py
+# Hydra root config for scripts/training/train_graph_pipeline.py
 #
 # Architecture: `GraphPosePipeline` (EDM diffusion over boxes + keypoints,
 # attention + graph refinement, Hungarian loss).
 #
 # Quick start:
-#   python scripts/train_graph_pipeline.py
+#   python scripts/training/train_graph_pipeline.py
 #
 # Smoke run on a tiny subset:
-#   python scripts/train_graph_pipeline.py data=crowdpose_set_prediction_debug \
-#       pipeline.max_epochs=2 pipeline.val_ap_every_n_epochs=1 \
+#   python scripts/training/train_graph_pipeline.py data=crowdpose_set_prediction_debug \
+#       training.max_epochs=2 pipeline.val_ap_every_n_epochs=1 \
 #       hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 #
 # Skip training and evaluate a checkpoint:
-#   python scripts/train_graph_pipeline.py skip_training=true \
-#       pipeline.resume=results/graph_pipeline/.../checkpoints/last.ckpt
+#   python scripts/training/train_graph_pipeline.py skip_training=true \
+#       training.resume=results/graph_pipeline/.../checkpoints/last.ckpt
 
 defaults:
   - pipeline: graph_pose
   - data: crowdpose_set_prediction
   - hardware: auto
+  - training: graph_pose
   - _self_
 
 run_name: graph_pipeline_benchmark

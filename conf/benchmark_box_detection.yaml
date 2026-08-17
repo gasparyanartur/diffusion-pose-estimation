@@ -1,15 +1,15 @@
-# Root Hydra config for scripts/benchmark_box_detection.py.
+# Root Hydra config for scripts/evaluation/benchmark_box_detection.py.
 #
 # Benchmarks a box detector on CrowdPose and reports COCO bbox AP.
 #
 # Examples:
 #   # DiffusionDet on val split (requires Detectron2):
-#   python scripts/benchmark_box_detection.py \
+#   python scripts/evaluation/benchmark_box_detection.py \
 #       box_detector=diffusiondet \
 #       box_detector.checkpoint=checkpoints/diffdet_coco_res50.pth
 #
 #   # Our box-diffusion model on test split:
-#   python scripts/benchmark_box_detection.py \
+#   python scripts/evaluation/benchmark_box_detection.py \
 #       box_detector=box_diffusion \
 #       box_detector.checkpoint=results/.../checkpoints/last.ckpt \
 #       split=test

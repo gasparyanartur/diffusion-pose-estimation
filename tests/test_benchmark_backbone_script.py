@@ -1,4 +1,4 @@
-"""Smoke tests for scripts/benchmark_backbone.py.
+"""Smoke tests for scripts/investigation/benchmark_backbone.py.
 
 We don't run a full training loop here (no real data + heavy compute);
 instead we verify:
@@ -25,6 +25,7 @@ from src.models.pipelines.pose_estimators.backbone_probe import (
     BackboneProbeConfig,
     BackboneProbePipeline,
 )
+from src.training import TrainingConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 CONF_DIR = ROOT / "conf"
@@ -39,7 +40,7 @@ def test_script_imports_cleanly():
     # Importing must not run main() or touch CUDA.
     spec = importlib.util.spec_from_file_location(
         "benchmark_backbone_script",
-        ROOT / "scripts" / "benchmark_backbone.py",
+        ROOT / "scripts" / "investigation" / "benchmark_backbone.py",
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -55,7 +56,17 @@ def test_benchmark_config_composes_with_probe_defaults():
     assert cfg.probe._target_.endswith("BackboneProbeConfig")
     assert cfg.data._target_.endswith("CrowdPoseDataConfig")
     assert cfg.data.target_format == "set"
+    assert cfg.training.checkpoint.monitor == "val/crowdpose/AP"
+    assert cfg.training.checkpoint.final_epoch is True
     assert cfg.skip_training is False
+
+
+def test_benchmark_training_config_is_typed():
+    cfg = _compose()
+    training_cfg = TrainingConfig.from_hydra_config(cfg.training)
+
+    assert training_cfg.checkpoint.monitor == "val/crowdpose/AP"
+    assert training_cfg.checkpoint.every_n_epochs == cfg.probe.val_ap_every_n_epochs
 
 
 def test_benchmark_config_skip_training_override():
@@ -71,7 +82,10 @@ def test_benchmark_config_builds_module():
 
     backbone = backbone_cfg.build()
     data_module = data_cfg.build(pin_memory=False)
-    module = probe_cfg.build(backbone, data=data_module)
+    training_cfg = TrainingConfig.from_hydra_config(cfg.training)
+    module = probe_cfg.build(
+        backbone, data=data_module, max_epochs=training_cfg.max_epochs
+    )
 
     assert isinstance(module, BackboneProbePipeline)
     assert module.num_keypoints == 14

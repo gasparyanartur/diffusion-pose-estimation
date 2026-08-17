@@ -77,7 +77,7 @@ def test_pipeline_config_builds_complete_model():
         fourier_joint_bands=4,
         fourier_sigma_bands=4,
     )
-    pipeline = config.build()
+    pipeline = config.build(max_epochs=1)
     assert isinstance(pipeline, GraphPosePipeline)
     assert isinstance(pipeline.backbone, CNNFeatureExtractor)
     assert pipeline.num_slots == NUM_SLOTS

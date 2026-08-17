@@ -1,0 +1,14 @@
+defaults:
+  - default
+  - _self_
+
+max_epochs: 100
+grad_clip: 1.0
+
+checkpoint:
+  monitor: ap-val/${pipeline.num_inference_steps}-step/crowdpose/AP
+  mode: max
+  filename: "epoch{epoch:03d}-kpt_AP"
+  save_last: false
+  every_n_epochs: ${pipeline.val_ap_every_n_epochs}
+  final_epoch: true

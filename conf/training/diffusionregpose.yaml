@@ -1,0 +1,14 @@
+defaults:
+  - default
+  - _self_
+
+max_epochs: 50
+grad_clip: 5.0
+
+checkpoint:
+  monitor: val/loss
+  mode: min
+  filename: "epoch{epoch:03d}-val_loss{val/loss:.4f}"
+  save_last: true
+  every_n_epochs: null
+  final_epoch: false

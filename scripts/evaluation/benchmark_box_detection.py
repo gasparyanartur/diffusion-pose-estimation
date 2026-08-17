@@ -7,18 +7,18 @@ easy to compare DiffusionDet against our trained box-diffusion model.
 
 Examples:
     # DiffusionDet on val split (requires Detectron2 + checkpoint):
-    python scripts/benchmark_box_detection.py \\
+    python scripts/evaluation/benchmark_box_detection.py \\
         box_detector=diffusiondet \\
         box_detector.checkpoint=checkpoints/diffdet_coco_res50.pth
 
     # Our box-diffusion model on test split:
-    python scripts/benchmark_box_detection.py \\
+    python scripts/evaluation/benchmark_box_detection.py \\
         box_detector=box_diffusion \\
         box_detector.checkpoint=results/.../checkpoints/last.ckpt \\
         split=test
 
     # CPU run:
-    python scripts/benchmark_box_detection.py \\
+    python scripts/evaluation/benchmark_box_detection.py \\
         box_detector=diffusiondet \\
         box_detector.device=cpu
 """
@@ -86,7 +86,7 @@ def _batch(items: list, batch_size: int):
 
 @hydra.main(
     version_base="1.3",
-    config_path="../conf",
+        config_path="../../conf",
     config_name="benchmark_box_detection",
 )
 def main(cfg: DictConfig) -> None:

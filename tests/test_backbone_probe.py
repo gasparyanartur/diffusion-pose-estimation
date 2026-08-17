@@ -323,7 +323,7 @@ def test_backbone_probe_config_build():
         hidden_dim=64,
         num_slots=5,
     )
-    module = probe_cfg.build(backbone, data_module)
+    module = probe_cfg.build(backbone, data_module, max_epochs=1)
     assert isinstance(module, BackboneProbePipeline)
     assert module.probe_head.num_slots == 5
     assert module.probe_head.feature_dim == 64

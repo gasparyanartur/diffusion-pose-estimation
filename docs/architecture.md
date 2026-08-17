@@ -37,13 +37,13 @@ src/                core library
   data/             datasets, data modules, data configs, graph utilities
   eval/             AP metrics, diagnostics, and visualization helpers
 
-scripts/            CLI entry points
-  train_graph_pipeline.py    one-stage graph diffusion pose training
-  train_pose_refinement.py   fixed-slot baseline pose training
-  train_box_diffusion.py     standalone object detection training
-  benchmark_mmpose.py        run MMPose baseline
-  extract_predictions.py     write prediction cache files
-  precompute_dino.py         pre-extract DINO features to disk
+scripts/            categorized CLI entry points
+  data/             dataset preparation and cache generation
+  training/         model training and sweep orchestration
+  evaluation/       benchmarks and prediction-cache evaluation
+  investigation/    probes and exploratory inspection
+  utils/            environment and command utilities
+  legacy/           retained examples for historical reference
 
 tests/              unit tests (pytest)
 results/            outputs: checkpoints, prediction caches, benchmark CSVs
@@ -72,10 +72,16 @@ module:
 | `pipeline`         | `BaselinePosePipelineConfig` | `baseline_pose.yaml` |
 | `data`             | `CrowdPoseDataConfig`      | `crowdpose.yaml`        |
 | `hardware`         | *(plain dict)*             | `auto.yaml`             |
+| `training`         | `TrainingConfig`           | `default.yaml`          |
 
-Override a group: `python scripts/train_pose_refinement.py pipeline=baseline_pose`
+Override a group: `python scripts/training/train_pose_refinement.py pipeline=baseline_pose`
 
-Override individual values: `pipeline.lr=3e-4 pipeline.max_epochs=100`
+Override individual values: `pipeline.lr=3e-4 training.max_epochs=100`
+
+Runtime training policy is composed independently through the `training`
+group, for example `training.max_epochs=2 training.test_after_fit=false`.
+The typed runtime schema lives in [`src/training/config.py`](../src/training/config.py);
+Hydra YAML remains under [`conf/training/`](../conf/training/).
 
 ---
 
@@ -126,7 +132,7 @@ K keypoints. It uses [`SceneGraphSampler`](../src/data/sampler.py) to produce
 uniform-N batches.
 
 [`PredictionDataset`](../src/data/datasets.py) is similar but wraps detector
-prediction cache files (produced by `scripts/extract_predictions.py`) for
+prediction cache files (produced by `scripts/evaluation/extract_predictions.py`) for
 inference-time use.
 
 [`CrowdPoseDataModule`](../src/data/data_module.py) is a `pl.LightningDataModule`
@@ -152,10 +158,26 @@ Key `CrowdPoseDataConfig` fields: `train_ann`, `val_ann`, `test_ann`, `img_dir`,
 
 ## Training
 
-Each canonical pipeline is a `pl.LightningModule` and owns its training,
-validation, test, metric, and optimizer lifecycle. Shared losses and metrics
-are available from [`src/training/losses.py`](../src/training/losses.py) and
+Each canonical pipeline is a `pl.LightningModule` and owns its forward, loss,
+metric, and optimizer behavior. The shared `TrainingRunner` owns the
+cross-pipeline execution lifecycle. Shared losses and metrics are available
+from [`src/training/losses.py`](../src/training/losses.py) and
 [`src/eval/metrics.py`](../src/eval/metrics.py).
+
+The cross-pipeline execution lifecycle is provided by
+[`TrainingRunner`](../src/training/runner.py). It consumes typed
+`TrainingConfig` values and remains independent of Hydra. Pipeline-specific
+scripts provide the model/data objects and can supply specialized callbacks or
+checkpoint I/O policies.
+
+`DiffusionRegPosePipeline` wraps the checkpoint-compatible native model in the
+same Lightning boundary. Its target builder creates the reference xyxy-plus-
+visibility target layout and timestep-zero cosine diffusion inputs, while its
+criterion owns Hungarian matching and final/auxiliary decoder losses. The
+training entry point is
+[`scripts/training/train_diffusionregpose.py`](../scripts/training/train_diffusionregpose.py)
+with the `pipeline=diffusionregpose` and
+`data=crowdpose_diffusionregpose` presets.
 
 ---
 
@@ -163,10 +185,11 @@ are available from [`src/training/losses.py`](../src/training/losses.py) and
 
 | Use case                     | Command                                                            |
 |------------------------------|--------------------------------------------------------------------|
-| One-stage graph pose smoke   | `python scripts/train_graph_pipeline.py data=crowdpose_set_prediction_debug pipeline.max_epochs=2 hardware.accelerator=cpu hardware.devices=1 hardware.precision=32` |
-| Fixed-slot baseline          | `python scripts/train_pose_refinement.py pipeline=baseline_pose data=crowdpose_set_prediction` |
-| Object detection             | `python scripts/train_box_diffusion.py`                            |
-| Resume from checkpoint       | `pipeline.resume=results/.../last.ckpt`                            |
+| One-stage graph pose smoke   | `python scripts/training/train_graph_pipeline.py data=crowdpose_set_prediction_debug training.max_epochs=2 hardware.accelerator=cpu hardware.devices=1 hardware.precision=32` |
+| DiffusionRegPose training    | `python scripts/training/train_diffusionregpose.py` |
+| Fixed-slot baseline          | `python scripts/training/train_pose_refinement.py pipeline=baseline_pose data=crowdpose_set_prediction` |
+| Object detection             | `python scripts/training/train_box_diffusion.py`                            |
+| Resume from checkpoint       | `training.resume=results/.../last.ckpt`                            |
 
 Outputs land in `results/pose_estimator_training/<run_name>/<timestamp>/`, including
 TensorBoard logs, CSV logs, and Lightning checkpoints (`last.ckpt`, `best.ckpt`).
@@ -177,13 +200,15 @@ TensorBoard logs, CSV logs, and Lightning checkpoints (`last.ckpt`, `best.ckpt`)
 
 | Script                             | Purpose                                                        |
 |------------------------------------|----------------------------------------------------------------|
-| `scripts/train_graph_pipeline.py` | One-stage graph diffusion pose training                      |
-| `scripts/train_pose_refinement.py` | Fixed-slot baseline pose training                         |
-| `scripts/benchmark_mmpose.py`      | Run DEKR / RTMPose baselines via MMPose, write result CSVs     |
-| `scripts/extract_predictions.py`   | Write per-image prediction caches for evaluation/input data |
-| `scripts/precompute_dino.py`       | Pre-extract DINOv3-ConvNeXt features to `results/cache/`       |
-| `scripts/prepare_crowdpose.py`     | Download and prepare CrowdPose annotations                     |
-| `scripts/train_box_diffusion.py`   | Train the set-prediction box-diffusion model (see below)       |
+| `scripts/training/train_graph_pipeline.py` | One-stage graph diffusion pose training |
+| `scripts/training/train_diffusionregpose.py` | Native DiffusionRegPose training |
+| `scripts/training/train_pose_refinement.py` | Fixed-slot baseline pose training |
+| `scripts/evaluation/benchmark_mmpose.py` | Run DEKR / RTMPose baselines via MMPose |
+| `scripts/evaluation/extract_predictions.py` | Write prediction caches for evaluation |
+| `scripts/evaluation/evaluate_diffusionregpose.py` | Evaluate a native DiffusionRegPose checkpoint on CrowdPose |
+| `scripts/data/precompute_dino.py` | Pre-extract DINOv3-ConvNeXt features |
+| `scripts/data/prepare_crowdpose.py` | Download and prepare CrowdPose annotations |
+| `scripts/training/train_box_diffusion.py` | Train the set-prediction box-diffusion model |
 
 ## Graph-pose pipeline
 
@@ -229,16 +254,16 @@ Hydra root config: [conf/benchmark_box_diffusion.yaml](../conf/benchmark_box_dif
 pipeline config builds the full model directly. Run via:
 
 ```
-python scripts/train_box_diffusion.py
+python scripts/training/train_box_diffusion.py
 ```
 
 Smoke run on a tiny CPU subset (used to validate the wiring):
 
 ```
-python scripts/train_box_diffusion.py \
+python scripts/training/train_box_diffusion.py \
     data=crowdpose_set_prediction +data.subset_frac=0.001 \
     data.batch_size=2 data.num_workers=0 data.ap_batch_size=2 \
-    pipeline.max_epochs=2 pipeline.val_ap_every_n_epochs=1 \
+    training.max_epochs=2 pipeline.val_ap_every_n_epochs=1 \
     hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 ```
 

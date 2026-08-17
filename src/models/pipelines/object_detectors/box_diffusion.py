@@ -624,11 +624,6 @@ class BoxDiffusionPipelineConfig(BaseConfig):
     cosine_lr: bool = True
     lr_warmup_epochs: int = 1
     lr_min_frac: float = 1e-2
-    max_epochs: int = 100
-    seed: int = 42
-    grad_clip: float = 1.0
-    log_every_n_steps: int = 50
-    resume: str | None = None
     sigma_min: float = 0.002
     sigma_max: float = 10.0
     rho: float = 7.0
@@ -667,6 +662,7 @@ class BoxDiffusionPipelineConfig(BaseConfig):
         *,
         val_ann_file: str | None = None,
         test_ann_file: str | None = None,
+        max_epochs: int,
     ) -> BoxDiffusionPipeline:
         backbone = self.backbone.build()
         try:
@@ -678,7 +674,7 @@ class BoxDiffusionPipelineConfig(BaseConfig):
             weights=self.weights.to_dataclass(),
             lr=self.lr,
             weight_decay=self.weight_decay,
-            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_T_max=max_epochs if self.cosine_lr else None,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
             sigma_min=self.sigma_min,

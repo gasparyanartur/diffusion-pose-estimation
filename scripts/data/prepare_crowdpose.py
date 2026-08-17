@@ -13,7 +13,7 @@ All files are extracted to data/crowdpose/annotations/, skipping any that
 already exist.
 
 Usage:
-    python scripts/prepare_crowdpose.py
+    python scripts/data/prepare_crowdpose.py
 """
 
 import sys

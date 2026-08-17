@@ -6,13 +6,13 @@ Output (per split):
 
 Usage:
     # Generate all splits (default thresholds: conf=0.5, nms=0.45)
-    python scripts/generate_boxes_yolo.py
+    python scripts/data/generate_boxes_yolo.py
 
     # Generate only test split
-    python scripts/generate_boxes_yolo.py --split test
+    python scripts/data/generate_boxes_yolo.py --split test
 
     # Match reference file thresholds (det_for_crowd_test_0.1_0.5.json) and verify
-    python scripts/generate_boxes_yolo.py --split test \\
+    python scripts/data/generate_boxes_yolo.py --split test \\
         --conf-threshold 0.1 --nms-threshold 0.5 --verify
 """
 

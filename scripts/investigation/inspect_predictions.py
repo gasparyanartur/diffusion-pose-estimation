@@ -3,14 +3,14 @@
 Inspect cached predictions to understand the structure.
 
 Usage:
-    python scripts/inspect_predictions.py \\
+    python scripts/investigation/inspect_predictions.py \\
         results/cache/rtmpose-m_crowdpose_predictions.pkl
 
-    python scripts/inspect_predictions.py \\
+    python scripts/investigation/inspect_predictions.py \\
         results/cache/dekr-w32_crowdpose_predictions.pkl
 
     # Inspect multiple caches
-    python scripts/inspect_predictions.py \\
+    python scripts/investigation/inspect_predictions.py \\
         results/cache/*.pkl
 """
 

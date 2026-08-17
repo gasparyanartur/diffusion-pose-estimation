@@ -2,7 +2,7 @@
 # Train DiffusionDet on CrowdPose (person detection).
 #
 # Usage:
-#   bash scripts/train_diffusiondet_crowdpose.sh
+#   bash scripts/training/train_diffusiondet_crowdpose.sh
 #
 # Options (env vars or flags):
 #   NUM_GPUS        number of GPUs (default: 1)
@@ -14,14 +14,14 @@
 #
 # Examples:
 #   # Standard single-GPU training:
-#   bash scripts/train_diffusiondet_crowdpose.sh
+#   bash scripts/training/train_diffusiondet_crowdpose.sh
 #
 #   # Resume interrupted run:
-#   RESUME=true bash scripts/train_diffusiondet_crowdpose.sh
+#   RESUME=true bash scripts/training/train_diffusiondet_crowdpose.sh
 #
 #   # Evaluate a finished checkpoint:
 #   EVAL_ONLY=true MODEL_WEIGHTS=results/diffusiondet_crowdpose/model_final.pth \
-#       bash scripts/train_diffusiondet_crowdpose.sh
+#       bash scripts/training/train_diffusiondet_crowdpose.sh
 #
 # After training, copy the final checkpoint:
 #   cp results/diffusiondet_crowdpose/model_final.pth checkpoints/diffdet_crowdpose_res50.pth

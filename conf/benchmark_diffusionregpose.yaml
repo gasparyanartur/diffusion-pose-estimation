@@ -1,0 +1,18 @@
+# Hydra root config for scripts/training/train_diffusionregpose.py
+
+defaults:
+  - pipeline: diffusionregpose
+  - data: crowdpose_diffusionregpose
+  - hardware: auto
+  - training: diffusionregpose
+  - _self_
+
+run_name: diffusionregpose_training
+out_dir: results/diffusionregpose_training
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

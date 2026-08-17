@@ -368,8 +368,7 @@ class BackboneProbePipeline(pl.LightningModule):
         val_ann_file: str | None = None,
         test_ann_file: str | None = None,
         num_keypoints: int = 14,
-        grad_clip: float = 0.0,
-        val_ap_every_n_epochs: int = 10,
+    val_ap_every_n_epochs: int = 10,
         gt_sanity_check: bool = False,
         plot_dir: str | None = None,
         max_plot_images: int = 5,
@@ -391,7 +390,6 @@ class BackboneProbePipeline(pl.LightningModule):
         self.lr_warmup_epochs = lr_warmup_epochs
         self.lr_min_frac = lr_min_frac
         self.num_keypoints = num_keypoints
-        self.grad_clip = grad_clip
         self.val_ap_every_n_epochs = val_ap_every_n_epochs
         self.gt_sanity_check = gt_sanity_check
         self.plot_dir = plot_dir
@@ -678,11 +676,6 @@ class BackboneProbeConfig(BaseConfig):
     lr_warmup_epochs: int = 0
     lr_min_frac: float = 1e-1
 
-    max_epochs: int = 50
-    seed: int = 42
-    grad_clip: float = 5.0
-    log_every_n_steps: int = 50
-    resume: str | None = None
     gt_sanity_check: bool = False
 
     feature_dim: int = 256
@@ -711,7 +704,13 @@ class BackboneProbeConfig(BaseConfig):
 
     weights: SetPredictionLossWeightsConfig = Field(default_factory=SetPredictionLossWeightsConfig)
 
-    def build(self, backbone: BaseFeatureExtractor, data: PoseDataModule) -> BackboneProbePipeline:
+    def build(
+        self,
+        backbone: BaseFeatureExtractor,
+        data: PoseDataModule,
+        *,
+        max_epochs: int,
+    ) -> BackboneProbePipeline:
         probe_head = ConvProbe(
             in_channels=backbone.out_channels,
             feature_dim=self.feature_dim,
@@ -737,13 +736,12 @@ class BackboneProbeConfig(BaseConfig):
             weights=self.weights.to_dataclass(),
             lr=self.lr,
             weight_decay=self.weight_decay,
-            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_T_max=max_epochs if self.cosine_lr else None,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
             val_ann_file=str(data.val_ann_path),
             test_ann_file=str(data.test_ann_path),
             num_keypoints=data.num_keypoints,
-            grad_clip=self.grad_clip,
             val_ap_every_n_epochs=self.val_ap_every_n_epochs,
             gt_sanity_check=self.gt_sanity_check,
             max_persons=getattr(data, "max_persons", None),
@@ -763,11 +761,6 @@ class QueryBackboneProbeConfig(BaseConfig):
     lr_warmup_epochs: int = 1
     lr_min_frac: float = 1e-1
 
-    max_epochs: int = 100
-    seed: int = 42
-    grad_clip: float = 5.0
-    log_every_n_steps: int = 50
-    resume: str | None = None
     gt_sanity_check: bool = False
 
     feature_dim: int = 256
@@ -790,7 +783,13 @@ class QueryBackboneProbeConfig(BaseConfig):
 
     weights: SetPredictionLossWeightsConfig = Field(default_factory=SetPredictionLossWeightsConfig)
 
-    def build(self, backbone: BaseFeatureExtractor, data: PoseDataModule) -> BackboneProbePipeline:
+    def build(
+        self,
+        backbone: BaseFeatureExtractor,
+        data: PoseDataModule,
+        *,
+        max_epochs: int,
+    ) -> BackboneProbePipeline:
         probe_head = QueryProbe(
             in_channels=backbone.out_channels,
             feature_dim=self.feature_dim,
@@ -809,13 +808,12 @@ class QueryBackboneProbeConfig(BaseConfig):
             weights=self.weights.to_dataclass(),
             lr=self.lr,
             weight_decay=self.weight_decay,
-            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_T_max=max_epochs if self.cosine_lr else None,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
             val_ann_file=str(data.val_ann_path),
             test_ann_file=str(data.test_ann_path),
             num_keypoints=data.num_keypoints,
-            grad_clip=self.grad_clip,
             val_ap_every_n_epochs=self.val_ap_every_n_epochs,
             gt_sanity_check=self.gt_sanity_check,
             max_persons=getattr(data, "max_persons", None),

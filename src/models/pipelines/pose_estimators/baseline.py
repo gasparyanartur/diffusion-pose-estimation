@@ -303,10 +303,6 @@ class BaselinePosePipelineConfig(BaseConfig):
     cosine_lr: bool = True
     lr_warmup_epochs: int = 0
     lr_min_frac: float = 1e-1
-    max_epochs: int = 50
-    seed: int = 42
-    grad_clip: float = 5.0
-    log_every_n_steps: int = 50
     feature_dim: int = 256
     num_heads: int = 8
     hidden_dim: int = 512
@@ -320,6 +316,7 @@ class BaselinePosePipelineConfig(BaseConfig):
     def build(
         self, *, val_ann_file: str | None = None, test_ann_file: str | None = None,
         max_persons: int | None = None,
+        max_epochs: int,
     ) -> BaselinePosePipeline:
         backbone = self.backbone.build()
         try:
@@ -332,7 +329,7 @@ class BaselinePosePipelineConfig(BaseConfig):
             weights=self.weights.to_dataclass(),
             lr=self.lr,
             weight_decay=self.weight_decay,
-            lr_T_max=self.max_epochs if self.cosine_lr else None,
+            lr_T_max=max_epochs if self.cosine_lr else None,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
             val_ann_file=val_ann_file,

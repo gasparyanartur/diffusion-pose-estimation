@@ -9,12 +9,6 @@ weight_decay: 1e-4
 cosine_lr: true
 lr_warmup_epochs: 1
 lr_min_frac: 1e-2
-max_epochs: 100
-seed: 42
-grad_clip: 1.0
-log_every_n_steps: 50
-resume: null
-
 sigma_min: 0.002
 sigma_max: 10.0
 rho: 7.0

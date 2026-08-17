@@ -83,10 +83,10 @@ def process_cache(cache_path: Path):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python scripts/example_refiner.py <cache.pkl>")
+        print("Usage: python scripts/legacy/example_refiner.py <cache.pkl>")
         print("\nExample:")
-        print("  python scripts/example_refiner.py results/cache/rtmpose-m_crowdpose_predictions.pkl")
-        print("  python scripts/example_refiner.py results/cache/dekr-w32_crowdpose_predictions.pkl")
+        print("  python scripts/legacy/example_refiner.py results/cache/rtmpose-m_crowdpose_predictions.pkl")
+        print("  python scripts/legacy/example_refiner.py results/cache/dekr-w32_crowdpose_predictions.pkl")
         sys.exit(1)
     
     cache_path = Path(sys.argv[1])

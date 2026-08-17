@@ -891,3 +891,234 @@ Modified files:
   model imports while preserving its historical content.
 - Validation: all 12 notebooks parse as valid JSON; stale notebook path and
   deleted-loader scans are clean.
+[2026-08-16] Categorized CLI scripts
+
+- Split `scripts/` into data, training, evaluation, investigation, utils, and
+  legacy packages.
+- Moved the obsolete refiner example to `scripts/legacy/`.
+- Updated Hydra config paths, CLI examples, docs, config comments, shell
+  scripts, and the backbone-probe test for the new locations.
+- Validation: script compilation passed; seven backbone-script tests passed;
+  moved Hydra entry points composed successfully with `--help`; stale old
+  script paths are absent from active files.
+- Follow-up: extract duplicated training setup separately.
+[2026-08-16] Added native DiffusionRegPose diffusion primitives
+
+- Added the reference cosine schedule, registered diffusion buffers,
+  q-sampling, noise reconstruction, and DDIM timestep ordering under
+  `src/models/pipelines/pose_estimators/`.
+- Added four focused parity tests; all pass.
+- Next: inventory checkpoint keys/shapes and implement the compatible backbone
+  hierarchy.
+[2026-08-16] Added ED-Pose-compatible ResNet backbone slice
+
+- Reworded diffusion primitive documentation to state behavior directly.
+- Added FrozenBatchNorm2d and checkpoint-shaped ResNet-50 layer2/layer3/layer4
+  outputs.
+- Verified all 265 available checkpoint backbone keys and shapes match.
+- Focused diffusion/backbone tests pass: 8 tests.
+- Next: multi-level projection, position encoding, and deformable encoder.
+[2026-08-16] Grouped DiffusionRegPose components into a package
+
+- Created `src/models/pipelines/pose_estimators/diffusionregpose/` with package
+  exports, `diffusion.py`, and `backbone.py`.
+- Updated tests and removed the previous flat module files.
+- Focused suite passes: 8 tests.
+[2026-08-16] Added DiffusionRegPose multi-scale inputs and encoder
+
+- Added sine position encoding, input projections, pure-PyTorch deformable
+  attention, and the six-layer deformable encoder inside the family package.
+- Verified encoder checkpoint key/shape compatibility.
+- Focused suite passes: 12 tests.
+- Next: decoder attention, reference-point updates, time conditioning, and
+  decoder-side heads.
+[2026-08-16] Added DiffusionRegPose deformable decoder base
+
+- Added decoder MLP/reference embedding, self-attention, deformable
+  cross-attention, FFN, and reference-point scaffolding.
+- Decoder base checkpoint key/shape audit passes; regression heads remain the
+  next planned slice.
+- Focused suite passes: 14 tests.
+[2026-08-16] Added DiffusionRegPose conditioning and prediction heads
+
+- Added timestep conditioning and reference-shaped iterative box/class/pose
+  heads.
+- Verified head counts, initialization contracts, and checkpoint shapes.
+- Focused DiffusionRegPose suite passes: 18 tests.
+- Next: assemble the full transformer and add two-stage proposal selection.
+[2026-08-16 21:40] Added configurable training runner and migrated baseline
+
+- Added typed runtime schemas in `src/training/config.py`, a reusable
+  Hydra-independent lifecycle runner in `src/training/runner.py`, and shared
+  checkpoint callbacks.
+- Added `conf/training/default.yaml` as the Hydra runtime-policy group while
+  keeping typed schemas in source.
+- Migrated the baseline training script to the runner.
+- Validation: 9 focused tests passed; one-epoch CPU smoke training completed
+  with checkpoint restore, test metrics, and result JSON output.
+- Full suite after migration: 247 passed, 12 warnings.
+- Next: migrate graph and box scripts through configurable pipeline specs.
+
+[2026-08-16 23:20] Added deformable-attention parity regression
+
+- Re-audited the refactored branch and confirmed `MultiScaleDeformableAttention`
+  is implemented in `diffusionregpose/transformer.py` with no loop over feature
+  levels and batched variable-shape sampling.
+- Added exact-output parity coverage for 2D/4D references, varied spatial
+  shapes, and optional padding masks.
+- Validation: full DiffusionRegPose suite passed, 26 tests.
+
+[2026-08-16 23:35] Confirmed production deformable-attention integration
+
+- Confirmed the loop-free implementation is wired into the canonical
+  `diffusionregpose/transformer.py` class used by the encoder and decoder.
+- No obsolete `deformable_attention.py` module was created; the refactored
+  package intentionally consolidates this implementation in `transformer.py`.
+[2026-08-16] Consolidated DiffusionRegPose implementation files
+
+- Combined the small transformer-related modules into `transformer.py` and
+  moved position encoding into `backbone.py`.
+- Updated exports/tests and removed the six granular files.
+- Focused suite remains green: 18 tests.
+[2026-08-16] Assembled checkpoint-shaped DiffusionRegPose model
+
+- Added `model.py` with complete component assembly and two-stage proposal
+  selection.
+- Full state-key/shape audit against the available checkpoint passes exactly.
+- Fixed and vectorized deformable attention for variable-width feature levels.
+- Focused suite passes: 25 tests.
+- Next: model forward, diffusion proposal states, decoding, and parity tests.
+
+[2026-08-16 21:58] Completed graph and box training-runner migration
+
+- Migrated graph and box training scripts to the shared Hydra-independent
+  `TrainingRunner` and `TrainingSpec` lifecycle.
+- Added graph/box checkpoint policies, trusted checkpoint I/O, resume handling,
+  and preserved optional `torch.compile` behavior.
+- Hardened monitored checkpoint callbacks for absent metrics and added a
+  `last.ckpt` fallback in `TrainingResult`.
+- One-epoch CPU graph and box smoke runs completed checkpoint restore, test
+  evaluation, and result JSON generation.
+- Full-suite audit exposed a missing `inverse_sigmoid` import in the ongoing
+  DiffusionRegPose model extraction; fixed it and validated the affected test.
+
+[2026-08-17 00:16] Migrated backbone-probe benchmark to shared runner
+
+- Added `conf/training/backbone_probe.yaml` with AP monitoring, periodic
+  checkpointing, and final-epoch support.
+- Migrated `scripts/investigation/benchmark_backbone.py` to typed
+  `TrainingConfig`, `TrainingRunner`, and `TrainingSpec`.
+- Preserved probe-specific model construction, optional compilation, resume
+  resolution, and plot output directory behavior.
+- Added Hydra training-policy regression coverage.
+- Focused validation: 38 passed; one-epoch CPU smoke completed checkpoint
+  restore, test evaluation, and result JSON generation.
+[2026-08-16 23:15] Added the initial DiffusionRegPose model forward path.
+
+- Prepared multi-scale backbone features, ran the encoder, selected two-stage queries, and executed all decoder layers.
+- Added final and auxiliary box/class decoding and a small forward-contract regression test.
+- Preserved the exact checkpoint state key/shape audit.
+- Validation: focused DiffusionRegPose suite passed 26 tests.
+- Next: integrate timestep conditioning and diffusion keypoint query expansion/decoding.
+[2026-08-16 23:30] Integrated DiffusionRegPose timestep conditioning.
+
+- Forward now passes timesteps into encoder feature preparation.
+- Applied the time MLP/block time MLP scale-shift to positional features before level embeddings and encoder attention.
+- Added timestep-conditioning regression coverage without changing checkpoint state keys/shapes.
+- Validation: focused DiffusionRegPose suite passed 27 tests.
+- Next: use diffusion keypoints for post-box query expansion and decode keypoint outputs.
+[2026-08-17 00:15] Added DiffusionRegPose diffusion-keypoint query expansion.
+
+- Selected box proposals, expanded them into human/keypoint query groups, and consumed normalized diffusion keypoints during reference refinement.
+- Added final grouped box/class outputs and `[x, y, visibility]` keypoint predictions.
+- Updated auxiliary-output shape coverage for pre- and post-expansion decoder layers.
+- Validation: focused DiffusionRegPose suite passed 27 tests.
+- Next: establish numerical parity for expansion/decoding, then add denoising sampling and Lightning training integration.
+[2026-08-17 00:35] Added strict reference-checkpoint loading coverage.
+
+- Loaded the available checkpoint with `strict=True` into the native model.
+- Ran the loaded model through expanded box/keypoint decoding and checked finite outputs.
+- Validation: focused DiffusionRegPose suite passed 28 tests.
+- Next: construct controlled numerical parity comparisons against the reference implementation.
+[2026-08-17 01:10] Added the DiffusionRegPose reference parity probe.
+
+- Added `scripts/investigation/diffusionregpose_parity.py` with a local PyTorch replacement for the reference CUDA deformable-attention operator.
+- Compared strict-checkpoint native/reference outputs at reduced query/group counts.
+- Shapes match, but numerical parity is not yet achieved: max absolute errors at 32/8 were about 1.55 logits, 0.98 boxes, and 1.00 keypoints.
+- Next: compare intermediate tensors to localize the first divergence before adding tolerance-based tests.
+
+[2026-08-17 00:26] Centralized runtime lifecycle configuration
+
+- Removed duplicated lifecycle fields from baseline, graph, box-diffusion, and
+  backbone-probe pipeline configs.
+- Training Hydra groups now own runtime epochs, seed, gradient clipping,
+  logging cadence, and resume configuration.
+- Pipeline builders receive runtime max epochs for cosine scheduler setup.
+- Updated scripts, tests, documentation, and Hydra examples to use
+  `training.max_epochs` and `training.resume`.
+- Validation: 258 tests passed; all four one-epoch CPU smoke runs passed;
+  compileall and diff checks passed.
+[2026-08-17 02:00] Localized and fixed exact DiffusionRegPose parity differences.
+
+- Decoder sine embeddings used x,y,w,h while the reference uses y,x,w,h; corrected the coordinate order.
+- Query expansion omitted the first coordinate-attention stage and used the wrong scaling; restored both reference stages.
+- Keypoint outputs were interleaved x,y,visibility; changed them to reference xyxy...zz layout and selected layer-specific pose heads.
+- Reduced parity probe now matches reference outputs within approximately 1e-6.
+- Validation: focused DiffusionRegPose suite passed 29 tests.
+- Next: full-size parity run, formal tolerance test, then DDIM sampling and Lightning integration.
+[2026-08-17 03:00] Added the native DiffusionRegPose DDIM transition.
+
+- Implemented reference-compatible alpha/noise update and terminal clean-state handling.
+- Added validation for timestep order and tensor shapes.
+- Validation: diffusion-focused suite passed 5 tests.
+- Next: implement model-level sampling and CrowdPose post-processing.
+[2026-08-17 03:30] Added native model-level DiffusionRegPose DDIM sampling.
+
+- Implemented seeded proposal initialization, timestep-pair iteration, keypoint denormalization, and deterministic DDIM updates.
+- Preserved float32 runtime states while retaining reference schedule buffers.
+- Validation: model/diffusion focused suite passed 12 tests.
+- Next: implement CrowdPose post-processing and result JSON generation.
+[2026-08-17 04:15] Completed full-size DiffusionRegPose checkpoint parity.
+
+- Validated 900 queries, 100 groups, 14 keypoints, and 512x512 input against the reference path.
+- Added `--assert-tolerance`; the run passed at `1e-4`.
+- Final max errors: logits 1.91e-6, boxes 3.10e-6, keypoints 1.85e-6.
+- Existing focused suite remains at 29 passing tests.
+- Next: implement native CrowdPose post-processing, result JSON, and evaluation CLI.
+[2026-08-17 04:45] Added native CrowdPose post-processing.
+
+- Reproduced reference top-k score selection, box scaling, and keypoint serialization.
+- Added shape and coordinate regression tests.
+- Validation: evaluation-focused suite passed 2 tests.
+- Next: connect the post-processor to the CrowdPose loader, DDIM sampler, and result JSON writer.
+
+[2026-08-17 05:00] Completed native DiffusionRegPose evaluation pipeline.
+
+- Added strict checkpoint loading, seeded DDIM sampling, CrowdPose preprocessing,
+  reference top-k/NMS post-processing, result JSON generation, and optional
+  CrowdPose AP metric calculation.
+- Added `scripts/evaluation/evaluate_diffusionregpose.py` and documented its
+  checkpoint/annotation/image-root/output interface.
+- Validation: 35 focused DiffusionRegPose tests passed; CLI help smoke check passed.
+- Full-dataset AP was not run because the repository does not contain the local
+  CrowdPose image tree and downloaded checkpoint.
+
+[2026-08-17 06:45] Validated checkpoint evaluation with the symlinked CrowdPose dataset.
+
+- Confirmed `data/crowdpose` resolves to `/storage/data/crowdpose` and the
+  external repo's `results/diffusionregpose_crowdpose` links resolve back to it.
+- Ran one-image native inference: 100 predictions written successfully.
+- Completed CrowdPose metric evaluation after adding a scoped compatibility
+  shim for legacy `crowdposetools` Python 2/NumPy aliases.
+- Smoke result: AP 0.00990099 on the single-image run; this is not a full-set metric.
+
+[2026-08-17 06:15] Completed native DiffusionRegPose training integration.
+
+- Added paper-compatible target preparation, timestep-zero diffusion inputs,
+  Hungarian matching, focal/box/keypoint/OKS losses, auxiliary loss routing,
+  and a Lightning pipeline wrapper.
+- Added Hydra presets and `scripts/training/train_diffusionregpose.py` using the
+  shared `TrainingRunner`.
+- Validation: 39 DiffusionRegPose tests passed, including a reduced real-model
+  backward smoke; Hydra config resolution, compileall, and diff checks passed.
+- Full dataset training remains unrun because local CrowdPose images are absent.

@@ -13,7 +13,7 @@ where <model_slug> is the model name with '/' replaced by '_'.
 
 Usage
 -----
-python scripts/precompute_dino.py \\
+python scripts/data/precompute_dino.py \\
     --ann-path  data/crowdpose/annotations/ \\
     --img-root  data/crowdpose/images \\
     --split     all \\
@@ -21,7 +21,7 @@ python scripts/precompute_dino.py \\
     --backbone-type convnext
 
 # Single split
-python scripts/precompute_dino.py \\
+python scripts/data/precompute_dino.py \\
     --ann-path  data/crowdpose/annotations/ \\
     --img-root  data/crowdpose/images \\
     --split     train \\
@@ -29,7 +29,7 @@ python scripts/precompute_dino.py \\
     --backbone-type convnext
 
 # Legacy: pass a specific annotation file directly
-python scripts/precompute_dino.py \\
+python scripts/data/precompute_dino.py \\
     --ann-path  data/crowdpose/annotations/crowdpose_train.json \\
     --img-root  data/crowdpose/images \\
     --split     train \\

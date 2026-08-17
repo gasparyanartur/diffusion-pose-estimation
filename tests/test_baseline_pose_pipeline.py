@@ -12,6 +12,7 @@ from src.models.pipelines.pose_estimators.baseline import (
     BaselinePosePipeline,
     BaselinePosePipelineConfig,
 )
+from src.training import TrainingConfig
 
 
 BATCH_SIZE = 2
@@ -56,7 +57,8 @@ def test_pipeline_config_builds_from_the_single_root_pipeline_group():
 
     assert root_config.pipeline._target_.endswith("BaselinePosePipelineConfig")
     pipeline_config = BaselinePosePipelineConfig.from_hydra_config(root_config.pipeline)
-    pipeline = pipeline_config.build()
+    training_config = TrainingConfig.from_hydra_config(root_config.training)
+    pipeline = pipeline_config.build(max_epochs=training_config.max_epochs)
 
     assert isinstance(pipeline, BaselinePosePipeline)
     assert isinstance(pipeline.backbone, CNNFeatureExtractor)
@@ -70,7 +72,7 @@ def test_direct_config_builds_a_complete_pipeline():
         hidden_dim=64,
         num_slots=NUM_SLOTS,
     )
-    pipeline = config.build()
+    pipeline = config.build(max_epochs=1)
 
     assert isinstance(pipeline, BaselinePosePipeline)
     assert pipeline.num_slots == NUM_SLOTS

@@ -1,0 +1,20 @@
+_target_: src.data.CrowdPoseDataConfig
+
+root: data
+train_ann: crowdpose/annotations/crowdpose_train.json
+val_ann: crowdpose/annotations/crowdpose_val.json
+test_ann: crowdpose/annotations/crowdpose_test.json
+img_dir: crowdpose/images
+val_pred_cache: null
+test_pred_cache: null
+
+target_format: set
+image_h: null
+image_w: null
+max_size: 512
+max_persons: null
+batch_size: 2
+num_workers: 4
+prefetch_factor: 2
+ap_batch_size: 32
+num_keypoints: 14

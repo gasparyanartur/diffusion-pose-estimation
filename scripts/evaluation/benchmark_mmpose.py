@@ -7,14 +7,14 @@ command-line overrides on top.  All override flags are optional; omitting them
 keeps the value from the registered config.
 
 List available configs:
-    python scripts/benchmark_rtmpose.py --list
+    python scripts/evaluation/benchmark_mmpose.py --list
 
 Example: (RTMPose-M on CrowdPose):
-    source .env && python scripts/benchmark_rtmpose.py \\
+    source .env && python scripts/evaluation/benchmark_mmpose.py \\
         rtmpose-m_8xb64-210e_crowdpose-256x192
 
 Override a single field (e.g. switch to oracle mode):
-    source .env && python scripts/benchmark_rtmpose.py \\
+    source .env && python scripts/evaluation/benchmark_mmpose.py \\
         rtmpose-m_8xb64-210e_crowdpose-256x192 \\
         --bbox-file none
 """

@@ -90,6 +90,10 @@ Visible-mask: `visible = visibility == 2`.
   its CNN feature extractor, spatial-attention pooling, Hungarian matching loss, AP
   lifecycle, and optimizer setup.
 - `GraphPosePipeline` is the direct image-to-box-and-pose diffusion set model.
+- `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
+  pose model. Its training criterion reproduces the reference Hungarian,
+  focal-classification, box, keypoint, and OKS losses; its model-only
+  evaluation path loads the downloaded reference checkpoint strictly.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

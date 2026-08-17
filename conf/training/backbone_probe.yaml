@@ -1,0 +1,13 @@
+defaults:
+  - default
+  - _self_
+
+max_epochs: 100
+
+checkpoint:
+  monitor: val/crowdpose/AP
+  mode: max
+  filename: "epoch{epoch:03d}-val_crowdpose_AP"
+  save_last: true
+  every_n_epochs: ${probe.val_ap_every_n_epochs}
+  final_epoch: true

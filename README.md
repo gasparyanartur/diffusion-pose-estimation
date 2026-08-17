@@ -11,11 +11,11 @@ box detection is a separate model family.
 ## Project layout
 
 ```
-conf/           ← Hydra config groups (pipeline, data, probe, hardware)
+conf/           ← Hydra config groups (pipeline, data, training, probe, hardware)
 data/           ← CrowdPose images and annotations
 checkpoints/    ← model weights
 external/       ← vendored dependencies (mmpose, mmdet) installed as editable packages
-scripts/        ← CLI entry points (training, benchmarking, data prep, inspection)
+scripts/        ← categorized CLI entry points (data, training, evaluation, investigation, utilities)
 src/            ← core library (data, models, training, evaluation)
 notebooks/      ← investigations, visualizations, and legacy notebooks
 results/        ← benchmark outputs, prediction caches, training runs
@@ -50,14 +50,14 @@ environment from the selected Python 3.10 interpreter.
 From the repository root, run:
 
 ```bash
-./scripts/setup_shared_env.sh
+./scripts/utils/setup_shared_env.sh
 source venv/bin/activate
 ```
 
 To test in a separate environment, pass its path:
 
 ```bash
-./scripts/setup_shared_env.sh /tmp/pose-graph-diff-venv
+./scripts/utils/setup_shared_env.sh /tmp/pose-graph-diff-venv
 ```
 
 The script installs the tested Torch 2.4.1 + CUDA 12.1 wheel, MMCV 2.2.0,
@@ -106,7 +106,7 @@ data/crowdpose/images/107499.jpg
 Run the prepare script to download MMPose-formatted annotations and pre-generated detector boxes:
 
 ```bash
-python scripts/prepare_crowdpose.py
+python scripts/data/prepare_crowdpose.py
 ```
 
 ---
@@ -118,9 +118,9 @@ DINO features. The smallest end-to-end smoke run uses the one-stage graph
 diffusion pipeline and a tiny CrowdPose subset:
 
 ```bash
-python scripts/train_graph_pipeline.py \
+python scripts/training/train_graph_pipeline.py \
     data=crowdpose_set_prediction_debug \
-    pipeline.max_epochs=2 \
+    training.max_epochs=2 \
     hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 ```
 
@@ -144,16 +144,16 @@ paths resolve correctly.
 ### One-stage pose models
 
 The canonical runnable one-stage graph-pipeline command is
-`scripts/train_graph_pipeline.py`:
+`scripts/training/train_graph_pipeline.py`:
 
 ```bash
-python scripts/train_graph_pipeline.py
+python scripts/training/train_graph_pipeline.py
 ```
 
 The root config defaults to the CNN fixed-slot baseline pose model:
 `pipeline=baseline_pose` and `data=crowdpose_set_prediction`.
 
-`scripts/train_pose_refinement.py` trains the canonical fixed-slot baseline
+`scripts/training/train_pose_refinement.py` trains the canonical fixed-slot baseline
 through `pipeline=baseline_pose`.
 
 Checkpoints and logs are written to
@@ -165,14 +165,25 @@ directory for complete reproducibility.
 
 ```bash
 # Select the graph-pose pipeline
-python scripts/train_graph_pipeline.py pipeline=graph_pose
+python scripts/training/train_graph_pipeline.py pipeline=graph_pose
 
 # Select the tensor-native box-diffusion pipeline
-python scripts/train_box_diffusion.py pipeline=box_diffusion
+python scripts/training/train_box_diffusion.py pipeline=box_diffusion
+
+# Train the native DiffusionRegPose implementation
+python scripts/training/train_diffusionregpose.py
+
+# Reduced CPU smoke run
+python scripts/training/train_diffusionregpose.py \
+    pipeline.num_queries=4 pipeline.num_proposals=2 pipeline.num_group=2 \
+    pipeline.num_encoder_layers=1 pipeline.num_decoder_layers=3 \
+    pipeline.backbone_pretrained=false data.max_size=128 data.batch_size=1 \
+    data.num_workers=0 training.max_epochs=1 \
+    hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 
 # Override hardware and training settings
-python scripts/train_pose_refinement.py \
-    pipeline.max_epochs=100 hardware.accelerator=gpu hardware.devices=1
+python scripts/training/train_pose_refinement.py \
+    training.max_epochs=100 hardware.accelerator=gpu hardware.devices=1
 ```
 
 ### Overriding individual values
@@ -180,10 +191,10 @@ python scripts/train_pose_refinement.py \
 Any leaf key can be overridden from the command line using dot notation:
 
 ```bash
-python scripts/train_pose_refinement.py \
+python scripts/training/train_pose_refinement.py \
     run_name=exp_large \
     pipeline.lr=3e-4 \
-    pipeline.max_epochs=200 \
+    training.max_epochs=200 \
     pipeline.cosine_lr=true \
     hardware=gpu
 ```
@@ -191,15 +202,15 @@ python scripts/train_pose_refinement.py \
 ### Resuming from a checkpoint
 
 ```bash
-python scripts/train_pose_refinement.py \
-    pipeline.resume=results/pose_estimator_training/my_run/checkpoints/last.ckpt
+python scripts/training/train_pose_refinement.py \
+    training.resume=results/pose_estimator_training/my_run/checkpoints/last.ckpt
 ```
 
 Config groups (`pipeline`, `data`, `probe`, `hardware`) live in `conf/`.
 To inspect the full resolved config without launching training:
 
 ```bash
-python scripts/train_pose_refinement.py --cfg job
+python scripts/training/train_pose_refinement.py --cfg job
 ```
 
 ### Losses and metrics
@@ -212,16 +223,36 @@ and AR metrics through `src.eval.metrics`; box diffusion reports COCO bbox AP.
 
 ## 7. Running benchmarks
 
+### DiffusionRegPose evaluation
+
+The native evaluator loads the original DiffusionRegPose checkpoint format,
+performs deterministic DDIM keypoint sampling, writes CrowdPose-compatible
+predictions, and can calculate AP/AP-E/AP-M/AP-H when `crowdposetools` is
+installed:
+
+```bash
+python scripts/evaluation/evaluate_diffusionregpose.py \
+    --checkpoint path/to/diffusionregpose_checkpoint.pth \
+    --annotations data/crowdpose/annotations/crowdpose_test.json \
+    --image-root data/crowdpose/images \
+    --output results/diffusionregpose/test_results.json \
+    --metrics results/diffusionregpose/metrics.json
+```
+
+Use `--limit` for a smoke run and `--sampling-timesteps` to select the DDIM
+schedule. The default seed and one-step schedule match the reference
+evaluation path used for checkpoint parity.
+
 ```bash
 # List available configurations
-python scripts/benchmark_mmpose.py --list
+python scripts/evaluation/benchmark_mmpose.py --list
 
 # Run a benchmark (checkpoint downloaded automatically on first run)
-python scripts/benchmark_mmpose.py <model-name>
+python scripts/evaluation/benchmark_mmpose.py <model-name>
 ```
 
 Metrics are written to `results/<name>/metrics.yaml`.
-See `python scripts/benchmark_mmpose.py --help` for all options.
+See `python scripts/evaluation/benchmark_mmpose.py --help` for all options.
 
 ---
 
