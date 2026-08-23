@@ -1621,3 +1621,40 @@ Modified files:
 - Started tmux session `dpr-lowres80-b8-parity` from EDPose initialization.
   Output: `results/diffusionregpose_lowres80_b8_parity/diffusionregpose_lowres80_b8_parity/20260823_122740`.
   It is healthy at epoch 0 batch 52/1500, approximately 1.37 iterations/second.
+
+[2026-08-23] Added DiffusionRegPose size and hyperparameter report
+
+- Audited the canonical implementation, configs, data path, training wrapper,
+  evaluator, and native attention operator.
+- Added `reports/diffusionregpose-size.md` with layer-by-layer dimensions,
+  parameter accounting, shared-head notes, tensor shapes, and runtime presets.
+- Verified 49,527,324 total / 49,304,924 trainable / 222,400 frozen parameters
+  and ran the focused suite: 38 passed, 1 warning.
+
+[2026-08-23] Added ED-Pose-aware reduction and FLOPs analysis
+
+- Added model-size/training-time reduction guidance with full, partial, and
+  incompatible ED-Pose transfer classifications.
+- Added analytical MAC/FLOP formulas and representative-resolution estimates;
+  default inference matrix-operation floors are 84.463G MAC at 512x512,
+  181.958G at 800x800, and 292.942G at 800x1333.
+- Documented query/depth/FFN reduction trade-offs and omitted runtime costs;
+  `git diff --check` passed with no source behavior changes.
+
+[2026-08-23] Reordered report around FLOPs bottlenecks
+
+- Moved the analytical FLOPs/MACs section before performance-reduction guidance.
+- Added a bottleneck synthesis connecting resolution/feature tokens, encoder
+  cost, decoder query self-attention, and training-only overhead to the ranked
+  ED-Pose-aware recommendations.
+- Preserved all existing estimates and transfer classifications; `git diff
+  --check` passed.
+
+[2026-08-23] Added QueryNumber performance guidance
+
+- Added a predicted-performance column to the FLOPs reduction table.
+- Mapped the paper's QueryNumber ablation to the repository's paired
+  `num_group`/`num_proposals` controls and distinguished it from `num_queries`.
+- Documented the paper's CrowdPose results: AP 71.4, 72.7, and 72.1 for 50,
+  100, and 200 queries, respectively.
+- Verified the report with `git diff --check` and consistency checks.
