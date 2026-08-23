@@ -40,6 +40,19 @@ def test_prediction_heads_have_reference_layer_counts() -> None:
     assert heads.pose_embed[0].layers[-1].out_features == 2
 
 
+def test_pose_hw_heads_share_one_parameterized_module() -> None:
+    heads = DiffusionRegPosePredictionHeads(
+        hidden_dim=32,
+        num_classes=2,
+        num_decoder_layers=6,
+        num_box_decoder_layers=2,
+        num_body_points=14,
+    )
+
+    assert heads.pose_hw_embed[0] is heads.pose_hw_embed[1]
+    assert heads.pose_hw_embed[0].layers[0].weight is heads.pose_hw_embed[-1].layers[0].weight
+
+
 def test_prediction_head_shapes_match_available_checkpoint() -> None:
     checkpoint_path = Path(
         "external/DiffusionRegPose/logs/"

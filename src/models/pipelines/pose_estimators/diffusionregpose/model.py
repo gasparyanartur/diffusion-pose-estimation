@@ -166,7 +166,16 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         num_body_points: int = 14,
         num_box_decoder_layers: int = 2,
         num_group: int = 100,
+        dn_number: int = 100,
+        dn_box_noise_scale: float = 0.4,
+        dn_label_noise_ratio: float = 0.5,
+        freeze_backbone_stem_and_layer1: bool = True,
     ) -> None:
+        if num_classes <= 1:
+            raise ValueError(
+                "num_classes must include CrowdPose person label 1, "
+                f"got {num_classes}"
+            )
         super().__init__(
             timesteps=timesteps,
             sampling_timesteps=sampling_timesteps,
@@ -175,10 +184,16 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         )
         self.num_queries = num_queries
         self.num_proposals = num_proposals
+        self.num_classes = num_classes
+        if dn_number < 0:
+            raise ValueError("dn_number must be non-negative")
         self.num_feature_levels = num_feature_levels
         self.label_enc = nn.Embedding(101, hidden_dim)
         self.backbone = _BackboneJoiner(
-            DiffusionRegPoseResNetBackbone(pretrained=backbone_pretrained),
+            DiffusionRegPoseResNetBackbone(
+                pretrained=backbone_pretrained,
+                freeze_stem_and_layer1=freeze_backbone_stem_and_layer1,
+            ),
             PositionEmbeddingSineHW(hidden_dim // 2, temperature_h=20, temperature_w=20),
         )
         self.input_proj = build_input_projections((512, 1024, 2048), hidden_dim=hidden_dim, num_levels=num_feature_levels)
@@ -208,6 +223,10 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             pose_embed=self.pose_embed,
             pose_hw_embed=self.pose_hw_embed,
         )
+        self.transformer.decoder.num_queries = num_queries
+        self.transformer.decoder.num_dn = dn_number
+        self.dn_box_noise_scale = dn_box_noise_scale
+        self.dn_label_noise_ratio = dn_label_noise_ratio
 
     def prepare_transformer_inputs(self, images: Tensor, padding_mask: Tensor) -> TransformerInputs:
         features, masks, positions = self.backbone(images, padding_mask)
@@ -266,14 +285,117 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             mask[:, :, start, box_indices] = False
         return mask.flatten(0, 1)
 
+    def training_attention_mask(
+        self,
+        targets: list[dict[str, Tensor]],
+        batch_size: int,
+        device: torch.device,
+    ) -> Tensor:
+        """Build the external group-isolated mask including DN queries."""
+        group_size = self.transformer.decoder.num_body_points + 1
+        normal_count = self.transformer.decoder.num_group * group_size
+        dn_count = self.transformer.decoder.num_dn
+        total_count = dn_count + normal_count
+        mask = torch.zeros(
+            batch_size,
+            self.transformer.decoder.num_heads,
+            total_count,
+            total_count,
+            dtype=torch.bool,
+            device=device,
+        )
+        mask[:, :, dn_count:, :dn_count] = True
+        normal_box_indices = dn_count + torch.arange(
+            0, normal_count, group_size, device=device
+        )
+        for group_index in range(self.transformer.decoder.num_group):
+            start = dn_count + group_index * group_size
+            end = start + group_size
+            mask[:, :, start:end, dn_count:start] = True
+            mask[:, :, start:end, end:] = True
+            mask[:, :, start, normal_box_indices] = False
+        for batch_index, target in enumerate(targets):
+            target_count = target["labels"].numel()
+            if target_count == 0:
+                continue
+            for query_index in range(dn_count):
+                start = (query_index // target_count) * target_count
+                end = min(start + target_count, dn_count)
+                mask[batch_index, :, query_index, :start] = True
+                mask[batch_index, :, query_index, end:dn_count] = True
+        return mask.flatten(0, 1)
+
+    def _prepare_denoising_queries(
+        self,
+        targets: list[dict[str, Tensor]],
+        device: torch.device,
+    ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+        """Create 100 repeated, noised GT queries used by training."""
+        dn_count = self.transformer.decoder.num_dn
+        labels, boxes = [], []
+        for target in targets:
+            target_labels, target_boxes = target["labels"], target["boxes"]
+            if target_labels.numel():
+                repeat_count = dn_count // target_labels.numel()
+                indices = torch.cat(
+                    (
+                        torch.arange(target_labels.numel(), device=device).repeat(repeat_count),
+                        torch.randint(
+                            target_labels.numel(), (dn_count % target_labels.numel(),), device=device
+                        ),
+                    )
+                )
+                labels.append(target_labels.index_select(0, indices))
+                boxes.append(target_boxes.index_select(0, indices))
+            else:
+                labels.append(torch.full((dn_count,), self.num_classes, dtype=torch.long, device=device))
+                boxes.append(torch.rand(dn_count, 4, device=device))
+        known_labels = torch.stack(labels)
+        known_boxes = torch.stack(boxes)
+        noisy_labels = known_labels.clone()
+        label_noise = torch.rand_like(noisy_labels.float()) < self.dn_label_noise_ratio
+        noisy_labels[label_noise] = torch.randint(
+            0, 100, (int(label_noise.sum().item()),), device=device
+        )
+        noisy_boxes = known_boxes.clone()
+        box_difference = torch.zeros_like(noisy_boxes)
+        box_difference[..., :2] = noisy_boxes[..., 2:] / 2
+        box_difference[..., 2:] = noisy_boxes[..., 2:]
+        noisy_boxes = (
+            noisy_boxes
+            + (torch.rand_like(noisy_boxes) * 2 - 1) * box_difference * self.dn_box_noise_scale
+        ).clamp(0, 1)
+        return (
+            self.label_enc(noisy_labels),
+            inverse_sigmoid(noisy_boxes),
+            {"labels": known_labels, "boxes": known_boxes},
+        )
+
     def forward(
-        self, images: Tensor, diffusion_keypoints: Tensor, timesteps: Tensor
+        self,
+        images: Tensor,
+        diffusion_keypoints: Tensor,
+        timesteps: Tensor,
+        targets: list[dict[str, Tensor]] | None = None,
+        padding_mask: Tensor | None = None,
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
+        if padding_mask is None:
+            padding_mask = torch.zeros(
+                images.shape[0], *images.shape[2:], dtype=torch.bool, device=images.device
+            )
         inputs = self.prepare_transformer_inputs(
-            images, torch.zeros(images.shape[0], *images.shape[2:], dtype=torch.bool, device=images.device)
+            images, padding_mask,
         )
         memory = self.encode_features(inputs, timesteps)
         query_features, reference_boxes, _, _ = self.select_two_stage_queries(memory, inputs)
+        denoising = self.training and targets is not None
+        dn_state: dict[str, Tensor] | None = None
+        if denoising:
+            dn_features, dn_references, dn_state = self._prepare_denoising_queries(
+                targets, images.device
+            )
+            query_features = torch.cat((dn_features, query_features), dim=1)
+            reference_boxes = torch.cat((dn_references, reference_boxes), dim=1)
         decoder_features, decoder_references = self.transformer.decoder(
             query_features.transpose(0, 1),
             memory,
@@ -286,25 +408,39 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             # The evaluation sampler supplies this mask as its second
             # attention-mask argument; the decoder applies it only after
             # diffusion keypoint queries are expanded.
-            tgt_mask=self.inference_attention_mask(images.shape[0], images.device),
+            tgt_mask=(
+                self.training_attention_mask(targets, images.shape[0], images.device)
+                if denoising else self.inference_attention_mask(images.shape[0], images.device)
+            ),
             diffusion_keypoints=((diffusion_keypoints / self.scale) + 1.0) / 2.0,
         )
         decoder_outputs = []
+        denoising_outputs = []
+        dn_count = self.transformer.decoder.num_dn if denoising else 0
         for features, references, box_head, class_head in zip(
             decoder_features,
             decoder_references[1:],
             self.bbox_embed,
             self.class_embed,
         ):
-            if features.shape[1] > self.num_queries:
+            dn_features = features[:, :dn_count]
+            dn_references = references[:, :dn_count]
+            normal_features = features[:, dn_count:]
+            normal_references = references[:, dn_count:]
+            if dn_count:
+                denoising_outputs.append({
+                    "pred_logits": class_head(dn_features),
+                    "pred_boxes": (box_head(dn_features) + inverse_sigmoid(dn_references)).sigmoid(),
+                })
+            if normal_features.shape[1] > self.num_queries:
                 stride = self.transformer.decoder.num_body_points + 1
-                box_indices = torch.arange(0, features.shape[1], stride, device=features.device)
-                point_indices = torch.arange(features.shape[1], device=features.device)
+                box_indices = torch.arange(0, normal_features.shape[1], stride, device=features.device)
+                point_indices = torch.arange(normal_features.shape[1], device=features.device)
                 point_indices = point_indices[point_indices.remainder(stride) != 0]
-                box_features = features.index_select(1, box_indices)
-                box_references = references.index_select(1, box_indices)
-                point_features = features.index_select(1, point_indices)
-                point_references = references.index_select(1, point_indices)
+                box_features = normal_features.index_select(1, box_indices)
+                box_references = normal_references.index_select(1, box_indices)
+                point_features = normal_features.index_select(1, point_indices)
+                point_references = normal_references.index_select(1, point_indices)
                 boxes = (box_head(box_features) + inverse_sigmoid(box_references)).sigmoid()
                 pose_head = self.pose_embed[len(decoder_outputs) - self.transformer.decoder.num_box_decoder_layers]
                 keypoint_xy = (pose_head(point_features) + inverse_sigmoid(point_references[..., :2])).sigmoid()
@@ -320,20 +456,31 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
                 keypoints[..., point_count * 2 :] = interleaved_keypoints[..., 2::3]
                 logits = class_head(box_features)
             else:
-                boxes = (box_head(features) + inverse_sigmoid(references)).sigmoid()
-                logits = class_head(features)
+                boxes = (box_head(normal_features) + inverse_sigmoid(normal_references)).sigmoid()
+                logits = class_head(normal_features)
                 keypoints = torch.zeros(
-                    features.shape[0], features.shape[1], self.transformer.decoder.num_body_points * 3,
-                    device=features.device, dtype=features.dtype
+                    normal_features.shape[0], normal_features.shape[1],
+                    self.transformer.decoder.num_body_points * 3,
+                    device=normal_features.device, dtype=normal_features.dtype
                 )
             decoder_outputs.append({"pred_logits": logits, "pred_boxes": boxes, "pred_keypoints": keypoints})
-        return {**decoder_outputs[-1], "aux_outputs": decoder_outputs}
+        # The final decoder prediction is returned separately. Auxiliary
+        # losses are applied only to the preceding decoder outputs.
+        result = {**decoder_outputs[-1], "aux_outputs": decoder_outputs[:-1]}
+        if dn_state is not None:
+            result["dn_class_input"] = dn_state["labels"]
+            result["dn_bbox_input"] = dn_state["boxes"]
+            result["dn_class_pred"] = denoising_outputs[-1]["pred_logits"]
+            result["dn_bbox_pred"] = denoising_outputs[-1]["pred_boxes"]
+            result["dn_aux_outputs"] = denoising_outputs[:-1]
+        return result
 
     @torch.no_grad()
     def sample_keypoints(
         self,
         images: Tensor,
         *,
+        padding_mask: Tensor | None = None,
         num_proposals: int | None = None,
         generator: torch.Generator | None = None,
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
@@ -358,7 +505,12 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             timestep = torch.full(
                 (images.shape[0],), time, dtype=torch.long, device=images.device
             )
-            final_output = self(images, state, timestep)
+            final_output = self(
+                images,
+                state,
+                timestep,
+                padding_mask=padding_mask,
+            )
             predicted_keypoints = final_output["pred_keypoints"]
             if not isinstance(predicted_keypoints, Tensor):
                 raise RuntimeError("model forward returned an invalid keypoint prediction")
@@ -398,7 +550,15 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         output_memory = self.transformer.enc_output_norm(self.transformer.enc_output(output_memory))
         class_logits = self.transformer.enc_out_class_embed(output_memory)
         box_logits = self.transformer.enc_out_bbox_embed(output_memory) + output_proposals
-        topk = torch.topk(class_logits.max(-1).values, query_count, dim=1).indices
+        scores = class_logits.max(-1).values
+        available_count = scores.shape[1]
+        if available_count == 0:
+            raise RuntimeError("encoder produced no valid tokens for two-stage query selection")
+        selected_count = min(query_count, available_count)
+        topk = torch.topk(scores, selected_count, dim=1).indices
+        if selected_count < query_count:
+            repeat_count = (query_count + selected_count - 1) // selected_count
+            topk = topk.repeat(1, repeat_count)[:, :query_count]
         gather_boxes = topk.unsqueeze(-1).expand(-1, -1, 4)
         gather_features = topk.unsqueeze(-1).expand(-1, -1, output_memory.shape[-1])
         return (

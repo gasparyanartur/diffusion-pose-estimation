@@ -81,8 +81,11 @@ Visible-mask: `visible = visibility == 2`.
 
 - 14 keypoints; joint sigmas live in `src.eval.metrics.CROWDPOSE_SIGMAS`.
 - Edge list in `src.data.skeleton.CROWDPOSE_EDGE_LIST`.
-- AP via `src.eval.metrics.KeypointAPMetric` with `iou_type="keypoints_crowd"`.
-  Standard reported metrics: `AP`, `AP .5`, `AP .75`, `AP (E/M/H)`, `AR (E/M/H)`.
+- General pose pipelines use `src.eval.metrics.KeypointAPMetric` with
+  `iou_type="keypoints_crowd"`. DiffusionRegPose uses its
+  `DiffusionRegPoseAPMetric`, which matches the external repository's
+  `crowdposetools.COCOeval(iou_type="keypoints")` contract. Standard reported
+  metrics are `AP`, `AP .5`, `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`.
 
 ## Model families
 
@@ -92,10 +95,44 @@ Visible-mask: `visible = visibility == 2`.
 - `GraphPosePipeline` is the direct image-to-box-and-pose diffusion set model.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
   pose model. Its training criterion reproduces the reference Hungarian,
-  focal-classification, box, keypoint, and OKS losses; its model-only
-  evaluation path loads the downloaded reference checkpoint strictly. Exact
-  CUDA evaluation uses the repository-owned native deformable-attention
-  kernel; the PyTorch sampler remains the differentiable fallback.
+  focal-classification, box, keypoint, OKS, and denoising losses; its model-only
+  evaluation path loads compatible tensors from the downloaded reference
+  checkpoint. Exact
+  CUDA training and evaluation use the repository-owned native
+  forward/backward deformable-attention kernel; the PyTorch sampler remains
+  the differentiable fallback when the extension is unavailable. CrowdPose
+  person targets use category label `1`, matching the dataset and reference
+  implementation; native checkpoints trained before this correction require
+  retraining.
+- The native training wrapper has passed one-image CPU and CUDA smoke runs,
+  including checkpoint restore. The external-compatible preset freezes the
+  ResNet stem and `layer1`, shares the decoder pose-size head, and applies the
+  reference multi-scale/crop training transforms with variable-size padding.
+  It uses the `crowdpose_trainval.json` split, micro-batch size 1 with eight
+  accumulated batches, FP32, the EDPose checkpoint initialization, and the
+  external two-group AdamW policy. The paper-compatible 80-epoch preset uses
+  AdamW at `2e-4` (`1e-4` for the backbone), gradient clipping `0.1`,
+  keypoint-loss weight `10`, and reference milestones `[31, 61]`. Validation
+  loss runs after every epoch and validation-set CrowdPose AP is calculated
+  every 10 epochs; `last.ckpt` remains available after every epoch. The
+  published DiffusionRegPose checkpoint is used only as an evaluation/parity
+  target, not as the training initialization.
+- `benchmark_diffusionregpose_debug` is a deliberately reduced end-to-end
+  diagnostic preset. It is useful for detecting target/layout/checkpoint
+  regressions quickly, but its reduced decoder is not a checkpoint-compatible
+  submodel and its AP is not a learning/parity gate. For a short AP feedback
+  loop, use `benchmark_diffusionregpose_fast`: it retains the full model
+  structure and reduces only the data/resolution; a lower fine-tuning LR is
+  appropriate for its tiny subset.
+- `benchmark_diffusionregpose_lowres` retains the full model and full
+  CrowdPose train/validation splits while resizing to 128 pixels with a
+  192-pixel maximum dimension. It uses batch size 8 with no gradient
+  accumulation, matching the paper recipe's effective batch and 1,500
+  optimizer updates per epoch. Its 80 epochs and milestones `[31, 61]` thus
+  preserve the reference optimization schedule. It remains a learning gate,
+  not a paper benchmark, because of its lower image resolution. Evaluation
+  resizing is configurable on `CrowdPoseDataConfig`; the paper-compatible
+  defaults remain 800 and 1333.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

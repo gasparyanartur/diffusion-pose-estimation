@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from torch.autograd import Function
 
 
 def _is_power_of_two(value: int) -> bool:
@@ -28,7 +29,7 @@ def _load_native_msda():
         from torch.utils.cpp_extension import load
 
         _native_msda = load(
-            name="pose_graph_diffusionregpose_msda",
+            name="pose_graph_diffusionregpose_msda_v2",
             sources=[str(Path(__file__).with_name("deformable_attention_cuda.cu"))],
             extra_cuda_cflags=["-O3"],
             verbose=False,
@@ -41,6 +42,34 @@ def _load_native_msda():
             stacklevel=2,
         )
     return _native_msda
+
+
+class _NativeMSDAFunction(Function):
+    """Autograd bridge for the repository-owned CUDA attention operator."""
+
+    @staticmethod
+    def forward(ctx, value, spatial_shapes, level_start_index, locations, weights):
+        native_msda = _load_native_msda()
+        if native_msda is None or not hasattr(native_msda, "backward"):
+            raise RuntimeError("the local CUDA attention operator lacks backward support")
+        ctx.save_for_backward(value, spatial_shapes, level_start_index, locations, weights)
+        return native_msda.forward(
+            value, spatial_shapes, level_start_index, locations, weights
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        value, spatial_shapes, level_start_index, locations, weights = ctx.saved_tensors
+        native_msda = _load_native_msda()
+        gradients = native_msda.backward(
+            value,
+            spatial_shapes,
+            level_start_index,
+            locations,
+            weights,
+            grad_output.contiguous(),
+        )
+        return gradients[0], None, None, gradients[1], gradients[2]
 
 
 class MultiScaleDeformableAttention(nn.Module):
@@ -87,25 +116,31 @@ class MultiScaleDeformableAttention(nn.Module):
             locations = reference_points[:, :, None, :, None, :2] + offsets / self.num_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:
             raise ValueError("reference_points must have last dimension 2 or 4")
-        if self.use_native_cuda_kernel and not self.training and not torch.is_grad_enabled() and query.is_cuda:
+        if self.use_native_cuda_kernel and query.is_cuda:
             native_msda = _load_native_msda()
-            if native_msda is not None:
-                native_value = value
-                native_locations = locations
-                native_weights = weights
-                if value.dtype == torch.float16:
-                    native_value = value.float()
-                    native_locations = locations.float()
-                    native_weights = weights.float()
-                native_output = native_msda.forward(
+            can_use_native = native_msda is not None and (
+                hasattr(native_msda, "backward") or not torch.is_grad_enabled()
+            )
+            if can_use_native:
+                native_dtype = value.dtype
+                if native_dtype != torch.float32 or locations.dtype != native_dtype or weights.dtype != native_dtype:
+                    native_dtype = torch.float32
+                native_value = value.to(native_dtype)
+                native_locations = locations.to(native_dtype)
+                native_weights = weights.to(native_dtype)
+                native_inputs = (
                     native_value.contiguous(),
                     input_spatial_shapes.contiguous(),
                     input_level_start_index.contiguous(),
                     native_locations.contiguous(),
                     native_weights.contiguous(),
                 )
-                if value.dtype == torch.float16:
-                    native_output = native_output.to(torch.float16)
+                if torch.is_grad_enabled():
+                    native_output = _NativeMSDAFunction.apply(*native_inputs)
+                else:
+                    native_output = native_msda.forward(*native_inputs)
+                if native_output.dtype != value.dtype:
+                    native_output = native_output.to(value.dtype)
                 return self.output_proj(native_output)
         head_dim = self.d_model // self.num_heads
         heights, widths = input_spatial_shapes[:, 0], input_spatial_shapes[:, 1]
@@ -313,13 +348,17 @@ class DeformableTransformerDecoder(nn.Module):
         if self.class_embed is None or self.pose_embed is None:
             raise RuntimeError("prediction heads must be attached before query expansion")
         batch_size = output.shape[1]
-        group_count = min(self.num_group, diffusion_keypoints.shape[1], output.shape[0])
-        class_scores = self.class_embed[self.num_box_decoder_layers - 1](output).max(-1).values
+        dn_count = self.num_dn if output.shape[0] > self.num_queries else 0
+        dn_output, dn_references = output[:dn_count], reference_points[:dn_count]
+        normal_output = output[dn_count:]
+        normal_references = reference_points[dn_count:]
+        group_count = min(self.num_group, diffusion_keypoints.shape[1], normal_output.shape[0])
+        class_scores = self.class_embed[self.num_box_decoder_layers - 1](normal_output).max(-1).values
         selected = torch.topk(class_scores, group_count, dim=0).indices
         gather_features = selected[..., None].expand(group_count, batch_size, self.d_model)
         gather_references = selected[..., None].expand(group_count, batch_size, 4)
-        box_features = torch.gather(output, 0, gather_features)
-        box_references = torch.gather(reference_points, 0, gather_references)
+        box_features = torch.gather(normal_output, 0, gather_features)
+        box_references = torch.gather(normal_references, 0, gather_references)
 
         point_features = box_features[:, None] + self.keypoint_embed.weight[: self.num_body_points, None, :]
         point_delta = self.pose_embed[0](point_features)[..., :2]
@@ -334,7 +373,11 @@ class DeformableTransformerDecoder(nn.Module):
 
         expanded_output = torch.cat((box_features[:, None], point_features), dim=1)
         expanded_references = torch.cat((box_references[:, None], point_references), dim=1)
-        return expanded_output.flatten(0, 1), expanded_references.flatten(0, 1)
+        expanded_output = expanded_output.flatten(0, 1)
+        expanded_references = expanded_references.flatten(0, 1)
+        if dn_count:
+            return torch.cat((dn_output, expanded_output)), torch.cat((dn_references, expanded_references))
+        return expanded_output, expanded_references
 
     def _refine_diffusion_keypoints(self, diffusion_xy: Tensor, reference_xy: Tensor) -> Tensor:
         group_count, batch_size, point_count, _ = diffusion_xy.shape
@@ -357,9 +400,12 @@ class DeformableTransformerDecoder(nn.Module):
         self, layer_id: int, output: Tensor, reference_points: Tensor
     ) -> tuple[Tensor, Tensor]:
         stride = self.num_body_points + 1
-        box_indices = torch.arange(0, output.shape[0], stride, device=output.device)
-        point_indices = torch.arange(output.shape[0], device=output.device)
-        point_indices = point_indices[point_indices.remainder(stride) != 0]
+        dn_count = self.num_dn if output.shape[0] > self.num_queries * stride else 0
+        normal_start = dn_count
+        normal_length = output.shape[0] - normal_start
+        box_indices = normal_start + torch.arange(0, normal_length, stride, device=output.device)
+        point_indices = normal_start + torch.arange(normal_length, device=output.device)
+        point_indices = point_indices[(point_indices - normal_start).remainder(stride) != 0]
         box_delta = self.bbox_embed[layer_id](output.index_select(0, box_indices))
         point_output = output.index_select(0, point_indices)
         point_delta = self.pose_embed[layer_id - self.num_box_decoder_layers](point_output)
@@ -376,6 +422,11 @@ class DeformableTransformerDecoder(nn.Module):
             ),
             dim=-1,
         ).sigmoid()
+        if dn_count:
+            updated[:dn_count] = (
+                self.bbox_embed[layer_id](output[:dn_count])
+                + inverse_sigmoid(reference_points[:dn_count])
+            ).sigmoid()
         return output, updated
 
 
@@ -393,4 +444,4 @@ class DiffusionRegPosePredictionHeads(nn.Module):
         self.class_embed = nn.ModuleList([class_head if share_class else copy.deepcopy(class_head) for _ in range(num_decoder_layers)])
         pose_count = num_decoder_layers - num_box_decoder_layers + (1 if num_body_points == 17 else 0)
         self.pose_embed = nn.ModuleList([pose_head if share_pose else copy.deepcopy(pose_head) for _ in range(pose_count)])
-        self.pose_hw_embed = nn.ModuleList(copy.deepcopy(pose_hw_head) for _ in range(pose_count))
+        self.pose_hw_embed = nn.ModuleList(pose_hw_head for _ in range(pose_count))

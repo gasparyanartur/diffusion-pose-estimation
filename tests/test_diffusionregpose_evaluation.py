@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
 import torch
 
+from scripts.evaluation.evaluate_diffusionregpose import extract_model_state_dict
+
 from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
+    DiffusionRegPoseAPMetric,
     crowdpose_result_records,
+    evaluate_crowdpose_results,
     postprocess_crowdpose,
     resize_crowdpose_eval_image,
 )
+from src.models.pipelines.pose_estimators.diffusionregpose import DiffusionRegPosePipelineConfig
 
 
 def test_postprocess_crowdpose_selects_top_class_scores_and_scales_coordinates() -> None:
@@ -89,3 +99,81 @@ def test_crowdpose_resize_normalizes_non_rgb_images() -> None:
 
     assert resize_crowdpose_eval_image(grayscale).shape[0] == 3
     assert resize_crowdpose_eval_image(rgba).shape[0] == 3
+
+
+def test_diffusionregpose_metric_matches_reference_evaluator(tmp_path: Path) -> None:
+    annotation_path = Path("tests/fixtures/mini_crowdpose_val.json")
+    annotation_data = json.loads(annotation_path.read_text())
+    records = []
+    metric = DiffusionRegPoseAPMetric(str(annotation_path))
+
+    by_image: dict[int, list[dict]] = {}
+    for annotation in annotation_data["annotations"]:
+        by_image.setdefault(annotation["image_id"], []).append(annotation)
+
+    for image_id, annotations in by_image.items():
+        raw = np.asarray(
+            [annotation["keypoints"] for annotation in annotations],
+            dtype=np.float32,
+        ).reshape(len(annotations), 14, 3)
+        keypoints = torch.from_numpy(raw).unsqueeze(0)
+        keypoint_scores = keypoints[..., 2]
+        bbox_scores = torch.ones(1, len(annotations))
+        metric.update(
+            keypoints,
+            keypoint_scores,
+            torch.tensor([image_id]),
+            bbox_scores=bbox_scores,
+        )
+        records.extend(
+            {
+                "image_id": image_id,
+                "category_id": 1,
+                "keypoints": annotation["keypoints"],
+                "score": 1.0,
+            }
+            for annotation in annotations
+        )
+
+    result_path = tmp_path / "reference.json"
+    result_path.write_text(json.dumps(records))
+    expected = evaluate_crowdpose_results(
+        result_path,
+        annotation_path,
+        image_ids=list(by_image),
+    )
+    actual = metric.compute()
+
+    assert actual["crowdpose/AP"] == pytest.approx(expected["AP"], abs=1e-12)
+    assert actual["crowdpose/AP(E)"] == pytest.approx(expected["AP_E"], abs=1e-12)
+    assert actual["crowdpose/AP(M)"] == pytest.approx(expected["AP_M"], abs=1e-12)
+    assert actual["crowdpose/AP(H)"] == pytest.approx(expected["AP_H"], abs=1e-12)
+
+
+def test_evaluation_accepts_external_and_lightning_checkpoint_layouts() -> None:
+    external = {"model": {"module.weight": torch.ones(1)}}
+    lightning = {"state_dict": {"model.weight": torch.ones(1), "criterion.x": torch.zeros(1)}}
+
+    assert set(extract_model_state_dict(external)) == {"weight"}
+    assert set(extract_model_state_dict(lightning)) == {"weight"}
+
+
+def test_debug_pipeline_can_reconstruct_its_small_model() -> None:
+    config = DiffusionRegPosePipelineConfig(
+        backbone_pretrained=False,
+        hidden_dim=256,
+        num_heads=8,
+        num_queries=100,
+        num_proposals=10,
+        num_group=10,
+        num_feature_levels=3,
+        num_encoder_layers=2,
+        num_decoder_layers=3,
+        num_box_decoder_layers=1,
+    )
+
+    model = config.build(max_epochs=1).model
+
+    assert model.num_queries == 100
+    assert model.num_proposals == 10
+    assert model.transformer.decoder.num_group == 10

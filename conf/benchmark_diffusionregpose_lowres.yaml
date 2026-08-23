@@ -1,0 +1,27 @@
+# Full-data, low-resolution DiffusionRegPose diagnostic.
+# This preset is a learning gate, not the paper benchmark configuration.
+
+defaults:
+  - pipeline: diffusionregpose
+  - data: crowdpose_diffusionregpose_lowres
+  - hardware: auto
+  - training: diffusionregpose
+  - _self_
+
+run_name: diffusionregpose_lowres
+out_dir: results/diffusionregpose_lowres
+skip_training: false
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+training:
+  max_epochs: 80
+  accumulate_grad_batches: 1
+  test_after_fit: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

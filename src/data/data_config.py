@@ -52,6 +52,13 @@ class CrowdPoseDataConfig(DataConfig):
     image_w: int | None = 192
     max_persons: int | None = None
     max_size: int | None = 512
+    external_train_transforms: bool = False
+    train_resize_scales: tuple[int, ...] = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+    train_max_size: int = 1333
+    train_crop_resize_scales: tuple[int, ...] = (400, 500, 600)
+    train_crop_size: tuple[int, int] = (384, 600)
+    eval_resize_scale: int = 800
+    eval_max_size: int = 1333
 
     def build(self, pin_memory: bool = False) -> CrowdPoseDataModule:
         root = Path(to_absolute_path(self.root))
@@ -74,4 +81,11 @@ class CrowdPoseDataConfig(DataConfig):
             image_w=self.image_w,
             max_persons=self.max_persons,
             max_size=self.max_size,
+            external_train_transforms=self.external_train_transforms,
+            train_resize_scales=self.train_resize_scales,
+            train_max_size=self.train_max_size,
+            train_crop_resize_scales=self.train_crop_resize_scales,
+            train_crop_size=self.train_crop_size,
+            eval_resize_scale=self.eval_resize_scale,
+            eval_max_size=self.eval_max_size,
         )

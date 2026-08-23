@@ -95,6 +95,7 @@ class DiffusionRegPoseResNetBackbone(nn.Module):
         *,
         pretrained: bool = True,
         return_interm_indices: Sequence[int] = (1, 2, 3),
+        freeze_stem_and_layer1: bool = True,
     ) -> None:
         super().__init__()
         indices = tuple(return_interm_indices)
@@ -106,6 +107,11 @@ class DiffusionRegPoseResNetBackbone(nn.Module):
             resnet,
             return_layers={f"layer{index + 1}": str(index) for index in indices},
         )
+        if freeze_stem_and_layer1:
+            for name, parameter in self.body.named_parameters():
+                if not name.startswith(("conv1", "bn1", "layer1")):
+                    continue
+                parameter.requires_grad_(False)
         self.num_channels = [self._CHANNELS[index + 1] for index in indices]
 
     def forward(self, image: Tensor, padding_mask: Tensor | None = None) -> list[Tensor]:

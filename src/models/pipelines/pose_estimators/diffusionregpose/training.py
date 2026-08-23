@@ -3,24 +3,90 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import warnings
 
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from pydantic import field_validator
 from scipy.optimize import linear_sum_assignment
 from src.configs.base_config import BaseConfig
 from src.training.optim import build_adamw_with_schedule
 from torch import Tensor, nn
 from torchvision.ops import generalized_box_iou
 
-from .evaluation import box_cxcywh_to_xyxy
+from .evaluation import (
+    DiffusionRegPoseAPMetric,
+    box_cxcywh_to_xyxy,
+    postprocess_crowdpose,
+)
 from .model import DiffusionRegPoseModel
 
 
+CROWDPOSE_PERSON_LABEL = 1
+
+
+def diffusionregpose_ap_epoch_active(
+    current_epoch: int,
+    max_epochs: int | None,
+    cadence: int,
+) -> bool:
+    """Return whether AP should be calculated after this zero-based epoch."""
+    if cadence < 1:
+        raise ValueError("AP cadence must be positive")
+    completed_epoch = current_epoch + 1
+    return completed_epoch % cadence == 0 or (
+        max_epochs is not None and completed_epoch == max_epochs
+    )
+
+
+@torch.no_grad()
+def update_diffusionregpose_ap_metric(
+    metric: DiffusionRegPoseAPMetric,
+    outputs: dict[str, Tensor],
+    batch: dict[str, Tensor],
+    *,
+    num_body_points: int = 14,
+) -> None:
+    """Add post-processed person predictions from one validation batch to AP."""
+    images = batch["image"]
+    target_sizes = batch.get("original_img_hw", batch["img_hw"]).to(
+        images.device, dtype=torch.float32,
+    )
+    nms_target_sizes = batch.get("img_hw")
+    if nms_target_sizes is None or nms_target_sizes.shape != target_sizes.shape:
+        nms_target_sizes = torch.tensor(
+            [images.shape[-2], images.shape[-1]],
+            device=images.device,
+            dtype=torch.float32,
+        ).expand(images.shape[0], -1)
+    else:
+        nms_target_sizes = nms_target_sizes.to(images.device, dtype=torch.float32)
+    results = postprocess_crowdpose(
+        outputs,
+        target_sizes,
+        num_body_points=num_body_points,
+        nms_target_sizes=nms_target_sizes,
+    )
+    for batch_index, result in enumerate(results):
+        person = result["labels"] == CROWDPOSE_PERSON_LABEL
+        serialized = result["keypoints"][person].reshape(-1, num_body_points, 3)
+        scores = result["scores"][person]
+        metric.update(
+            serialized.unsqueeze(0),
+            scores[:, None].expand(-1, num_body_points).unsqueeze(0),
+            batch["image_id"][batch_index : batch_index + 1],
+            bbox_scores=scores.unsqueeze(0),
+        )
+
+
 def _keypoints_to_xyxyzz(keypoints: Tensor) -> Tensor:
-    coordinates = keypoints[..., :2].flatten(-2)
+    coordinates = keypoints[..., :2]
     visibility = keypoints[..., 2]
-    return torch.cat((coordinates, visibility), dim=-1)
+    # The model and external criterion use xyxy...vvv: coordinate pairs stay
+    # interleaved, while visibility is stored in the final block.
+    return torch.cat((coordinates.flatten(-2), visibility), dim=-1)
 
 
 def build_diffusionregpose_targets(
@@ -33,27 +99,41 @@ def build_diffusionregpose_targets(
 ) -> tuple[Tensor, Tensor, list[dict[str, Tensor]]]:
     """Build reference-format targets and timestep-zero diffusion inputs."""
     keypoints = batch["gt_keypoints"]
+    diffusion_keypoints = batch.get("gt_diffusion_keypoints", keypoints)
     labeled = batch["gt_labeled"].bool()
-    visible = batch["gt_visible"].float()
+    # The external transform supervises both CrowdPose visibility values 1
+    # and 2. ``gt_visible`` contains only value 2, so the labeled mask is the
+    # correct visibility tensor for the training target.
+    target_visibility = labeled.float()
     boxes = batch["gt_boxes_canon"]
     batch_size, person_count, point_count, _ = keypoints.shape
     if point_count != num_body_points:
         raise ValueError("batch keypoint count does not match the model")
     if boxes.shape[:2] != (batch_size, person_count):
         raise ValueError("box and keypoint target counts must agree")
+    if diffusion_keypoints.shape[:1] != (batch_size,) or diffusion_keypoints.shape[2:] != (
+        point_count,
+        2,
+    ):
+        raise ValueError("diffusion keypoints must match batch and keypoint dimensions")
     if num_proposals < 1:
         raise ValueError("num_proposals must be positive")
 
     targets: list[dict[str, Tensor]] = []
     diffusion_inputs = keypoints.new_empty(batch_size, num_proposals, num_body_points * 2)
     for batch_index in range(batch_size):
-        valid_count = int(labeled[batch_index].any(dim=-1).sum().item())
-        valid_count = min(valid_count, person_count)
-        target_keypoints = (keypoints[batch_index, :valid_count] + 1.0) / 2.0
-        target_visible = visible[batch_index, :valid_count]
-        target_boxes = boxes[batch_index, :valid_count]
+        valid_indices = labeled[batch_index].any(dim=-1).nonzero(as_tuple=False).flatten()
+        valid_count = valid_indices.numel()
+        target_keypoints = (
+            keypoints[batch_index].index_select(0, valid_indices) + 1.0
+        ) / 2.0
+        target_visible = target_visibility[batch_index].index_select(0, valid_indices)
+        target_boxes = boxes[batch_index].index_select(0, valid_indices)
         targets.append({
-            "labels": torch.zeros(valid_count, dtype=torch.long, device=keypoints.device),
+            "labels": torch.full(
+                (valid_count,), CROWDPOSE_PERSON_LABEL,
+                dtype=torch.long, device=keypoints.device,
+            ),
             "boxes": target_boxes,
             "keypoints": _keypoints_to_xyxyzz(
                 torch.cat((target_keypoints, target_visible.unsqueeze(-1)), dim=-1)
@@ -61,7 +141,25 @@ def build_diffusionregpose_targets(
             "area": (target_boxes[:, 2] * target_boxes[:, 3]).clamp_min(1e-6),
         })
 
-        if valid_count:
+        if "gt_diffusion_keypoints" in batch:
+            person_mask = batch.get("person_mask")
+            if person_mask is None:
+                diffusion_indices = torch.arange(
+                    diffusion_keypoints.shape[1], device=keypoints.device
+                )
+            else:
+                diffusion_indices = person_mask[batch_index].bool().nonzero(
+                    as_tuple=False
+                ).flatten()
+            clean = (
+                diffusion_keypoints[batch_index].index_select(0, diffusion_indices) + 1.0
+            ) / 2.0
+            clean = clean.flatten(1)
+            count = min(clean.shape[0], num_proposals)
+            diffusion_inputs[batch_index, :count] = (
+                clean[:count] * 2.0 - 1.0
+            ) * diffusion.scale
+        elif valid_count:
             clean = target_keypoints[..., :2].flatten(1)
             count = min(valid_count, num_proposals)
             diffusion_inputs[batch_index, :count] = (clean[:count] * 2.0 - 1.0) * diffusion.scale
@@ -128,21 +226,28 @@ class DiffusionRegPoseMatcher(nn.Module):
             neg = (1 - alpha) * probabilities.pow(gamma) * -(1 - probabilities + 1e-8).log()
             pos = alpha * (1 - probabilities).pow(gamma) * -(probabilities + 1e-8).log()
             class_cost = pos[:, target_labels] - neg[:, target_labels]
-            box_cost = torch.cdist(boxes, target["boxes"], p=1)
-            giou_cost = -generalized_box_iou(
-                box_cxcywh_to_xyxy(boxes), box_cxcywh_to_xyxy(target["boxes"])
-            )
-            pred_xy = keypoints[:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
-            target_xy = target["keypoints"][:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
-            target_visible = target["keypoints"][:, self.num_body_points * 2 :]
-            distance = (pred_xy[:, None] - target_xy[None]).pow(2).sum(-1)
-            variances = (self.sigmas.to(pred_xy) * 2).pow(2)
-            oks = torch.exp(-distance / (target["area"][None, :, None] * variances[None, None] * 2))
-            oks = (oks * target_visible[None]).sum(-1) / (target_visible.sum(-1)[None] + 1e-6)
-            keypoint_cost = (
-                (keypoints[:, None, : self.num_body_points * 2] - target["keypoints"][None, :, : self.num_body_points * 2]).abs()
-                * target_visible[None].repeat_interleave(2, dim=-1)
-            ).sum(-1)
+            use_pose_costs = bool(keypoints[..., : self.num_body_points * 2].sum().item() > 0)
+            if use_pose_costs:
+                box_cost = torch.zeros_like(torch.cdist(boxes, target["boxes"], p=1))
+                giou_cost = torch.zeros_like(box_cost)
+                pred_xy = keypoints[:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
+                target_xy = target["keypoints"][:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
+                target_visible = target["keypoints"][:, self.num_body_points * 2 :]
+                distance = (pred_xy[:, None] - target_xy[None]).pow(2).sum(-1)
+                variances = (self.sigmas.to(pred_xy) * 2).pow(2)
+                oks = torch.exp(-distance / (target["area"][None, :, None] * variances[None, None] * 2))
+                oks = (oks * target_visible[None]).sum(-1) / (target_visible.sum(-1)[None] + 1e-6)
+                keypoint_cost = (
+                    (keypoints[:, None, : self.num_body_points * 2] - target["keypoints"][None, :, : self.num_body_points * 2]).abs()
+                    * target_visible[None].repeat_interleave(2, dim=-1)
+                ).sum(-1)
+            else:
+                box_cost = torch.cdist(boxes, target["boxes"], p=1)
+                giou_cost = -generalized_box_iou(
+                    box_cxcywh_to_xyxy(boxes), box_cxcywh_to_xyxy(target["boxes"])
+                )
+                keypoint_cost = torch.zeros_like(box_cost)
+                oks = torch.ones_like(box_cost)
             cost = (
                 self.weights.set_cost_class * class_cost
                 + self.weights.set_cost_bbox * box_cost
@@ -165,12 +270,16 @@ class DiffusionRegPoseCriterion(nn.Module):
         matcher: DiffusionRegPoseMatcher | None = None,
         num_body_points: int = 14,
         num_box_decoder_layers: int = 2,
+        dn_label_coef: float = 0.3,
+        dn_bbox_coef: float = 0.5,
         weights: DiffusionRegPoseLossWeights | None = None,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.num_body_points = num_body_points
         self.num_box_decoder_layers = num_box_decoder_layers
+        self.dn_label_coef = dn_label_coef
+        self.dn_bbox_coef = dn_bbox_coef
         self.weights = weights or DiffusionRegPoseLossWeights()
         self.matcher = matcher or DiffusionRegPoseMatcher(
             num_body_points=num_body_points, weights=self.weights
@@ -187,13 +296,17 @@ class DiffusionRegPoseCriterion(nn.Module):
         ce = F.binary_cross_entropy_with_logits(logits, target_classes, reduction="none")
         p_t = probabilities * target_classes + (1 - probabilities) * (1 - target_classes)
         alpha_t = self.weights.focal_alpha * target_classes + (1 - self.weights.focal_alpha) * (1 - target_classes)
-        loss_ce = (alpha_t * ce * (1 - p_t).pow(2)).mean(2).sum(1).mean() / max(logits.shape[1], 1)
+        num_boxes = max(sum(target["labels"].numel() for target in targets), 1)
+        focal_loss = alpha_t * ce * (1 - p_t).pow(2)
+        # ``sigmoid_focal_loss`` in the reference already averages over the
+        # class dimension, normalizes by the target count, and the reference
+        # criterion multiplies that result by the query count once.
+        loss_ce = focal_loss.mean(1).sum() / num_boxes * logits.shape[1]
         loss_bbox = logits.new_zeros(())
         loss_giou = logits.new_zeros(())
         loss_keypoints = logits.new_zeros(())
         loss_oks = logits.new_zeros(())
-        matched_count = sum(source.numel() for source, _ in matches)
-        normalizer = max(matched_count, 1)
+        normalizer = num_boxes
         for batch_index, (source, target_indices) in enumerate(matches):
             if source.numel() == 0:
                 continue
@@ -216,7 +329,7 @@ class DiffusionRegPoseCriterion(nn.Module):
                 oks = torch.exp(-(pred_xy - target_xy).pow(2).sum(-1) / (target["area"][target_indices, None] * variance[None] * 2))
                 loss_oks = loss_oks + (1 - (oks * valid).sum(-1) / (valid.sum(-1) + 1e-6)).sum()
         values = {
-            "loss_ce": loss_ce * logits.shape[1],
+            "loss_ce": loss_ce,
             "loss_bbox": loss_bbox / normalizer,
             "loss_giou": loss_giou / normalizer,
             "loss_keypoints": loss_keypoints / normalizer,
@@ -231,8 +344,60 @@ class DiffusionRegPoseCriterion(nn.Module):
         )
         return values
 
+    def _weighted_clean_loss(self, values: dict[str, Tensor]) -> Tensor:
+        """Apply the reference loss weights to one decoder output."""
+        return (
+            self.weights.cls * values["loss_ce"]
+            + self.weights.bbox * values["loss_bbox"]
+            + self.weights.giou * values["loss_giou"]
+            + self.weights.keypoints * values["loss_keypoints"]
+            + self.weights.oks * values["loss_oks"]
+        )
+
+    def _denoising_losses(self, outputs: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Calculate the external denoising classification and box losses."""
+        logits = outputs["dn_class_pred"]
+        labels = outputs["dn_class_input"]
+        boxes = outputs["dn_bbox_pred"]
+        target_boxes = outputs["dn_bbox_input"]
+        target_classes = torch.zeros(
+            *logits.shape[:2], logits.shape[-1], dtype=logits.dtype, device=logits.device
+        )
+        valid_labels = labels < logits.shape[-1]
+        target_classes.scatter_(
+            2,
+            labels.clamp_max(logits.shape[-1] - 1).unsqueeze(-1),
+            valid_labels.unsqueeze(-1).to(logits.dtype),
+        )
+        probabilities = logits.sigmoid()
+        ce = F.binary_cross_entropy_with_logits(logits, target_classes, reduction="none")
+        p_t = probabilities * target_classes + (1 - probabilities) * (1 - target_classes)
+        alpha_t = self.weights.focal_alpha * target_classes + (1 - self.weights.focal_alpha) * (1 - target_classes)
+        num_targets = max(logits.shape[1], 1)
+        loss_ce = (alpha_t * ce * (1 - p_t).pow(2)).mean(1).sum() / num_targets * logits.shape[1]
+        loss_bbox = F.l1_loss(boxes, target_boxes, reduction="sum") / num_targets
+        loss_giou = (
+            1 - torch.diag(generalized_box_iou(
+                box_cxcywh_to_xyxy(boxes.flatten(0, 1)),
+                box_cxcywh_to_xyxy(target_boxes.flatten(0, 1)),
+            ))
+        ).sum() / num_targets
+        return {
+            "dn_loss_ce": loss_ce,
+            "dn_loss_bbox": loss_bbox,
+            "dn_loss_giou": loss_giou,
+        }
+
     def forward(self, outputs: dict, targets: list[dict[str, Tensor]]) -> dict[str, Tensor]:
         losses = self._loss_for_outputs(outputs, targets)
+        if "dn_class_pred" in outputs:
+            dn_losses = self._denoising_losses(outputs)
+            losses.update(dn_losses)
+            losses["total"] = losses["total"] + (
+                self.dn_label_coef * dn_losses["dn_loss_ce"]
+                + self.weights.bbox * self.dn_bbox_coef * dn_losses["dn_loss_bbox"]
+                + self.weights.giou * self.dn_bbox_coef * dn_losses["dn_loss_giou"]
+            )
         for index, auxiliary in enumerate(outputs.get("aux_outputs", [])):
             auxiliary_losses = self._loss_for_outputs(
                 auxiliary, targets, include_keypoints=index >= self.num_box_decoder_layers
@@ -240,7 +405,27 @@ class DiffusionRegPoseCriterion(nn.Module):
             for name, value in auxiliary_losses.items():
                 if name != "total":
                     losses[f"{name}_{index}"] = value
-                losses["total"] = losses["total"] + value
+                    coefficient = {
+                        "loss_ce": self.weights.cls,
+                        "loss_bbox": self.weights.bbox,
+                        "loss_giou": self.weights.giou,
+                        "loss_keypoints": self.weights.keypoints,
+                        "loss_oks": self.weights.oks,
+                    }[name]
+                    losses["total"] = losses["total"] + coefficient * value
+            if "dn_aux_outputs" in outputs:
+                auxiliary_dn = self._denoising_losses({
+                    "dn_class_pred": outputs["dn_aux_outputs"][index]["pred_logits"],
+                    "dn_bbox_pred": outputs["dn_aux_outputs"][index]["pred_boxes"],
+                    "dn_class_input": outputs["dn_class_input"],
+                    "dn_bbox_input": outputs["dn_bbox_input"],
+                })
+                for name, value in auxiliary_dn.items():
+                    losses[f"{name}_{index}"] = value
+                    coefficient = self.dn_label_coef if name == "dn_loss_ce" else (
+                        self.weights.bbox if name == "dn_loss_bbox" else self.weights.giou
+                    ) * self.dn_bbox_coef
+                    losses["total"] = losses["total"] + coefficient * value
         return losses
 
 
@@ -253,23 +438,44 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         criterion: DiffusionRegPoseCriterion,
         *,
         lr: float = 2e-4,
+        lr_backbone: float | None = 1e-4,
         weight_decay: float = 1e-4,
         max_epochs: int | None = None,
         lr_warmup_epochs: int = 1,
         lr_min_frac: float = 1e-2,
+        scheduler_type: str = "cosine",
+        lr_decay_milestones: tuple[int, ...] = (),
+        split_weight_decay: bool = True,
+        val_ap_every_n_epochs: int = 10,
+        val_ann_file: str | None = None,
     ) -> None:
         super().__init__()
         self.model = model
         self.criterion = criterion
         self.lr = lr
+        self.lr_backbone = lr_backbone
         self.weight_decay = weight_decay
         self.max_epochs = max_epochs
         self.lr_warmup_epochs = lr_warmup_epochs
         self.lr_min_frac = lr_min_frac
+        self.scheduler_type = scheduler_type
+        self.lr_decay_milestones = lr_decay_milestones
+        self.split_weight_decay = split_weight_decay
+        if val_ap_every_n_epochs < 1:
+            raise ValueError("val_ap_every_n_epochs must be positive")
+        self.val_ap_every_n_epochs = val_ap_every_n_epochs
+        self._val_ap = DiffusionRegPoseAPMetric(val_ann_file) if val_ann_file else None
         self.save_hyperparameters(ignore=["model", "criterion"])
 
-    def forward(self, images: Tensor, diffusion_keypoints: Tensor, timesteps: Tensor) -> dict:
-        return self.model(images, diffusion_keypoints, timesteps)
+    def forward(
+        self,
+        images: Tensor,
+        diffusion_keypoints: Tensor,
+        timesteps: Tensor,
+        targets: list[dict[str, Tensor]] | None = None,
+        padding_mask: Tensor | None = None,
+    ) -> dict:
+        return self.model(images, diffusion_keypoints, timesteps, targets, padding_mask)
 
     def _losses_for_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         diffusion_keypoints, timesteps, targets = build_diffusionregpose_targets(
@@ -278,7 +484,10 @@ class DiffusionRegPosePipeline(pl.LightningModule):
             num_proposals=self.model.num_proposals,
             num_body_points=self.model.transformer.decoder.num_body_points,
         )
-        outputs = self(batch["image"], diffusion_keypoints, timesteps)
+        outputs = self(
+            batch["image"], diffusion_keypoints, timesteps, targets,
+            batch.get("padding_mask"),
+        )
         return self.criterion(outputs, targets)
 
     def _log_losses(self, prefix: str, losses: dict[str, Tensor], batch_size: int) -> None:
@@ -297,6 +506,14 @@ class DiffusionRegPosePipeline(pl.LightningModule):
                     on_step=False, on_epoch=True,
                 )
 
+    def _ap_epoch_active(self) -> bool:
+        if self._trainer is not None and getattr(self.trainer, "sanity_checking", False):
+            return False
+        max_epochs = self.trainer.max_epochs if self._trainer is not None else self.max_epochs
+        return self._val_ap is not None and diffusionregpose_ap_epoch_active(
+            self.current_epoch, max_epochs, self.val_ap_every_n_epochs
+        )
+
     def training_step(self, batch: dict[str, Tensor], batch_idx: int) -> Tensor:
         del batch_idx
         losses = self._losses_for_batch(batch)
@@ -307,6 +524,29 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         del batch_idx
         losses = self._losses_for_batch(batch)
         self._log_losses("val", losses, batch["image"].shape[0])
+        if self._ap_epoch_active():
+            update_diffusionregpose_ap_metric(
+                self._val_ap,
+                self.model.sample_keypoints(
+                    batch["image"],
+                    padding_mask=batch.get("padding_mask"),
+                ),
+                batch,
+                num_body_points=self.model.transformer.decoder.num_body_points,
+            )
+
+    def on_validation_epoch_end(self) -> None:
+        if not self._ap_epoch_active():
+            return
+        assert self._val_ap is not None
+        for name, value in self._val_ap.compute().items():
+            self.log(
+                f"ap-val/{name}",
+                value,
+                sync_dist=True,
+                prog_bar=name == "crowdpose/AP",
+            )
+        self._val_ap.reset()
 
     def test_step(self, batch: dict[str, Tensor], batch_idx: int) -> None:
         del batch_idx
@@ -317,10 +557,14 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         return build_adamw_with_schedule(
             self,
             lr=self.lr,
+            lr_backbone=self.lr_backbone,
             weight_decay=self.weight_decay,
             lr_T_max=self.max_epochs,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
+            scheduler_type=self.scheduler_type,
+            lr_decay_milestones=self.lr_decay_milestones,
+            split_weight_decay=self.split_weight_decay,
         )
 
 
@@ -328,7 +572,7 @@ class DiffusionRegPoseLossWeightsConfig(BaseConfig):
     cls: float = 2.0
     bbox: float = 5.0
     giou: float = 2.0
-    keypoints: float = 1.0
+    keypoints: float = 10.0
     oks: float = 4.0
     set_cost_class: float = 2.0
     set_cost_bbox: float = 5.0
@@ -358,13 +602,40 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     num_body_points: int = 14
     num_box_decoder_layers: int = 2
     num_group: int = 100
+    dn_number: int = 100
+    dn_box_noise_scale: float = 0.4
+    dn_label_noise_ratio: float = 0.5
+    dn_label_coef: float = 0.3
+    dn_bbox_coef: float = 0.5
+    freeze_backbone_stem_and_layer1: bool = True
+    pretrained_checkpoint: str | None = None
     lr: float = 2e-4
+    lr_backbone: float | None = 1e-4
     weight_decay: float = 1e-4
-    lr_warmup_epochs: int = 1
+    lr_warmup_epochs: int = 0
     lr_min_frac: float = 1e-2
+    scheduler_type: str = "multistep"
+    lr_decay_milestones: tuple[int, ...] = (31, 61)
+    split_weight_decay: bool = False
+    val_ap_every_n_epochs: int = 10
     weights: DiffusionRegPoseLossWeightsConfig = DiffusionRegPoseLossWeightsConfig()
 
-    def build(self, *, max_epochs: int | None = None) -> DiffusionRegPosePipeline:
+    @field_validator("num_classes")
+    @classmethod
+    def _validate_person_class_is_present(cls, value: int) -> int:
+        if value <= CROWDPOSE_PERSON_LABEL:
+            raise ValueError(
+                "num_classes must include CrowdPose person label "
+                f"{CROWDPOSE_PERSON_LABEL}, got {value}"
+            )
+        return value
+
+    def build(
+        self,
+        *,
+        max_epochs: int | None = None,
+        val_ann_file: str | None = None,
+    ) -> DiffusionRegPosePipeline:
         model = DiffusionRegPoseModel(
             backbone_pretrained=self.backbone_pretrained,
             timesteps=self.timesteps,
@@ -380,7 +651,37 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             num_body_points=self.num_body_points,
             num_box_decoder_layers=self.num_box_decoder_layers,
             num_group=self.num_group,
+            dn_number=self.dn_number,
+            dn_box_noise_scale=self.dn_box_noise_scale,
+            dn_label_noise_ratio=self.dn_label_noise_ratio,
+            freeze_backbone_stem_and_layer1=self.freeze_backbone_stem_and_layer1,
         )
+        if self.pretrained_checkpoint:
+            checkpoint_path = Path(self.pretrained_checkpoint).expanduser()
+            checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+            state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
+            if not isinstance(state, dict):
+                raise ValueError(f"checkpoint does not contain a state dictionary: {checkpoint_path}")
+            state = {
+                key.removeprefix("module."): value
+                for key, value in state.items()
+                if isinstance(value, Tensor)
+            }
+            model_state = model.state_dict()
+            compatible_state = {
+                key: value
+                for key, value in state.items()
+                if key in model_state and model_state[key].shape == value.shape
+            }
+            skipped_keys = set(state) - set(compatible_state)
+            incompatible = model.load_state_dict(compatible_state, strict=False)
+            if incompatible.missing_keys or incompatible.unexpected_keys or skipped_keys:
+                warnings.warn(
+                    f"Loaded {checkpoint_path} with {len(incompatible.missing_keys)} missing and "
+                    f"{len(incompatible.unexpected_keys)} unexpected and {len(skipped_keys)} "
+                    "shape-incompatible keys.",
+                    stacklevel=2,
+                )
         weights = self.weights.to_dataclass()
         return DiffusionRegPosePipeline(
             model,
@@ -388,11 +689,19 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                 num_classes=self.num_classes,
                 num_body_points=self.num_body_points,
                 num_box_decoder_layers=self.num_box_decoder_layers,
+                dn_label_coef=self.dn_label_coef,
+                dn_bbox_coef=self.dn_bbox_coef,
                 weights=weights,
             ),
             lr=self.lr,
+            lr_backbone=self.lr_backbone,
             weight_decay=self.weight_decay,
             max_epochs=max_epochs,
             lr_warmup_epochs=self.lr_warmup_epochs,
             lr_min_frac=self.lr_min_frac,
+            scheduler_type=self.scheduler_type,
+            lr_decay_milestones=self.lr_decay_milestones,
+            split_weight_decay=self.split_weight_decay,
+            val_ap_every_n_epochs=self.val_ap_every_n_epochs,
+            val_ann_file=val_ann_file,
         )

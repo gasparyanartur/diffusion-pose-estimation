@@ -17,6 +17,7 @@ class CheckpointConfig(BaseConfig):
     filename: str = "epoch{epoch:03d}"
     save_top_k: int = 1
     save_last: bool = True
+    save_last_every_epoch: bool = False
     every_n_epochs: int | None = None
     final_epoch: bool = False
 
@@ -57,11 +58,13 @@ class TrainingConfig(BaseConfig):
     precision: int | str = "32"
     max_epochs: int | None = None
     grad_clip: float | None = None
+    accumulate_grad_batches: int = 1
     log_every_n_steps: int = 50
     seed: int | None = None
     resume: str | None = None
     skip_training: bool = False
     test_after_fit: bool = True
+    limit_val_batches: int | float = 1.0
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -72,3 +75,9 @@ class TrainingConfig(BaseConfig):
             raise ValueError("log_every_n_steps must be positive")
         return value
 
+    @field_validator("accumulate_grad_batches")
+    @classmethod
+    def _validate_accumulate_grad_batches(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("accumulate_grad_batches must be positive")
+        return value

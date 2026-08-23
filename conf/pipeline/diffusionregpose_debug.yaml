@@ -1,0 +1,48 @@
+_target_: src.models.pipelines.pose_estimators.diffusionregpose.DiffusionRegPosePipelineConfig
+
+# Start from the paper's EDPose initialization while reducing the expensive
+# transformer and dataset dimensions for this wiring diagnostic.
+backbone_pretrained: true
+pretrained_checkpoint: external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth
+timesteps: 1000
+sampling_timesteps: 1
+num_queries: 100
+num_proposals: 10
+num_classes: 2
+num_feature_levels: 3
+num_encoder_layers: 2
+num_decoder_layers: 3
+hidden_dim: 256
+num_heads: 8
+num_body_points: 14
+num_box_decoder_layers: 1
+num_group: 10
+dn_number: 100
+dn_box_noise_scale: 0.4
+dn_label_noise_ratio: 0.5
+dn_label_coef: 0.3
+dn_bbox_coef: 0.5
+freeze_backbone_stem_and_layer1: true
+
+lr: 2.0e-4
+lr_backbone: 1.0e-4
+weight_decay: 1.0e-4
+lr_warmup_epochs: 0
+lr_min_frac: 1.0e-2
+scheduler_type: multistep
+lr_decay_milestones: [31, 61]
+split_weight_decay: false
+val_ap_every_n_epochs: 10
+
+weights:
+  cls: 2.0
+  bbox: 5.0
+  giou: 2.0
+  keypoints: 10.0
+  oks: 4.0
+  set_cost_class: 2.0
+  set_cost_bbox: 5.0
+  set_cost_giou: 2.0
+  set_cost_keypoints: 10.0
+  set_cost_oks: 4.0
+  focal_alpha: 0.25

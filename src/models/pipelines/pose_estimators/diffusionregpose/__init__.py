@@ -11,6 +11,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.diffusion import (
     extract,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
+    DiffusionRegPoseAPMetric,
     box_cxcywh_to_xyxy,
     postprocess_crowdpose,
 )
@@ -20,6 +21,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.model import (
     gen_encoder_output_proposals,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.training import (
+    CROWDPOSE_PERSON_LABEL,
     DiffusionRegPoseCriterion,
     DiffusionRegPoseLossWeights,
     DiffusionRegPoseLossWeightsConfig,
@@ -27,6 +29,8 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     DiffusionRegPosePipeline,
     DiffusionRegPosePipelineConfig,
     build_diffusionregpose_targets,
+    diffusionregpose_ap_epoch_active,
+    update_diffusionregpose_ap_metric,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     DeformableTransformerDecoder,
@@ -47,6 +51,7 @@ __all__ = [
     "extract",
     "box_cxcywh_to_xyxy",
     "postprocess_crowdpose",
+    "DiffusionRegPoseAPMetric",
     "DeformableTransformerDecoder",
     "DeformableTransformerDecoderLayer",
     "DeformableTransformerEncoder",
@@ -66,4 +71,7 @@ __all__ = [
     "DiffusionRegPosePipeline",
     "DiffusionRegPosePipelineConfig",
     "build_diffusionregpose_targets",
+    "diffusionregpose_ap_epoch_active",
+    "update_diffusionregpose_ap_metric",
+    "CROWDPOSE_PERSON_LABEL",
 ]

@@ -40,6 +40,22 @@ def test_resnet_backbone_returns_three_ordered_feature_levels() -> None:
     assert [feature.shape[-2:] for feature in features] == [(16, 16), (8, 8), (4, 4)]
 
 
+def test_external_training_freezes_resnet_stem_and_layer1() -> None:
+    backbone = DiffusionRegPoseResNetBackbone(pretrained=False)
+
+    frozen_names = {
+        name for name, parameter in backbone.named_parameters() if not parameter.requires_grad
+    }
+    trainable_names = {
+        name for name, parameter in backbone.named_parameters() if parameter.requires_grad
+    }
+
+    assert frozen_names
+    assert all(name.startswith(("body.conv1", "body.bn1", "body.layer1")) for name in frozen_names)
+    assert any(name.startswith("body.layer2") for name in trainable_names)
+    assert any(name.startswith("body.layer4") for name in trainable_names)
+
+
 def test_resnet_backbone_state_keys_match_external_backbone_body() -> None:
     backbone = DiffusionRegPoseResNetBackbone(pretrained=False)
     keys = set(backbone.state_dict())

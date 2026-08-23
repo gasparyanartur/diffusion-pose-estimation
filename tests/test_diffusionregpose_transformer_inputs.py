@@ -20,6 +20,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
 from src.models.pipelines.pose_estimators.diffusionregpose.backbone import (
     PositionEmbeddingSineHW,
 )
+from src.models.pipelines.pose_estimators.diffusionregpose import transformer as transformer_module
 
 
 class LoopFreeMultiScaleDeformableAttention(MultiScaleDeformableAttention):
@@ -267,6 +268,119 @@ def test_native_cuda_deformable_attention_matches_grid_sample_reference() -> Non
     actual = native_msda.forward(value, shapes, starts, locations, weights)
 
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention backward")
+def test_native_cuda_deformable_attention_backward_matches_grid_sample_reference() -> None:
+    native_msda = _load_native_msda()
+    if native_msda is None:
+        pytest.skip("the local CUDA extension is unavailable")
+    assert hasattr(native_msda, "backward"), "the local CUDA extension must expose backward"
+
+    torch.manual_seed(11)
+    device = torch.device("cuda")
+    shapes = torch.tensor([[3, 4], [2, 2]], device=device, dtype=torch.long)
+    starts = torch.cat((shapes.new_zeros(1), shapes.prod(1).cumsum(0)[:-1]))
+    value = torch.randn(1, 16, 2, 2, device=device)
+    locations = torch.rand(1, 3, 2, 2, 2, 2, device=device) * 0.7 + 0.15
+    weights = torch.randn(1, 3, 2, 2, 2, device=device)
+    grad_output = torch.randn(1, 3, 4, device=device)
+
+    native_grads = native_msda.backward(
+        value.contiguous(),
+        shapes,
+        starts,
+        locations.contiguous(),
+        weights.contiguous(),
+        grad_output.contiguous(),
+    )
+
+    reference_value = value.detach().clone().requires_grad_()
+    reference_locations = locations.detach().clone().requires_grad_()
+    reference_weights = weights.detach().clone().requires_grad_()
+    reference_levels = []
+    for level, (height, width) in enumerate(shapes.tolist()):
+        level_value = reference_value[:, starts[level] : starts[level] + height * width]
+        level_value = level_value.flatten(2).transpose(1, 2).reshape(2, 2, height, width)
+        grid = (2.0 * reference_locations[:, :, :, level] - 1.0).transpose(1, 2).flatten(0, 1)
+        sampled = F.grid_sample(
+            level_value,
+            grid,
+            mode="bilinear",
+            padding_mode="zeros",
+            align_corners=False,
+        )
+        reference_levels.append(
+            sampled.view(1, 2, 2, 3, 2).permute(0, 3, 1, 4, 2)
+        )
+    reference_output = (
+        torch.stack(reference_levels, dim=3)
+        .mul(reference_weights[..., None])
+        .sum((3, 4))
+        .reshape(1, 3, 4)
+    )
+    reference_output.backward(grad_output)
+
+    for actual, expected in zip(native_grads, (reference_value.grad, reference_locations.grad, reference_weights.grad)):
+        torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention autograd bridge")
+def test_native_cuda_deformable_attention_training_path_backpropagates() -> None:
+    native_msda = _load_native_msda()
+    if native_msda is None:
+        pytest.skip("the local CUDA extension is unavailable")
+    assert hasattr(native_msda, "backward"), "the local CUDA extension must expose backward"
+
+    torch.manual_seed(13)
+    attention = MultiScaleDeformableAttention(
+        d_model=8, num_levels=1, num_heads=2, num_points=2,
+    ).cuda().train()
+    query = torch.randn(1, 3, 8, device="cuda", requires_grad=True)
+    reference_points = torch.rand(1, 3, 1, 2, device="cuda") * 0.6 + 0.2
+    flattened = torch.randn(1, 16, 8, device="cuda", requires_grad=True)
+    shapes = torch.tensor([[4, 4]], device="cuda", dtype=torch.long)
+    starts = torch.zeros(1, device="cuda", dtype=torch.long)
+
+    output = attention(query, reference_points, flattened, shapes, starts)
+    output.square().mean().backward()
+
+    assert output.shape == (1, 3, 8)
+    assert torch.isfinite(output).all()
+    assert torch.isfinite(query.grad).all()
+    assert torch.isfinite(flattened.grad).all()
+    assert all(parameter.grad is not None for parameter in attention.parameters())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention bridge")
+def test_native_attention_promotes_bfloat16_inputs_to_one_kernel_dtype(monkeypatch) -> None:
+    seen_dtypes: list[torch.dtype] = []
+
+    class FakeNativeAttention:
+        @staticmethod
+        def forward(value, shapes, starts, locations, weights):
+            del shapes, starts
+            seen_dtypes.extend([value.dtype, locations.dtype, weights.dtype])
+            return torch.zeros(
+                value.shape[0], value.shape[1], value.shape[2] * value.shape[3],
+                device=value.device, dtype=value.dtype,
+            )
+
+    monkeypatch.setattr(transformer_module, "_load_native_msda", lambda: FakeNativeAttention)
+    attention = MultiScaleDeformableAttention(
+        d_model=8, num_levels=1, num_heads=2, num_points=2,
+    ).cuda().eval()
+    query = torch.randn(1, 2, 8, device="cuda")
+    reference_points = torch.full((1, 2, 1, 2), 0.5, device="cuda")
+    flattened = torch.randn(1, 4, 8, device="cuda")
+    shapes = torch.tensor([[2, 2]], device="cuda", dtype=torch.long)
+    starts = torch.zeros(1, device="cuda", dtype=torch.long)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16), torch.no_grad():
+        output = attention(query, reference_points, flattened, shapes, starts)
+
+    assert seen_dtypes == [torch.float32, torch.float32, torch.float32]
+    assert output.dtype == torch.bfloat16
 
 
 def test_encoder_parameter_shapes_match_available_checkpoint() -> None:

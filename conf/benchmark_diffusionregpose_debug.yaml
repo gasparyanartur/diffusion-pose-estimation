@@ -1,0 +1,19 @@
+# Fast diagnostic configuration for the native DiffusionRegPose pipeline.
+# Its metrics are intended for regression feedback, not paper benchmarking.
+
+defaults:
+  - pipeline: diffusionregpose_debug
+  - data: crowdpose_diffusionregpose_debug
+  - hardware: auto
+  - training: diffusionregpose_debug
+  - _self_
+
+run_name: diffusionregpose_debug
+out_dir: results/diffusionregpose_debug
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

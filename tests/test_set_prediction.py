@@ -341,6 +341,20 @@ def test_resize_and_pad_to_square_batch_all_square():
         assert mask.shape == (size, size),   f"image {i}: mask shape {tuple(mask.shape)}"
 
 
+def test_external_resize_and_padding_preserve_variable_image_geometry():
+    from src.data.data_module import _external_resize_size, _pad_variable_images
+
+    assert _external_resize_size(100, 200, 80, 1333) == (80, 160)
+    images = [torch.zeros(3, 8, 12), torch.zeros(3, 10, 9)]
+
+    padded, padding_mask = _pad_variable_images(images)
+
+    assert padded.shape == (2, 3, 10, 12)
+    assert not padding_mask[0, :8, :12].any()
+    assert padding_mask[0, 8:].all()
+    assert padding_mask[1, :, 9:].all()
+
+
 # ---------------------------------------------------------------------------
 # compute_person_scale
 # ---------------------------------------------------------------------------

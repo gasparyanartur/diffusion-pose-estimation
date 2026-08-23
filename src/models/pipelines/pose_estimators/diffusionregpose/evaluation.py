@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import builtins
+import contextlib
+import io
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +15,120 @@ import torchvision.transforms.functional as TF
 from torchvision.ops import batched_nms
 from torchvision.transforms import InterpolationMode
 from torch import Tensor
+
+
+class DiffusionRegPoseAPMetric:
+    """Accumulate predictions with the external CrowdPose AP contract.
+
+    The external evaluator uses ``crowdposetools.COCOeval`` with the
+    ``keypoints`` IoU type.  Keeping the result records here and evaluating
+    them in one call preserves that contract during Lightning validation.
+    """
+
+    def __init__(self, ann_file: str | Path) -> None:
+        self._ann_file = str(ann_file)
+        self._valid_img_ids = self._load_valid_image_ids()
+        self._records: list[dict] = []
+
+    def _load_valid_image_ids(self) -> frozenset[int]:
+        from crowdposetools.coco import COCO
+
+        return frozenset(COCO(self._ann_file).getImgIds())
+
+    def reset(self) -> None:
+        self._records.clear()
+
+    def update(
+        self,
+        pred_kpts: Tensor,  # (B, N, 14, 2 or 3), pixel space
+        pred_scores: Tensor,  # (B, N, 14), used as visibility for 2-channel kpts
+        image_ids: Tensor,  # (B,)
+        bbox_scores: Tensor | None = None,  # (B, N), final detection scores
+    ) -> None:
+        if pred_kpts.ndim != 4 or pred_kpts.shape[-1] not in (2, 3):
+            raise ValueError("pred_kpts must have shape [B, N, K, 2 or 3]")
+        if pred_scores.shape != pred_kpts.shape[:3]:
+            raise ValueError("pred_scores must have shape [B, N, K]")
+        if image_ids.shape != (pred_kpts.shape[0],):
+            raise ValueError("image_ids must have shape [B]")
+        if bbox_scores is not None and bbox_scores.shape != pred_kpts.shape[:2]:
+            raise ValueError("bbox_scores must have shape [B, N]")
+
+        keypoints_np = pred_kpts.detach().cpu().numpy()
+        scores_np = pred_scores.detach().cpu().numpy()
+        image_ids_np = image_ids.detach().cpu().numpy()
+        bbox_scores_np = (
+            bbox_scores.detach().cpu().numpy() if bbox_scores is not None else None
+        )
+        for batch_index, image_id_value in enumerate(image_ids_np.tolist()):
+            image_id = int(image_id_value)
+            if image_id not in self._valid_img_ids:
+                continue
+            for person_index in range(keypoints_np.shape[1]):
+                coordinates = keypoints_np[batch_index, person_index]
+                if coordinates.shape[-1] == 2:
+                    visibility = scores_np[batch_index, person_index, :, None]
+                    coordinates = np.concatenate((coordinates, visibility), axis=-1)
+                score = (
+                    float(bbox_scores_np[batch_index, person_index])
+                    if bbox_scores_np is not None
+                    else float(scores_np[batch_index, person_index].mean())
+                )
+                self._records.append({
+                    "image_id": image_id,
+                    "category_id": 1,
+                    "keypoints": coordinates.reshape(-1).tolist(),
+                    "score": score,
+                })
+
+    def compute(self) -> dict[str, float]:
+        if not self._records:
+            return {}
+        from crowdposetools.coco import COCO
+        from crowdposetools.cocoeval import COCOeval
+
+        had_unicode = hasattr(builtins, "unicode")
+        had_numpy_float = hasattr(np, "float")
+        if not had_unicode:
+            builtins.unicode = str  # type: ignore[attr-defined]
+        if not had_numpy_float:
+            np.float = float  # type: ignore[attr-defined]
+        try:
+            ground_truth = COCO(self._ann_file)
+            image_ids = {record["image_id"] for record in self._records}
+            ground_truth.dataset["images"] = [
+                image for image in ground_truth.dataset["images"]
+                if image["id"] in image_ids
+            ]
+            ground_truth.dataset["annotations"] = [
+                annotation for annotation in ground_truth.dataset["annotations"]
+                if annotation["image_id"] in image_ids
+            ]
+            ground_truth.createIndex()
+            detected = COCO.loadRes(ground_truth, self._records)
+            evaluator = COCOeval(ground_truth, detected, "keypoints")
+            with contextlib.redirect_stdout(io.StringIO()):
+                evaluator.evaluate()
+                evaluator.accumulate()
+                evaluator.summarize()
+            difficulty = evaluator.get_type_result(first=0.2, second=0.8)
+            stats = evaluator.stats
+            return {
+                "crowdpose/AP": float(stats[0]),
+                "crowdpose/AP .5": float(stats[1]),
+                "crowdpose/AP .75": float(stats[2]),
+                "crowdpose/AR": float(stats[5]),
+                "crowdpose/AR .5": float(stats[6]),
+                "crowdpose/AR .75": float(stats[7]),
+                "crowdpose/AP(E)": float(difficulty[0]),
+                "crowdpose/AP(M)": float(difficulty[1]),
+                "crowdpose/AP(H)": float(difficulty[2]),
+            }
+        finally:
+            if not had_unicode:
+                del builtins.unicode  # type: ignore[attr-defined]
+            if not had_numpy_float:
+                del np.float  # type: ignore[attr-defined]
 
 
 def box_cxcywh_to_xyxy(boxes: Tensor) -> Tensor:
@@ -256,7 +372,12 @@ def write_crowdpose_results(records: list[dict], output_path: Path | str) -> Non
     output.write_text(json.dumps(records))
 
 
-def evaluate_crowdpose_results(result_path: Path | str, ground_truth_path: Path | str) -> dict[str, float]:
+def evaluate_crowdpose_results(
+    result_path: Path | str,
+    ground_truth_path: Path | str,
+    *,
+    image_ids: list[int] | None = None,
+) -> dict[str, float]:
     """Evaluate a CrowdPose result JSON using crowdposetools."""
     try:
         from crowdposetools.coco import COCO
@@ -265,6 +386,17 @@ def evaluate_crowdpose_results(result_path: Path | str, ground_truth_path: Path 
         raise RuntimeError("crowdposetools is required for CrowdPose metrics") from error
 
     ground_truth = COCO(str(ground_truth_path))
+    if image_ids is not None:
+        selected_ids = set(image_ids)
+        ground_truth.dataset["images"] = [
+            image for image in ground_truth.dataset["images"]
+            if image["id"] in selected_ids
+        ]
+        ground_truth.dataset["annotations"] = [
+            annotation for annotation in ground_truth.dataset["annotations"]
+            if annotation["image_id"] in selected_ids
+        ]
+        ground_truth.createIndex()
     detections = json.loads(Path(result_path).read_text())
     # crowdposetools still checks the Python 2 ``unicode`` name in loadRes.
     had_unicode = hasattr(builtins, "unicode")

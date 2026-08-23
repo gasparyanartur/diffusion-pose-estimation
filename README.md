@@ -173,12 +173,67 @@ python scripts/training/train_box_diffusion.py pipeline=box_diffusion
 # Train the native DiffusionRegPose implementation
 python scripts/training/train_diffusionregpose.py
 
-# Reduced CPU smoke run
+# The preset uses the external-compatible variable-size multi-scale training
+# transforms, batch size 1 with gradient accumulation 8 (effective batch size
+# 8), and reference trainable parameter set (49,304,924 parameters).
+# The paper-compatible schedule runs for 80 epochs, initializes from the
+# EDPose checkpoint, clips gradients at 0.1, uses keypoint loss
+# weight 10, and applies reference LR milestones [31, 61]. It includes 100
+# denoising queries and uses FP32. Validation loss runs every epoch and
+# validation AP is calculated every 10 epochs.
+# CrowdPose person targets use category label 1, matching the annotations and
+# the external implementation; retrain native checkpoints created before this
+# label-contract correction.
+# Checkpoints include the latest completed training epoch as `last.ckpt`.
+
+# Fast checkpoint-compatible validation loop (full architecture, tiny data and
+# resolution; this is an AP smoke test, not a paper benchmark). The lower LR
+# avoids destroying the downloaded checkpoint on the tiny subset.
 python scripts/training/train_diffusionregpose.py \
-    pipeline.num_queries=4 pipeline.num_proposals=2 pipeline.num_group=2 \
+    --config-name benchmark_diffusionregpose_fast \
+    run_name=diffusionregpose_fast_full_lr \
+    out_dir=results/diffusionregpose_fast_full_lr \
+    training.max_epochs=20 pipeline.lr=1.0e-5 pipeline.lr_backbone=5.0e-6
+# Evaluate its checkpoint on the matching subset using the run config:
+#   python scripts/evaluation/evaluate_diffusionregpose.py \
+#       --checkpoint results/diffusionregpose_fast_full_lr/.../checkpoints/last.ckpt \
+#       --config results/diffusionregpose_fast_full_lr/.../.hydra/config.yaml \
+#       --annotations data/crowdpose/annotations/crowdpose_test.json \
+#       --image-root data/crowdpose/images \
+#       --shortest-side 256 --max-size 384 \
+#       --output /tmp/diffusionregpose-fast/predictions.json \
+#       --limit 26 --metrics /tmp/diffusionregpose-fast/metrics.json
+
+# The reduced benchmark_diffusionregpose_debug preset is reserved for wiring
+# and tensor-contract smoke tests. Its reduced decoder is not a valid submodel
+# of the downloaded checkpoint and should not be used as an AP gate.
+
+# Full-data low-resolution learning gate. This keeps the full model structure
+# but uses 128/192-pixel train and validation resizing, batch size 8 with no
+# accumulation, and AP every 10 epochs. Its 80 epochs and `[31, 61]` LR
+# milestones match the paper recipe's effective batch and optimizer-update
+# schedule. It remains a diagnostic run, not the paper benchmark, because it
+# uses lower image resolution. The training AP uses the same crowdposetools
+# evaluator as the standalone evaluation script.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_lowres \
+    run_name=diffusionregpose_lowres out_dir=results/diffusionregpose_lowres
+
+# Continue the 128/192 diagnostic to 80 total epochs from its latest checkpoint.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_lowres \
+    training.max_epochs=80 \
+    training.resume=results/diffusionregpose_lowres128_b16/diffusionregpose_lowres128_b16/20260822_195135/checkpoints/last.ckpt \
+    run_name=diffusionregpose_lowres80 out_dir=results/diffusionregpose_lowres80
+
+# Reduced CPU wiring smoke run
+python scripts/training/train_diffusionregpose.py \
+    data.subset_frac=0.00005 data.batch_size=1 data.num_workers=0 data.max_size=128 \
+    pipeline.backbone_pretrained=false pipeline.num_queries=30 \
+    pipeline.num_proposals=2 pipeline.num_group=2 \
     pipeline.num_encoder_layers=1 pipeline.num_decoder_layers=3 \
-    pipeline.backbone_pretrained=false data.max_size=128 data.batch_size=1 \
-    data.num_workers=0 training.max_epochs=1 \
+    pipeline.num_box_decoder_layers=1 \
+    training.max_epochs=1 training.test_after_fit=false \
     hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
 
 # Override hardware and training settings
@@ -243,11 +298,11 @@ Use `--limit` for a smoke run and `--sampling-timesteps` to select the DDIM
 schedule. The default seed and one-step schedule match the reference
 evaluation path used for checkpoint parity.
 
-On CUDA, the evaluator lazily builds the repository's independent native
-deformable-attention kernel in PyTorch's extension cache. This kernel is
-required for bit-for-bit checkpoint parity with the reference CUDA operator;
-if it cannot be built, the differentiable PyTorch sampler remains available as
-a functional fallback.
+On CUDA, the evaluator and trainer lazily build the repository-owned native
+forward/backward deformable-attention kernel in PyTorch's extension cache. It
+does not import the external repository's compiled operator. If the local
+kernel cannot be built, the differentiable PyTorch sampler remains available
+as a functional fallback.
 
 ```bash
 # List available configurations

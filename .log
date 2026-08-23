@@ -1154,3 +1154,470 @@ Modified files:
 - Matching CrowdPose metrics: AP 0.5764496075033877, AP-E 0.6748, AP-M 0.5818, AP-H 0.4701.
 - Focused DiffusionRegPose tests: 34 passed; compile and diff checks passed.
 - Full repository suite: 270 passed.
+
+[2026-08-17 19:20] DiffusionRegPose training smoke validation
+
+- Added `subset_frac: 1.0` to the DiffusionRegPose data preset so normal Hydra subset overrides work.
+- CPU one-epoch reduced smoke completed with finite train/validation losses and best/last checkpoints.
+- Restore-only CPU smoke loaded `last.ckpt` and completed test evaluation.
+- CUDA one-epoch reduced smoke completed with finite train/validation losses and best/last checkpoints.
+- Focused training/config/runner tests: 9 passed.
+- Final full repository suite: 271 passed; compile and diff checks passed.
+- Documented the verified reduced smoke command and clarified that full paper-sized training remains unrun.
+
+[2026-08-17 20:05] DiffusionRegPose training performance audit
+
+- Traced the entry point, data module/dataset, model/backbone/transformer,
+  target builder, criterion, and shared runner.
+- Real-data loader steady state was approximately 4 ms per batch with four
+  workers; GPU resize/pad was approximately 53 ms for batch 2.
+- Highest-confidence bottlenecks are dense 1,500-query decoder self-attention,
+  dense 1,400-point diffusion refinement attention, and repeated CPU SciPy
+  Hungarian matching for all six auxiliary outputs.
+- CUDA measurements: full measured batch-2 step stages approximately 1.81 s;
+  criterion approximately 96 ms with all auxiliary outputs versus 10 ms final
+  only; batch 4 fit at approximately 9.5 GiB and batch 8 OOMed on the RTX 3090.
+- No production changes or tests added. Next proposed slice is a benchmark and
+  exact-parity harness for match reuse and attention-mask caching.
+
+[2026-08-17 20:18] Matched external DiffusionRegPose training semantics
+
+- Froze the ResNet stem and `layer1`, and shared the decoder pose height/width
+  head across layers; the default model now reports exactly 49,304,924
+  trainable parameters and remains strict-checkpoint compatible.
+- Added the external CrowdPose train transform policy: horizontal flip,
+  multi-scale resize, random resize/crop/resize, ImageNet normalization,
+  target-coordinate updates, and variable-size right/bottom batch padding.
+- Kept legacy fixed-square behavior unchanged unless the explicit
+  `external_train_transforms` setting is enabled; the DiffusionRegPose preset
+  enables it.
+- Validation: reduced real-data CPU one-epoch smoke passed; full repository
+  suite passed with 275 tests; reduced real-data CUDA one-epoch smoke passed;
+  compile and diff checks passed.
+
+[2026-08-17 20:21] Added external effective batch-size accumulation
+
+- Added validated `training.accumulate_grad_batches` to the shared runner,
+  defaulting to 1 for existing pipelines.
+- Set DiffusionRegPose to accumulate 8 micro-batches, matching the external
+  effective batch size while retaining micro-batch size 1 for GPU memory.
+- An eight-microbatch reduced CPU smoke completed with finite losses and a real
+  accumulated optimizer update.
+- Focused runner/training tests: 10 passed.
+- Final full repository suite: 276 passed, 15 warnings; compile and diff checks passed.
+
+[2026-08-17 20:32] Fixed BF16 native attention crash
+
+- Matched the external operator's AMP contract by promoting mismatched or
+  mixed-precision value, sampling-location, and weight tensors to float32 for
+  the native CUDA call, then casting the result back to the value dtype.
+- Added a CUDA BF16 bridge regression test.
+- Reduced GPU training/validation smoke with `bf16-mixed` and accumulation 8
+  passed; the failing validation path now completes.
+- Final full repository suite: 277 passed, 15 warnings; compile and diff checks passed.
+
+[2026-08-19 00:45] Latest checkpoint persistence and epoch-17 evaluation
+
+- Confirmed the previous `last.ckpt` was epoch 17 because Lightning only
+  refreshed `save_last` when monitored top-k saving occurred.
+- Added and enabled `save_last_every_epoch`, which writes the latest completed
+  validation checkpoint independently of best-loss ranking.
+- Updated the evaluator to load both external and repository Lightning
+  checkpoint formats.
+- Evaluated epoch 17 on all 8,000 CrowdPose test images: 338,140 predictions.
+  Raw AP was 0.0 because all predictions used category 0; diagnostic remapping
+  to the CrowdPose category 1 still gave AP 0.000010931, indicating no useful
+  learned pose performance yet.
+- Full repository suite: 279 passed, 15 warnings; compile and diff checks passed.
+- Follow-up required: train targets currently use label 0 while the external
+  CrowdPose implementation uses category label 1.
+
+[2026-08-19 00:55] Verified latest checkpoint callback behavior
+
+- Corrected the callback to force validation-end checkpointing under Lightning's
+  default validation schedule.
+- Regression smoke confirms best checkpoint remains epoch 0 while `last.ckpt`
+  advances to epoch 1 when validation loss worsens.
+- Final full repository suite: 280 passed, 19 warnings; compile and diff checks passed.
+
+[2026-08-19 08:41] Corrected DiffusionRegPose CrowdPose person label
+
+- Changed native DiffusionRegPose training targets from category `0` to
+  CrowdPose's person category `1`, matching the external implementation and
+  preserving the empty-target behavior.
+- Added validation that the model has a class-1 output and regression coverage
+  for target labels and criterion class-column assignment.
+- Reduced one-epoch CPU and CUDA BF16 training smokes passed with accumulation
+  8. The full repository suite passed with 283 tests and 19 warnings.
+- Documented that the epoch-17 checkpoint was trained under the old label
+  contract and must not be reused for the new parity run.
+
+[2026-08-21 10:30] Applied paper-aligned DiffusionRegPose training defaults
+
+- Added a pipeline-specific MultiStepLR option and configured the native
+  CrowdPose preset for 80 epochs, no warmup, and a tenfold decay at epoch 65.
+- Set gradient clipping to `0.1`, keypoint loss weight to `10.0`, and batch
+  size 1 with accumulation 8 for effective batch size 8.
+- Added scheduler/configuration regression coverage: 17 focused tests passed;
+  the full repository suite passed with 285 tests and 19 warnings. Compile and
+  diff checks passed.
+- Backbone parameter groups/freezing, denoising training, and EMA remain
+  explicitly deferred for the next parity iteration.
+
+[2026-08-21 01:56] Fixed DiffusionRegPose target keypoint layout and relaunched
+
+- Audited the completed epoch-39 predictions: 472,493 structurally valid
+  category-1 predictions across all 8,000 images, but AP was only
+  0.00002903. The model outputs were not malformed; the training target
+  encoding was.
+- Fixed native target keypoints to match the reference xyxyzz layout instead
+  of interleaved x/y values, which had corrupted keypoint and OKS supervision.
+- Full repository suite passed with 285 tests and 19 warnings; compile and diff
+  checks passed.
+- Started a fresh 40-epoch paper-aligned run in tmux session
+  `diffusionregpose-paper40`, with batch size 1, accumulation 8, gradient
+  clipping 0.1, keypoint loss weight 10, and the epoch-65 decay configuration
+  retained for longer runs.
+
+[2026-08-21 09:31] Added fast DiffusionRegPose diagnostic loop
+
+- Added reduced pipeline/data/training presets under the
+  `benchmark_diffusionregpose_debug` Hydra config: 100 queries, 10 proposals,
+  10 groups, 2 encoder layers, 3 decoder layers, 256 input width, 256-size
+  training images, and a deterministic 0.32% dataset subset.
+- Extended native evaluation with resolved-config model reconstruction and
+  ground-truth filtering for limited-image AP evaluation.
+- One-epoch CPU training and one-image subset evaluation completed
+  successfully. The full repository suite passed with 287 tests and 19
+  warnings; compile and diff checks passed.
+
+[2026-08-21 09:40] Extended reduced DiffusionRegPose diagnostic run
+
+- Increased the debug preset from 5 to 100 epochs while retaining the reduced model, subset, and image resolution.
+- Updated the debug configuration test and README command description.
+- Full test verification remains to be run after the sandbox fallback edit.
+
+[2026-08-21 11:00] Evaluated reduced DiffusionRegPose checkpoint
+
+- Added configurable evaluation resize arguments to `evaluate_diffusionregpose.py`.
+- Evaluated epoch 81 at shortest side 256 / max size 384 on the 26-image debug test subset in tmux session `diffusionregpose-debug100-eval`.
+- Produced 256 valid 14-keypoint predictions; diagnostic AP was 0.0.
+
+[2026-08-21 11:15] Diagnosed reduced-run AP regression
+
+- Verified the native evaluator with AP 1.0 perfect records and AP 0.577 for one image from the external-compatible checkpoint.
+- Found the debug preset froze a randomly initialized ResNet stem/layer1 because pretraining was disabled.
+- Enabled cached pretrained ResNet-50 weights in the debug preset and added a config regression assertion.
+- Launched corrected training in tmux session `diffusionregpose-debug100-pretrained`; an auto-evaluation session will evaluate `last.ckpt` after epoch 100.
+
+[2026-08-21 11:35] Matched external backbone optimization
+
+- Added separate `lr_backbone=1e-4` optimizer groups and enabled training for all ResNet parameters.
+- Updated paper/debug configs and launched `diffusionregpose-debug100-duallr` with named auto-evaluation session.
+
+[2026-08-21 12:05] DiffusionRegPose parity/failure audit
+
+- Read-only source and runtime audit completed; no production behavior changed.
+- Core checkpoint-loaded inference matches the external model at <= 5.4e-6 on the deterministic probe, so the repeated AP=0 is a training-path problem.
+- Identified critical mismatches in target coordinate/area scale, visibility, crop-row selection, matcher switching, focal normalization, final-layer auxiliary duplication, DN training, full-model pretraining, trainval data scope, backbone freezing, precision, and LR milestones.
+- The current preset is not paper/external-run equivalent; do not use its AP as a parity verdict. The detailed remediation order is recorded in `.plan`.
+
+[2026-08-21 13:30] Implemented and validated DiffusionRegPose parity fixes
+
+- Corrected normalized sigmoid box targets/areas, visibility-1 supervision, non-prefix crop rows, matcher switching, focal normalization, and auxiliary-output count.
+- Added 100-query denoising construction, attention masks, DN outputs/losses, compatible external checkpoint loading, reference optimizer decay groups, trainval data, FP32, schedule, padding-mask propagation, bilinear resize, and no-validation latest-checkpoint policy.
+- Validation: 37 focused tests, 292 full-suite tests with 24 warnings, real trainval transform, full-resolution CUDA forward, backward, gradient clipping, AdamW step, and no-validation `last.ckpt` saving all passed.
+- Remaining parity work is a paired fixed-seed trajectory comparison and a fresh 40-epoch AP run; old native checkpoints remain invalid after target-contract correction.
+
+[2026-08-21 13:47] Launched corrected full training run
+
+- Started tmux session `diffusionregpose-paper40-corrected`.
+- Run directory: `results/diffusionregpose_training/diffusionregpose_training/20260821_124657`.
+- Startup verified RTX 3090 execution, 49,304,924 trainable parameters, 12,000 trainval images, FP32, accumulation 8, DN=100, and no validation loop.
+- Initial progress: epoch 0, batch 7/12,000 at approximately 2.24 iterations/second.
+- Attached `diffusionregpose-paper40-corrected-eval`, which waits for the completed run and evaluates `last.ckpt` on the full test split.
+
+[2026-08-21 15:05] Validated fast checkpoint-compatible learning
+
+- Cancelled the active full-structure epoch-19 run and all stale task-created tmux sessions; preserved the attached `train` session.
+- The reduced from-scratch architecture produced AP 0.0 on both train and test at epoch 5, with collapsed predictions; it is now documented as wiring-only.
+- Launched `diffusionregpose-fast-full-lr` using the full 49.5M structure, tiny 38/6/26-image data split, 256/384 preprocessing, 20 epochs, and low fine-tuning LR.
+- Best checkpoint: `results/diffusionregpose_fast_full_lr/diffusionregpose_fast_full_lr/20260821_145819/checkpoints/epoch007-val_loss17.5825.ckpt`.
+- Best AP: 0.3072 test / 0.3121 train. `last.ckpt`: 0.3101 test / 0.3325 train.
+- The 0.30 AP gate passed; full suite passed with 295 tests and 24 warnings.
+
+[2026-08-21 16:48] Launched paper-scale DiffusionRegPose training
+
+- Started detached tmux session `diffusionregpose-paper40-final`.
+- Run directory: `results/diffusionregpose_training/diffusionregpose_training/20260821_164746`.
+- Verified full 49,304,924-parameter model, 12,000-image trainval split, batch size 1, gradient accumulation 8, FP32, gradient clipping 0.1, 40 epochs, and validation disabled during fitting.
+- Initial progress: epoch 0, batch 29/12,000 at approximately 1.98 iterations/second.
+
+[2026-08-21 17:47] Completed local deformable-attention validation
+
+- Replaced the local forward-only CUDA implementation with repository-owned
+  forward/backward kernels and a local autograd bridge; no external shared
+  object is loaded at runtime.
+- Added native forward/backward numerical parity, BF16 promotion, and actual
+  training-path gradient tests. The full repository suite passed: 297 tests,
+  24 warnings.
+- The full-structure fast run completed at approximately 4.4–4.5 iterations per
+  second versus approximately 1.85–1.98 with the PyTorch training fallback.
+- Fast AP gate passed on the 26-image test subset: best checkpoint AP 0.3190,
+  last checkpoint AP 0.3288. Best checkpoint:
+  `results/diffusionregpose_fast_local_op/diffusionregpose_fast_local_op/20260821_173840/checkpoints/epoch001-val_loss17.6929.ckpt`.
+
+[2026-08-21 17:52] Relaunched paper-scale training with local operator
+
+- Started tmux session `diffusionregpose-paper40-local-op` with the default
+  40-epoch, full trainval configuration.
+- Run directory:
+  `results/diffusionregpose_paper40_local_op/diffusionregpose_paper40_local_op/20260821_174929`.
+- Verified 49,304,924 trainable parameters, batch size 1, accumulation 8,
+  FP32, 12,000 trainval images, and the local CUDA extension on the training
+  path. After compilation, epoch 0 reached 109/12,000 at approximately 3.1
+  iterations/second.
+- Started automatic full-test evaluation in
+  `diffusionregpose-paper40-local-op-eval`, waiting for the training session's
+  final `last.ckpt`.
+
+[2026-08-21 19:04] Cancelled no-validation paper run
+
+- Cancelled the `dpr40` training session and its waiting evaluator at the
+  user's request. The partial run remains preserved under
+  `results/diffusionregpose_paper40_local_op/.../20260821_174929`.
+
+[2026-08-21 19:20] Restored validation and periodic validation AP
+
+- Restored validation loss after every epoch and configured validation AP every
+  10 completed epochs, including the final epoch for short runs.
+- Wired the DiffusionRegPose pipeline to the repository `KeypointAPMetric`,
+  existing CrowdPose post-processing, category-1 filtering, and resolved
+  validation annotations. Sanity-check validation no longer counts as AP.
+- Added cadence, pixel-coordinate conversion, configuration, and reduced
+  validation lifecycle tests. Full suite: 300 passed, 24 warnings.
+- Real one-image CPU smoke produced both `val/loss` and
+  `ap-val/crowdpose/AP` in the CSV logger.
+
+[2026-08-21 19:20] Relaunched paper-scale training with validation and AP
+
+- Started tmux session `dpr40-val` with the full 40-epoch configuration.
+- Run directory:
+  `results/diffusionregpose_paper40_validation/diffusionregpose_paper40_validation/20260821_191951`.
+- Startup verified 49,304,924 trainable parameters, 12,000 trainval images,
+  and `Trainer(limit_val_batches=1.0)`. Initial epoch-0 throughput was
+  approximately 3.33 iterations/second before validation overhead.
+- Validation loss runs after every epoch; validation AP is scheduled for
+  epochs 10, 20, 30, and 40. Started automatic full-test evaluation in
+  `dpr40-val-test` for the final `last.ckpt`.
+[2026-08-22 18:55] Corrected DiffusionRegPose training initialization
+
+- Changed the paper and debug pipeline presets to initialize from
+  `external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth`.
+- Changed the paper training preset from 40 to the official 80 epochs.
+- Preserved the trained DiffusionRegPose checkpoint as an evaluation/parity
+  target rather than a training initialization.
+- Verified 723 EDPose tensors are compatible with the native model; the
+  remaining native-only tensors are expected diffusion buffers and
+  DiffusionRegPose-specific time/query embeddings.
+- Added configuration regression coverage and ran the focused suite: 21
+  passed, 1 warning.
+- Updated README, project, and architecture documentation.
+
+[2026-08-22 19:10] Completed one-step DiffusionRegPose training verification
+
+- Added `scripts/investigation/diffusionregpose_training_parity.py`.
+- Compared the external and native criteria on identical deterministic output
+  tensors: Hungarian assignments matched, loss differences were below 4e-7,
+  gradient differences below 3e-6, and SGD updates matched.
+- Ran a real native EDPose-initialized forward/backward/AdamW step at 256x256:
+  loss 505.526337, finite gradients on 392/404 participating trainable
+  tensors, and a confirmed parameter update.
+- The 12 trainable tensors without gradients are unused by the synthetic
+  one-target branch and are not a numerical failure.
+
+[2026-08-22 19:45] Completed EDPose small-data learning gate
+
+- Preserved original CrowdPose dimensions separately from resized model-input
+  dimensions for AP evaluation and added the coordinate regression test.
+- Focused suite passed: 22 tests, 1 warning.
+- Completed the 40-epoch full-structure small-data run from EDPose; loss fell
+  substantially and the final checkpoint was saved with `last.ckpt`.
+- Native standalone AP was 0.0161 on 26 held-out images and 0.0184 on the 38
+  training images, versus 0.0 for the EDPose baseline on the held-out subset.
+- The canary demonstrates nonzero learning but does not claim 30 AP; the next
+  step is the official 80-epoch full-data run.
+
+[2026-08-22 19:24] Launched official DiffusionRegPose training
+
+- Started user-visible tmux session `dpr-paper80` with the corrected
+  EDPose-initialized, full-data, 80-epoch recipe.
+- Startup verified 12,000 training batches, 49,304,924 trainable parameters,
+  validation on every epoch, accumulation 8, and GPU execution.
+- The run is active; epoch 0 began at approximately 3.1 batches/second.
+
+[2026-08-22 20:00] Implemented low-resolution full-data diagnostic
+
+- Stopped the active full-resolution run and preserved its artifacts.
+- Replaced hard-coded validation resizing with configurable
+  `eval_resize_scale` and `eval_max_size`, preserving the 800/1333 defaults.
+- Added the full-data 128/192 low-resolution diagnostic presets with AP every
+  10 epochs and 20 total epochs.
+- Updated documentation and added regression coverage; focused suite passed
+  31 tests with 1 warning.
+
+[2026-08-22 20:10] Fixed low-resolution query selection
+
+- The first 128-pixel launch exposed fewer encoder tokens than the fixed 900
+  two-stage query count and failed in `torch.topk` before training began.
+- Added bounded selection with repeated top-scoring indices to preserve the
+  fixed query contract at very small resolutions.
+- Added regression coverage; the focused DiffusionRegPose suite passed 39
+  tests with 1 warning.
+
+[2026-08-22 20:18] Relaunched 128-pixel full-data diagnostic
+
+- Started tmux session `dpr-lowres128` with output under
+  `results/diffusionregpose_lowres128/diffusionregpose_lowres128/20260822_193659`.
+- Startup verified the full EDPose-initialized model and 12,000-image split.
+- The run reached 94/12,000 epoch-0 batches with finite loss after the query
+  selection fix; initial throughput is approximately 4.3 batches/second.
+
+[2026-08-22 20:25] Stopped low-resolution micro-batch run
+
+- Stopped `dpr-lowres128` at 2,668/12,000 epoch-0 batches to test the requested
+  larger-batch, no-accumulation policy instead.
+- Preserved its artifacts and did not launch an unverified batch-128 run.
+
+[2026-08-22 20:40] Measured stable low-resolution batch size
+
+- Batch sizes 128, 64, 32, and 24 failed during CUDA attention/decoder
+  allocation on the RTX 3090.
+- Batch size 16 completed a native forward, backward, and optimizer step with
+  finite loss and 15.5 GiB peak allocated memory.
+- Updated the low-resolution diagnostic to batch size 16 with no gradient
+  accumulation and documented the measured limit.
+
+[2026-08-22 20:52] Launched no-accumulation batch-16 diagnostic
+
+- Started tmux session `dpr-lowres128-b16` with output under
+  `results/diffusionregpose_lowres128_b16/diffusionregpose_lowres128_b16/20260822_195135`.
+- Startup verified batch size 16, accumulation 1, 750 batches per epoch, and
+  the full EDPose-initialized model.
+- The first 13 batches completed with finite loss at approximately 0.74
+  batches/second, about 11.8 samples/second.
+
+[2026-08-22 23:05] Observed epoch-10 low-resolution AP
+
+- `dpr-lowres128-b16` reached epoch 10 with validation loss 48.83, AP
+  0.000193, AP50 0.000985, and AR 0.0123.
+- The loss is decreasing and metrics are nonzero, so the training path is
+  active, but AP remains effectively zero and requires a prediction-geometry
+  check if it remains so at epoch 20.
+
+[2026-08-23 02:10] Diagnosed low-resolution AP discrepancy
+
+- Completed standalone evaluation of the epoch-19 128/192 checkpoint on all
+  2,000 validation images: AP=0.0449226.
+- On the first 100 validation images, standalone AP=0.0360228, while replaying
+  the identical prediction records through the current training AP adapter
+  yielded AP=0.0094530.
+- Identified a metric-contract divergence: the external evaluator uses
+  crowdposetools COCOeval with `keypoints`, while the training adapter uses
+  MMPose/xtcocotools `keypoints_crowd`. No production code was changed; a
+  fixture-level parity test and metric correction are the next step.
+
+[2026-08-23 02:35] Implemented exact DiffusionRegPose AP metric
+
+- Added `DiffusionRegPoseAPMetric` using the external repository's
+  crowdposetools `COCOeval(iou_type='keypoints')` contract.
+- DiffusionRegPose training now preserves the postprocessed `[x, y,
+  visibility]` keypoints and uses final detection scores as result scores.
+- Added fixture-level parity coverage; focused DiffusionRegPose tests pass:
+  62 passed, 2 warnings.
+- Replayed the saved 2,000-image epoch-19 predictions through the new metric:
+  AP=0.0449226, AP_E=0.0523, AP_M=0.0418, AP_H=0.0489, exactly matching the
+  standalone evaluator.
+- Ready to resume the low-resolution run from epoch 19 to total epoch 80.
+
+[2026-08-23 02:19] Resumed low-resolution training to 80 epochs
+
+- Started tmux session `dpr-lowres80` from the previous run's `last.ckpt`.
+- New output: `results/diffusionregpose_lowres80/diffusionregpose_lowres80/20260823_021913`.
+- Lightning restored the epoch-19 model, optimizer, scheduler, and global
+  step; the process is training epoch 20/80 with batch size 16 and no
+  accumulation.
+
+[2026-08-23] Diagnosed missing live AP display
+
+- AP was present in `csv_logs/metrics.csv` at completed epochs 30, 40, and 50
+  with values 0.001405, 0.000206, and 0.000108.
+- The AP logs lacked `prog_bar=True`, so the live Lightning progress bar and
+  `train.log` did not show them.
+- Added `prog_bar=True` for primary AP and a regression test; focused tests
+  pass (32 passed, 1 warning).
+- The active process will be resumed from its latest checkpoint to load this
+  logging-only change.
+
+[2026-08-23 11:24] Restarted run with visible AP logging
+
+- The previous process had saved `epoch049.ckpt` and `last.ckpt` before its
+  graceful stop during epoch 50.
+- Started `dpr-lowres80-visible` from that checkpoint with the AP progress-bar
+  fix loaded.
+- New output: `results/diffusionregpose_lowres80_visible/diffusionregpose_lowres80_visible/20260823_112415`.
+- The resumed process is at displayed epoch 50/80, batch 17/750; the next
+  scheduled AP computation is after completed epoch 60.
+
+[2026-08-23 13:45] Repaired batched DiffusionRegPose validation AP
+
+- Stopped `dpr-lowres80-visible` after its epoch-50 checkpoint was saved;
+  `epoch050.ckpt` is at global step 38,250.
+- Forwarded the data-module padding mask through every DDIM sampling step in
+  the in-training AP path. The standalone one-image sampling contract is
+  unchanged.
+- Focused model, training, and evaluator tests pass (40 passed, 1 warning).
+- Corrected full 128/192 validation of epoch 50 reports AP=0.1014835,
+  AP50=0.1669381, AP75=0.1045989, and AR=0.3019084. Historical near-zero
+  batch-16 AP values are invalid because sampling ignored padded regions.
+
+[2026-08-23 12:10] Repaired DiffusionRegPose training-data parity
+
+- Moved ImageNet normalization ahead of variable-size batch padding, so the
+  external-transform path now has normalized valid pixels and exact-zero
+  padding, matching external NestedTensor construction.
+- Added a separate crop-preserved diffusion keypoint stream, matching the
+  external `keypoints_buquan` use for timestep-zero proposals while clean
+  target rows remain criterion supervision. The external standard config has
+  `is_completion=false`, so no additional pose-completion algorithm is used.
+- Changed the batch-16 low-resolution diagnostic to 160 epochs with LR
+  milestones 62/122, preserving the paper recipe's optimizer-update decay
+  locations. It remains non-paper-equivalent because its effective batch is 16.
+- Focused tests: 88 passed, 1 warning. A real EDPose-initialized CUDA batch-16
+  forward/backward/optimizer smoke passed with finite loss 301.653595 and
+  15.518 GiB peak allocation.
+
+[2026-08-23 12:21] Launched repaired low-resolution learning run
+
+- Started tmux session `dpr-lowres160-parity` from EDPose initialization,
+  without reusing the invalid low-resolution checkpoint or optimizer state.
+- Output directory:
+  `results/diffusionregpose_lowres160_parity/diffusionregpose_lowres160_parity/20260823_122117`.
+- Startup verified 49,304,924 trainable parameters, batch size 16, 750 batches
+  per epoch, 160 epochs, milestones 62/122, and finite training through batch
+  65 at approximately 0.72 iterations/second.
+
+[2026-08-23 12:27] Restored low-resolution effective-batch parity
+
+- Stopped the batch-16/160-epoch diagnostic during epoch 0; it produced no
+  checkpoint and its partial work was intentionally discarded.
+- Changed the low-resolution learning gate to batch size 8, no accumulation,
+  80 epochs, and inherited milestones `[31, 61]`. This matches the external
+  effective batch size, 1,500 optimizer updates per epoch, total update count,
+  and learning-rate schedule; only image resolution remains reduced.
+- Focused tests passed: 72 passed, 1 warning. The real CUDA batch-8
+  forward/backward/optimizer probe passed with loss 410.170959 and 7.804 GiB
+  peak allocation.
+- Started tmux session `dpr-lowres80-b8-parity` from EDPose initialization.
+  Output: `results/diffusionregpose_lowres80_b8_parity/diffusionregpose_lowres80_b8_parity/20260823_122740`.
+  It is healthy at epoch 0 batch 52/1500, approximately 1.37 iterations/second.

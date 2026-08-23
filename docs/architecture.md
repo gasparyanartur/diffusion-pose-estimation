@@ -19,6 +19,16 @@ All configuration is managed by [Hydra](https://hydra.cc/). Every major componen
 is a pydantic `BaseConfig` subclass with a `build()` factory method, so you can
 swap implementations by changing a config group on the command line.
 
+DiffusionRegPose is the deliberate exception to the repository-wide canonical
+box convention: its model-internal boxes are sigmoid-normalized `(cx, cy, w, h)`
+values in `[0, 1]`, matching the downloaded checkpoint and external criterion.
+Keypoints still cross the data/model boundary in canonical `[-1, 1]` space.
+
+DiffusionRegPose is the deliberate exception to the repository-wide canonical
+box convention: its model-internal boxes are sigmoid-normalized `(cx, cy, w, h)`
+values in `[0, 1]`, matching the downloaded checkpoint and external criterion.
+Keypoints still cross the data/model boundary in canonical `[-1, 1]` space.
+
 ---
 
 ## Directory layout
@@ -174,15 +184,70 @@ checkpoint I/O policies.
 same Lightning boundary. Its target builder creates the reference xyxy-plus-
 visibility target layout and timestep-zero cosine diffusion inputs, while its
 criterion owns Hungarian matching and final/auxiliary decoder losses. The
+CrowdPose person target uses category label `1`, matching the annotation
+format and the reference implementation; checkpoints trained with the old
+label-`0` target contract must be retrained.
 training entry point is
 [`scripts/training/train_diffusionregpose.py`](../scripts/training/train_diffusionregpose.py)
 with the `pipeline=diffusionregpose` and
 `data=crowdpose_diffusionregpose` presets.
 
-Its evaluation path is independent of the external repository. CUDA inference
-uses a lazily compiled native deformable-attention kernel whose scalar
-bilinear accumulation matches the checkpoint operator; training and
-unsupported environments retain the differentiable PyTorch sampler.
+The DiffusionRegPose data preset follows the external training data and
+target semantics: it samples the reference resize/crop policy, normalizes
+images with ImageNet statistics, updates pixel targets before converting
+keypoints to per-image canonical coordinates and boxes to normalized sigmoid
+coordinates, and pads transformed images only to the largest height/width in
+each batch. The default model freezes the ResNet stem
+and `layer1` and shares the pose height/width prediction head across decoder
+layers, matching the reference trainable parameter set of 49,304,924.
+The training preset initializes from the EDPose CrowdPose checkpoint and uses
+`batch_size=1` and
+`training.accumulate_grad_batches=8`, giving an effective batch size of 8.
+Its paper-compatible schedule runs for 80 epochs with AdamW at `2e-4`
+(`1e-4` for the backbone), clips gradients at `0.1`, uses keypoint-loss weight
+`10`, applies reference milestones `[31, 61]`, and includes 100 denoising
+queries with their classification/box losses. Validation loss runs after each
+epoch and validation AP runs every 10 epochs; `last.ckpt` is saved after every
+training epoch and separate test/AP evaluation runs after fitting. The
+published DiffusionRegPose checkpoint is an evaluation/parity target, not the
+training initialization.
+
+The training entry point has passed one-image CPU and CUDA Lightning smoke
+runs, including checkpoint creation and restore. The reduced smoke
+configuration validates wiring only; full paper-sized training remains a
+separate experiment.
+
+For wiring-only smoke tests, `benchmark_diffusionregpose_debug` reduces the
+transformer/query dimensions, image sizes, and deterministic dataset subset.
+Because those structural reductions change decoder semantics, its checkpoints
+must not be used as submodels of the downloaded checkpoint or as AP gates. For
+short AP feedback cycles, `benchmark_diffusionregpose_fast` preserves the full
+checkpoint-compatible structure and reduces only the data/resolution. Its
+checkpoint must be evaluated with the resolved Hydra config via `--config`;
+subset metrics filter both predictions and ground truth and remain diagnostic,
+not paper-scale benchmark results.
+
+For a full-data learning gate, `benchmark_diffusionregpose_lowres` preserves the
+full structure and all train/validation images while using 128/192-pixel
+training and validation resizing and batch size 8 with no accumulation on the
+current RTX 3090. It uses 80 epochs and milestones `[31, 61]`, matching the
+paper recipe's effective batch and 1,500 optimizer updates per epoch. It must
+not be confused with the paper benchmark because its image resolution is lower.
+`CrowdPoseDataConfig` exposes `eval_resize_scale` and `eval_max_size`; their
+defaults are 800/1333 so the paper-compatible preset remains unchanged. The
+low-resolution run evaluates AP every 10 epochs.
+
+Its evaluation path is independent of the external repository. CUDA training
+and inference use a lazily compiled, repository-owned forward/backward
+deformable-attention kernel whose scalar bilinear accumulation matches the
+checkpoint operator. CPU runs and environments where the extension cannot be
+built retain the differentiable PyTorch sampler. During training, validation
+loss is calculated every epoch and validation AP is calculated every tenth
+epoch through `DiffusionRegPoseAPMetric`. That metric accumulates the same
+CrowdPose result records consumed by the standalone evaluator and calls
+`crowdposetools.COCOeval` with `iou_type="keypoints"`, matching the external
+repository. The generic `KeypointAPMetric` remains available to other pose
+pipelines.
 
 ---
 

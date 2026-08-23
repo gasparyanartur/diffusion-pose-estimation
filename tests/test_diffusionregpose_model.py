@@ -112,6 +112,27 @@ def test_two_stage_selection_returns_encoder_queries_and_boxes() -> None:
     assert torch.isfinite(query_features).all()
 
 
+def test_two_stage_selection_repeats_queries_when_low_resolution_has_too_few_tokens() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        sampling_timesteps=1,
+        num_queries=32,
+        num_proposals=16,
+    )
+    images = torch.rand(1, 3, 32, 32)
+    inputs = model.prepare_transformer_inputs(images, torch.zeros(1, 32, 32, dtype=torch.bool))
+    memory = model.encode_features(inputs)
+
+    query_features, reference_boxes, class_logits, initial_boxes = model.select_two_stage_queries(
+        memory, inputs
+    )
+
+    assert query_features.shape == (1, 32, 256)
+    assert reference_boxes.shape == (1, 32, 4)
+    assert class_logits.shape == (1, 32, 2)
+    assert initial_boxes.shape == (1, 32, 4)
+
+
 def test_forward_decodes_iterative_boxes_and_auxiliary_outputs() -> None:
     model = DiffusionRegPoseModel(
         backbone_pretrained=False,
@@ -129,7 +150,7 @@ def test_forward_decodes_iterative_boxes_and_auxiliary_outputs() -> None:
     assert output["pred_boxes"].shape == (1, 8, 4)
     assert output["pred_logits"].shape == (1, 8, 2)
     assert output["pred_keypoints"].shape == (1, 8, 14 * 3)
-    assert len(output["aux_outputs"]) == 6
+    assert len(output["aux_outputs"]) == 5
     assert all(output["aux_outputs"][index]["pred_boxes"].shape == (1, 32, 4) for index in (0, 1))
     assert all(aux["pred_boxes"].shape == (1, 8, 4) for aux in output["aux_outputs"][2:])
     assert torch.isfinite(output["pred_boxes"]).all()
@@ -159,7 +180,7 @@ def test_forward_uses_timestep_conditioning() -> None:
     assert not torch.allclose(early_block, late_block)
 
 
-def test_sample_keypoints_runs_reference_timestep_schedule_deterministically() -> None:
+def test_sample_keypoints_forwards_padding_mask_on_every_timestep(monkeypatch) -> None:
     model = DiffusionRegPoseModel(
         backbone_pretrained=False,
         timesteps=8,
@@ -170,12 +191,30 @@ def test_sample_keypoints_runs_reference_timestep_schedule_deterministically() -
     )
     model.eval()
     images = torch.rand(1, 3, 64, 64)
+    padding_mask = torch.zeros(1, 64, 64, dtype=torch.bool)
+    padding_mask[:, 48:] = True
+    seen_masks = []
 
-    first = model.sample_keypoints(images, generator=torch.Generator().manual_seed(7))
-    second = model.sample_keypoints(images, generator=torch.Generator().manual_seed(7))
+    def fake_forward(images, diffusion_keypoints, timesteps, targets=None, padding_mask=None):
+        del targets
+        seen_masks.append(padding_mask)
+        return {
+            "pred_logits": torch.zeros(images.shape[0], 2, 2),
+            "pred_boxes": torch.zeros(images.shape[0], 2, 4),
+            "pred_keypoints": torch.full((images.shape[0], 2, 14 * 3), 0.5),
+            "aux_outputs": [],
+        }
+
+    monkeypatch.setattr(model, "forward", fake_forward)
+
+    first = model.sample_keypoints(
+        images,
+        padding_mask=padding_mask,
+        generator=torch.Generator().manual_seed(7),
+    )
 
     assert first["pred_boxes"].shape == (1, 2, 4)
     assert first["pred_keypoints"].shape == (1, 2, 14 * 3)
     assert first["diffusion_keypoints"].shape == (1, 2, 14 * 2)
-    torch.testing.assert_close(first["pred_boxes"], second["pred_boxes"])
-    torch.testing.assert_close(first["diffusion_keypoints"], second["diffusion_keypoints"])
+    assert len(seen_masks) == 2
+    assert all(mask is padding_mask for mask in seen_masks)

@@ -8,6 +8,7 @@ data module so the lightning module never has to know the on-disk layout.
 from __future__ import annotations
 
 import logging
+import random
 from abc import ABC
 from pathlib import Path
 from typing import Literal
@@ -19,7 +20,8 @@ from torch import Tensor
 from torchvision.transforms import InterpolationMode
 from torch.utils.data import DataLoader
 
-from src.data.datasets import PoseDataset, SetPoseDataset, set_pose_collate
+from src.data.datasets import PoseDataset, SetPoseDataset, compute_person_scale, set_pose_collate
+from src.data.transforms import pixel_to_canonical
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +73,272 @@ def _boxes_to_padded_canonical_batch(
     return torch.stack([cx, cy, cw, ch], dim=-1)
 
 
+def _boxes_to_image_canonical_batch(boxes_xywh_pixel: Tensor, img_hw: Tensor) -> Tensor:
+    """Convert pixel boxes to normalized ``cxcywh`` coordinates.
+
+    DiffusionRegPose predicts boxes with sigmoid outputs, so its targets use
+    the same ``[0, 1]`` image-coordinate convention as the external model.
+    The padded ``[-1, 1]`` convention remains available through
+    ``_boxes_to_padded_canonical_batch`` for the other set pipelines.
+    """
+    height = img_hw[:, 0].clamp_min(1.0).unsqueeze(-1)
+    width = img_hw[:, 1].clamp_min(1.0).unsqueeze(-1)
+    x, y, box_width, box_height = boxes_xywh_pixel.unbind(-1)
+    return torch.stack(
+        ((x + box_width / 2) / width,
+         (y + box_height / 2) / height,
+         box_width / width,
+         box_height / height),
+        dim=-1,
+    )
+
+
+def _external_resize_size(height: int, width: int, short_side: int, max_size: int) -> tuple[int, int]:
+    """Return the integer ``(height, width)`` used by the external transforms."""
+    if max(height, width) / min(height, width) * short_side > max_size:
+        short_side = int(round(max_size * min(height, width) / max(height, width)))
+    if width < height:
+        return short_side * height // width, short_side
+    return short_side, short_side * width // height
+
+
+def _resize_set_sample(
+    image: Tensor,
+    keypoints: Tensor,
+    labeled: Tensor,
+    visible: Tensor,
+    boxes: Tensor,
+    box_labeled: Tensor,
+    short_side: int,
+    max_size: int,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Resize one set sample and update its pixel-space targets."""
+    height, width = image.shape[-2:]
+    new_height, new_width = _external_resize_size(height, width, short_side, max_size)
+    image = TF.resize(
+        image, [new_height, new_width], interpolation=InterpolationMode.BILINEAR, antialias=True,
+    )
+    scale_x, scale_y = new_width / width, new_height / height
+    keypoints = keypoints * keypoints.new_tensor([scale_x, scale_y])
+    boxes = boxes * boxes.new_tensor([scale_x, scale_y, scale_x, scale_y])
+    return image, keypoints, labeled, visible, boxes, box_labeled, image.new_tensor([new_height, new_width])
+
+
+def _resize_set_sample_with_diffusion_keypoints(
+    image: Tensor,
+    keypoints: Tensor,
+    diffusion_keypoints: Tensor,
+    labeled: Tensor,
+    visible: Tensor,
+    boxes: Tensor,
+    box_labeled: Tensor,
+    short_side: int,
+    max_size: int,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Resize clean and diffusion keypoint streams with the same geometry."""
+    height, width = image.shape[-2:]
+    new_height, new_width = _external_resize_size(height, width, short_side, max_size)
+    diffusion_keypoints = diffusion_keypoints * diffusion_keypoints.new_tensor([
+        new_width / width,
+        new_height / height,
+    ])
+    image, keypoints, labeled, visible, boxes, box_labeled, image_hw = _resize_set_sample(
+        image,
+        keypoints,
+        labeled,
+        visible,
+        boxes,
+        box_labeled,
+        short_side,
+        max_size,
+    )
+    return (
+        image,
+        keypoints,
+        diffusion_keypoints,
+        labeled,
+        visible,
+        boxes,
+        box_labeled,
+        image_hw,
+    )
+
+
+def _external_train_transform(
+    image: Tensor,
+    keypoints_canon: Tensor,
+    labeled: Tensor,
+    visible: Tensor,
+    boxes: Tensor,
+    box_labeled: Tensor,
+    *,
+    diffusion_keypoints_canon: Tensor | None = None,
+    scales: tuple[int, ...],
+    max_size: int,
+    scales2_resize: tuple[int, ...],
+    scales2_crop: tuple[int, int],
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Apply the external CrowdPose train transform to one set sample."""
+    height, width = image.shape[-2:]
+    keypoints = keypoints_canon.clone()
+    keypoints = (keypoints + 1.0) / 2.0 * keypoints.new_tensor([width, height])
+    if diffusion_keypoints_canon is None:
+        diffusion_keypoints_canon = keypoints_canon
+    diffusion_keypoints = diffusion_keypoints_canon.clone()
+    diffusion_keypoints = (
+        (diffusion_keypoints + 1.0) / 2.0 * diffusion_keypoints.new_tensor([width, height])
+    )
+    boxes = boxes.clone()
+    labeled, visible, box_labeled = labeled.clone(), visible.clone(), box_labeled.clone()
+
+    if random.random() < 0.5:
+        image = image.flip(-1)
+        keypoints[..., 0] = width - keypoints[..., 0] - 1
+        diffusion_keypoints[..., 0] = width - diffusion_keypoints[..., 0] - 1
+        boxes[..., 0] = width - boxes[..., 0] - boxes[..., 2]
+        for first, second in ((0, 1), (2, 3), (4, 5), (6, 7), (8, 9), (10, 11)):
+            keypoints[:, [first, second]] = keypoints[:, [second, first]].clone()
+            diffusion_keypoints[:, [first, second]] = (
+                diffusion_keypoints[:, [second, first]].clone()
+            )
+            labeled[:, [first, second]] = labeled[:, [second, first]].clone()
+            visible[:, [first, second]] = visible[:, [second, first]].clone()
+
+    if random.random() < 0.5:
+        short_side = random.choice(scales)
+        image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
+            _resize_set_sample_with_diffusion_keypoints(
+                image,
+                keypoints,
+                diffusion_keypoints,
+                labeled,
+                visible,
+                boxes,
+                box_labeled,
+                short_side,
+                max_size,
+            )
+        )
+    else:
+        image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
+            _resize_set_sample_with_diffusion_keypoints(
+                image,
+                keypoints,
+                diffusion_keypoints,
+                labeled,
+                visible,
+                boxes,
+                box_labeled,
+                random.choice(scales2_resize),
+                max_size=10_000,
+            )
+        )
+        height, width = image.shape[-2:]
+        crop_width = random.randint(min(scales2_crop[0], width), min(width, scales2_crop[1]))
+        crop_height = random.randint(min(scales2_crop[0], height), min(height, scales2_crop[1]))
+        top = random.randint(0, max(height - crop_height, 0))
+        left = random.randint(0, max(width - crop_width, 0))
+        image = image[..., top:top + crop_height, left:left + crop_width]
+        keypoints[..., 0] = (keypoints[..., 0] - left).clamp(0, crop_width)
+        keypoints[..., 1] = (keypoints[..., 1] - top).clamp(0, crop_height)
+        diffusion_keypoints[..., 0] = (
+            diffusion_keypoints[..., 0] - left
+        ).clamp(0, crop_width)
+        diffusion_keypoints[..., 1] = (
+            diffusion_keypoints[..., 1] - top
+        ).clamp(0, crop_height)
+        x1 = (boxes[..., 0] - left).clamp(0, crop_width)
+        y1 = (boxes[..., 1] - top).clamp(0, crop_height)
+        x2 = (boxes[..., 0] + boxes[..., 2] - left).clamp(0, crop_width)
+        y2 = (boxes[..., 1] + boxes[..., 3] - top).clamp(0, crop_height)
+        boxes = torch.stack((x1, y1, x2 - x1, y2 - y1), dim=-1)
+        keep = (boxes[..., 2] > 0) & (boxes[..., 3] > 0)
+        box_labeled = box_labeled * keep.float()
+        labeled = labeled * keep[..., None].float()
+        visible = visible * keep[..., None].float()
+        image_hw = image.new_tensor([crop_height, crop_width])
+        image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
+            _resize_set_sample_with_diffusion_keypoints(
+                image,
+                keypoints,
+                diffusion_keypoints,
+                labeled,
+                visible,
+                boxes,
+                box_labeled,
+                random.choice(scales),
+                max_size,
+            )
+        )
+
+    height, width = image.shape[-2:]
+    keypoints = pixel_to_canonical(keypoints, height, width)
+    diffusion_keypoints = pixel_to_canonical(diffusion_keypoints, height, width)
+    person_scale = compute_person_scale(keypoints, labeled)
+    return (
+        image,
+        keypoints,
+        diffusion_keypoints,
+        labeled,
+        visible,
+        boxes,
+        box_labeled,
+        image.new_tensor([height, width]),
+        person_scale,
+    )
+
+
+def _external_eval_transform(
+    image: Tensor,
+    keypoints_canon: Tensor,
+    labeled: Tensor,
+    visible: Tensor,
+    boxes: Tensor,
+    box_labeled: Tensor,
+    *,
+    short_side: int = 800,
+    max_size: int = 1333,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Apply the deterministic evaluation resize and update pixel targets."""
+    height, width = image.shape[-2:]
+    keypoints = (keypoints_canon.clone() + 1.0) / 2.0 * keypoints_canon.new_tensor([width, height])
+    image, keypoints, labeled, visible, boxes, box_labeled, image_hw = _resize_set_sample(
+        image,
+        keypoints,
+        labeled.clone(),
+        visible.clone(),
+        boxes.clone(),
+        box_labeled.clone(),
+        short_side=short_side,
+        max_size=max_size,
+    )
+    height, width = image.shape[-2:]
+    keypoints = pixel_to_canonical(keypoints, height, width)
+    person_scale = compute_person_scale(keypoints, labeled)
+    return image, keypoints, labeled, visible, boxes, box_labeled, image_hw, person_scale
+
+
+def _pad_variable_images(images: list[Tensor]) -> tuple[Tensor, Tensor]:
+    """Pad transformed images bottom/right and mark padded pixels as True."""
+    max_height = max(image.shape[-2] for image in images)
+    max_width = max(image.shape[-1] for image in images)
+    padded, masks = [], []
+    for image in images:
+        height, width = image.shape[-2:]
+        padded.append(TF.pad(image, [0, 0, max_width - width, max_height - height]))
+        mask = torch.ones(max_height, max_width, dtype=torch.bool, device=image.device)
+        mask[:height, :width] = False
+        masks.append(mask)
+    return torch.stack(padded), torch.stack(masks)
+
+
+def _normalize_imagenet_image(image: Tensor) -> Tensor:
+    """Normalize one RGB image before zero-padding a variable-size batch."""
+    mean = image.new_tensor([0.485, 0.456, 0.406])[:, None, None]
+    std = image.new_tensor([0.229, 0.224, 0.225])[:, None, None]
+    return (image - mean) / std
+
+
 class PoseDataModule(pl.LightningDataModule, ABC):
     """Contract: active pipelines read these attributes after construction."""
 
@@ -107,6 +375,13 @@ class CrowdPoseDataModule(PoseDataModule):
         image_w: int | None = 192,
         max_persons: int | None = None,
         max_size: int | None = 512,
+        external_train_transforms: bool = False,
+        train_resize_scales: tuple[int, ...] = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800),
+        train_max_size: int = 1333,
+        train_crop_resize_scales: tuple[int, ...] = (400, 500, 600),
+        train_crop_size: tuple[int, int] = (384, 600),
+        eval_resize_scale: int = 800,
+        eval_max_size: int = 1333,
     ) -> None:
         super().__init__()
         self.train_ann_path = Path(train_ann)
@@ -127,6 +402,13 @@ class CrowdPoseDataModule(PoseDataModule):
         self.image_w = image_w
         self.max_persons = max_persons
         self.max_size = max_size
+        self.external_train_transforms = external_train_transforms
+        self.train_resize_scales = train_resize_scales
+        self.train_max_size = train_max_size
+        self.train_crop_resize_scales = train_crop_resize_scales
+        self.train_crop_size = train_crop_size
+        self.eval_resize_scale = eval_resize_scale
+        self.eval_max_size = eval_max_size
 
         self._train_ds: PoseDataset | None = None
         self._val_ds: PoseDataset | None = None
@@ -243,6 +525,69 @@ class CrowdPoseDataModule(PoseDataModule):
             if img.shape[0] == 1:
                 img = img.expand(3, -1, -1)       # grayscale → 3-channel
             normalized.append(img.float().div_(255.0))
+
+        if self.external_train_transforms:
+            # Keep annotation-space dimensions for AP while `img_hw` below
+            # records the transformed, unpadded model-input dimensions.
+            batch["original_img_hw"] = batch["img_hw"].clone()
+            if getattr(self.trainer, "training", False):
+                transformed = [
+                    _external_train_transform(
+                        image,
+                        batch["gt_keypoints"][index],
+                        batch["gt_labeled"][index],
+                        batch["gt_visible"][index],
+                        batch["gt_boxes_pixel"][index],
+                        batch["gt_box_labeled"][index],
+                        diffusion_keypoints_canon=batch["gt_keypoints"][index],
+                        scales=self.train_resize_scales,
+                        max_size=self.train_max_size,
+                        scales2_resize=self.train_crop_resize_scales,
+                        scales2_crop=self.train_crop_size,
+                    )
+                    for index, image in enumerate(normalized)
+                ]
+                (
+                    images,
+                    keypoints,
+                    diffusion_keypoints,
+                    labeled,
+                    visible,
+                    boxes,
+                    box_labeled,
+                    image_hw,
+                    scales,
+                ) = zip(*transformed)
+            else:
+                transformed = [
+                    _external_eval_transform(
+                        image,
+                        batch["gt_keypoints"][index],
+                        batch["gt_labeled"][index],
+                        batch["gt_visible"][index],
+                        batch["gt_boxes_pixel"][index],
+                        batch["gt_box_labeled"][index],
+                        short_side=self.eval_resize_scale,
+                        max_size=self.eval_max_size,
+                    )
+                    for index, image in enumerate(normalized)
+                ]
+                images, keypoints, labeled, visible, boxes, box_labeled, image_hw, scales = zip(*transformed)
+                diffusion_keypoints = keypoints
+            normalized_images = [_normalize_imagenet_image(image) for image in images]
+            batch["image"], batch["padding_mask"] = _pad_variable_images(normalized_images)
+            batch["gt_keypoints"] = torch.stack(list(keypoints))
+            batch["gt_diffusion_keypoints"] = torch.stack(list(diffusion_keypoints))
+            batch["gt_labeled"] = torch.stack(list(labeled))
+            batch["gt_visible"] = torch.stack(list(visible))
+            batch["gt_boxes_pixel"] = torch.stack(list(boxes))
+            batch["gt_box_labeled"] = torch.stack(list(box_labeled))
+            batch["img_hw"] = torch.stack(list(image_hw))
+            batch["person_scale"] = torch.stack(list(scales))
+            batch["gt_boxes_canon"] = _boxes_to_image_canonical_batch(
+                batch["gt_boxes_pixel"], batch["img_hw"],
+            )
+            return batch
 
         if target_size is not None:
             batch["image"] = torch.stack([

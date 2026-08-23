@@ -41,7 +41,10 @@ def main(cfg: DictConfig) -> None:
     use_gpu = training_cfg.accelerator in ("gpu", "cuda")
     data_cfg = DataConfig.from_hydra_config(cfg.data)
     data_module = data_cfg.build(pin_memory=use_gpu)
-    module = pipeline_cfg.build(max_epochs=training_cfg.max_epochs)
+    module = pipeline_cfg.build(
+        max_epochs=training_cfg.max_epochs,
+        val_ann_file=str(data_module.val_ann_path),
+    )
     log.info("Trainable parameters: %s", f"{sum(p.numel() for p in module.parameters() if p.requires_grad):,}")
 
     result = runner.run(
