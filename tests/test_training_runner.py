@@ -103,6 +103,37 @@ def test_runner_passes_gradient_accumulation_to_lightning(tmp_path):
     assert trainer.accumulate_grad_batches == 8
 
 
+def test_runner_configures_validation_interval(tmp_path):
+    config = TrainingConfig(
+        accelerator="cpu", devices=1, check_val_every_n_epoch=5,
+        logging={"tensorboard": False, "csv": False},
+    )
+
+    trainer, _ = TrainingRunner(config, tmp_path).build_trainer(max_epochs=10)
+
+    assert trainer.check_val_every_n_epoch == 5
+
+
+def test_runner_configures_progress_bar(tmp_path):
+    enabled, _ = TrainingRunner(
+        TrainingConfig(
+            accelerator="cpu", devices=1, enable_progress_bar=True,
+            logging={"tensorboard": False, "csv": False},
+        ), tmp_path / "enabled",
+    ).build_trainer(max_epochs=1)
+    disabled, _ = TrainingRunner(
+        TrainingConfig(
+            accelerator="cpu", devices=1, enable_progress_bar=False,
+            logging={"tensorboard": False, "csv": False},
+        ), tmp_path / "disabled",
+    ).build_trainer(max_epochs=1)
+
+    assert enabled.progress_bar_callback is not None
+    assert disabled.progress_bar_callback is None
+    assert any(callback.__class__.__name__ == "TQDMProgressBar" for callback in enabled.callbacks)
+    assert not any(callback.__class__.__name__ == "TQDMProgressBar" for callback in disabled.callbacks)
+
+
 def test_runner_saves_last_checkpoint_without_validation(tmp_path):
     class TinyDataModule(pl.LightningDataModule):
         def train_dataloader(self):

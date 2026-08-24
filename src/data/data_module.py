@@ -177,6 +177,9 @@ def _external_train_transform(
     max_size: int,
     scales2_resize: tuple[int, ...],
     scales2_crop: tuple[int, int],
+    random_flip: bool = True,
+    random_crop: bool = True,
+    rng: random.Random | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Apply the external CrowdPose train transform to one set sample."""
     height, width = image.shape[-2:]
@@ -191,7 +194,8 @@ def _external_train_transform(
     boxes = boxes.clone()
     labeled, visible, box_labeled = labeled.clone(), visible.clone(), box_labeled.clone()
 
-    if random.random() < 0.5:
+    random_source = random if rng is None else rng
+    if random_flip and random_source.random() < 0.5:
         image = image.flip(-1)
         keypoints[..., 0] = width - keypoints[..., 0] - 1
         diffusion_keypoints[..., 0] = width - diffusion_keypoints[..., 0] - 1
@@ -204,8 +208,8 @@ def _external_train_transform(
             labeled[:, [first, second]] = labeled[:, [second, first]].clone()
             visible[:, [first, second]] = visible[:, [second, first]].clone()
 
-    if random.random() < 0.5:
-        short_side = random.choice(scales)
+    if random_crop and random_source.random() < 0.5:
+        short_side = random_source.choice(scales)
         image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
             _resize_set_sample_with_diffusion_keypoints(
                 image,
@@ -219,7 +223,7 @@ def _external_train_transform(
                 max_size,
             )
         )
-    else:
+    elif random_crop:
         image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
             _resize_set_sample_with_diffusion_keypoints(
                 image,
@@ -229,15 +233,15 @@ def _external_train_transform(
                 visible,
                 boxes,
                 box_labeled,
-                random.choice(scales2_resize),
+                random_source.choice(scales2_resize),
                 max_size=10_000,
             )
         )
         height, width = image.shape[-2:]
-        crop_width = random.randint(min(scales2_crop[0], width), min(width, scales2_crop[1]))
-        crop_height = random.randint(min(scales2_crop[0], height), min(height, scales2_crop[1]))
-        top = random.randint(0, max(height - crop_height, 0))
-        left = random.randint(0, max(width - crop_width, 0))
+        crop_width = random_source.randint(min(scales2_crop[0], width), min(width, scales2_crop[1]))
+        crop_height = random_source.randint(min(scales2_crop[0], height), min(height, scales2_crop[1]))
+        top = random_source.randint(0, max(height - crop_height, 0))
+        left = random_source.randint(0, max(width - crop_width, 0))
         image = image[..., top:top + crop_height, left:left + crop_width]
         keypoints[..., 0] = (keypoints[..., 0] - left).clamp(0, crop_width)
         keypoints[..., 1] = (keypoints[..., 1] - top).clamp(0, crop_height)
@@ -266,7 +270,22 @@ def _external_train_transform(
                 visible,
                 boxes,
                 box_labeled,
-                random.choice(scales),
+                random_source.choice(scales),
+                max_size,
+            )
+        )
+
+    else:
+        image, keypoints, diffusion_keypoints, labeled, visible, boxes, box_labeled, image_hw = (
+            _resize_set_sample_with_diffusion_keypoints(
+                image,
+                keypoints,
+                diffusion_keypoints,
+                labeled,
+                visible,
+                boxes,
+                box_labeled,
+                random_source.choice(scales),
                 max_size,
             )
         )
@@ -376,6 +395,9 @@ class CrowdPoseDataModule(PoseDataModule):
         max_persons: int | None = None,
         max_size: int | None = 512,
         external_train_transforms: bool = False,
+        train_random_flip: bool = True,
+        train_random_crop: bool = True,
+        train_transform_seed: int | None = None,
         train_resize_scales: tuple[int, ...] = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800),
         train_max_size: int = 1333,
         train_crop_resize_scales: tuple[int, ...] = (400, 500, 600),
@@ -403,6 +425,9 @@ class CrowdPoseDataModule(PoseDataModule):
         self.max_persons = max_persons
         self.max_size = max_size
         self.external_train_transforms = external_train_transforms
+        self.train_random_flip = train_random_flip
+        self.train_random_crop = train_random_crop
+        self.train_transform_seed = train_transform_seed
         self.train_resize_scales = train_resize_scales
         self.train_max_size = train_max_size
         self.train_crop_resize_scales = train_crop_resize_scales
@@ -544,6 +569,12 @@ class CrowdPoseDataModule(PoseDataModule):
                         max_size=self.train_max_size,
                         scales2_resize=self.train_crop_resize_scales,
                         scales2_crop=self.train_crop_size,
+                        random_flip=self.train_random_flip,
+                        random_crop=self.train_random_crop,
+                        rng=(
+                            random.Random(self.train_transform_seed + index)
+                            if self.train_transform_seed is not None else None
+                        ),
                     )
                     for index, image in enumerate(normalized)
                 ]
@@ -581,7 +612,15 @@ class CrowdPoseDataModule(PoseDataModule):
             batch["gt_labeled"] = torch.stack(list(labeled))
             batch["gt_visible"] = torch.stack(list(visible))
             batch["gt_boxes_pixel"] = torch.stack(list(boxes))
-            batch["gt_box_labeled"] = torch.stack(list(box_labeled))
+            transformed_box_labeled = torch.stack(list(box_labeled))
+            batch["gt_box_labeled"] = transformed_box_labeled
+            # Cropping removes people from the external target set. Keep the
+            # padded rows for stable batching, but exclude those rows from
+            # the diffusion proposal stream as well.
+            if "person_mask" in batch:
+                batch["person_mask"] = transformed_box_labeled.gt(0).to(
+                    dtype=batch["person_mask"].dtype,
+                )
             batch["img_hw"] = torch.stack(list(image_hw))
             batch["person_scale"] = torch.stack(list(scales))
             batch["gt_boxes_canon"] = _boxes_to_image_canonical_batch(

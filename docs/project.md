@@ -83,9 +83,12 @@ Visible-mask: `visible = visibility == 2`.
 - Edge list in `src.data.skeleton.CROWDPOSE_EDGE_LIST`.
 - General pose pipelines use `src.eval.metrics.KeypointAPMetric` with
   `iou_type="keypoints_crowd"`. DiffusionRegPose uses its
-  `DiffusionRegPoseAPMetric`, which matches the external repository's
-  `crowdposetools.COCOeval(iou_type="keypoints")` contract. Standard reported
-  metrics are `AP`, `AP .5`, `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`.
+  `DiffusionRegPoseAPMetric` and `DiffusionRegPoseBBoxAPMetric`. Periodic
+  validation reports separate keypoint and bbox AP from the same sampled
+  pose-NMS outputs. The bbox metric uses
+  `crowdposetools.COCOeval(iou_type="bbox")`; the keypoint metric retains its
+  CrowdPose keypoint contract. Standard keypoint metrics are `AP`, `AP .5`,
+  `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`.
 
 ## Model families
 
@@ -97,13 +100,17 @@ Visible-mask: `visible = visibility == 2`.
   pose model. Its training criterion reproduces the reference Hungarian,
   focal-classification, box, keypoint, OKS, and denoising losses; its model-only
   evaluation path loads compatible tensors from the downloaded reference
-  checkpoint. Exact
+  checkpoint. Selected two-stage encoder proposals receive the reference
+  intermediate classification, box, and GIoU supervision during training. Exact
   CUDA training and evaluation use the repository-owned native
   forward/backward deformable-attention kernel; the PyTorch sampler remains
   the differentiable fallback when the extension is unavailable. CrowdPose
   person targets use category label `1`, matching the dataset and reference
   implementation; native checkpoints trained before this correction require
-  retraining.
+  retraining. Its clean classification diagnostics separately report focal
+  contributions from matched positives and all remaining negatives, matched
+  and unmatched person scores, and the matched-query count under `debug/`
+  without changing the optimized loss.
 - The native training wrapper has passed one-image CPU and CUDA smoke runs,
   including checkpoint restore. The external-compatible preset freezes the
   ResNet stem and `layer1`, shares the decoder pose-size head, and applies the

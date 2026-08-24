@@ -1,0 +1,19 @@
+# Full-resolution, full-structure stochastic external augmentation diagnostic.
+
+defaults:
+  - benchmark_diffusionregpose_overfit_full
+  - _self_
+
+run_name: diffusionregpose_overfit_full_aug
+out_dir: results/diffusionregpose_overfit_full_aug
+training:
+  max_epochs: 2000
+  check_val_every_n_epoch: 200
+pipeline:
+  val_ap_every_n_epochs: 200
+
+# Leave train_transform_seed unset: crop/flip choices must be stochastic,
+# matching the external training pipeline. Validation remains deterministic
+# and non-augmented.
+data:
+  train_transform_seed: null

@@ -1,0 +1,20 @@
+# Full-data low-resolution training with the validated mild-crop fraction.
+
+defaults:
+  - benchmark_diffusionregpose_lowres
+  - _self_
+
+run_name: diffusionregpose_lowres_mild_crop
+out_dir: results/diffusionregpose_lowres_mild_crop
+
+data:
+  train_random_flip: true
+  train_random_crop: true
+  # Crop 75–95% of the fixed 128-pixel pre-crop short side.
+  train_crop_size: [96, 122]
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+training:
+  check_val_every_n_epoch: 10

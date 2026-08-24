@@ -315,14 +315,13 @@ class DeformableTransformerDecoder(nn.Module):
         self.hw, self.keypoint_embed = nn.Embedding(num_body_points, 2), nn.Embedding(num_body_points, d_model)
         self.kpt_index = [i for i in range(num_group * (num_body_points + 1)) if i % (num_body_points + 1) != 0]
 
-    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, diffusion_keypoints=None):
+    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, tgt_mask2=None, diffusion_keypoints=None):
         output, reference_points = tgt, refpoints_unsigmoid.sigmoid()
         intermediate, references = [], [reference_points]
         for layer_id, layer in enumerate(self.layers):
-            references.append(reference_points)
             reference_points_input = reference_points[:, :, None] * torch.cat((valid_ratios, valid_ratios), -1)[None]
             query_pos = self.ref_point_head(sine_embedding_for_position(reference_points_input[:, :, 0, :]))
-            layer_mask = tgt_mask if layer_id >= self.num_box_decoder_layers else None
+            layer_mask = tgt_mask if layer_id < self.num_box_decoder_layers else tgt_mask2
             output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask)
             intermediate.append(self.norm(output))
 
@@ -339,6 +338,8 @@ class DeformableTransformerDecoder(nn.Module):
                 output, reference_points = self._update_expanded_queries(
                     layer_id, output, reference_points
                 )
+            references.append(reference_points)
+            reference_points = reference_points.detach()
 
         return [item.transpose(0, 1) for item in intermediate], [item.transpose(0, 1) for item in references]
 
@@ -400,7 +401,7 @@ class DeformableTransformerDecoder(nn.Module):
         self, layer_id: int, output: Tensor, reference_points: Tensor
     ) -> tuple[Tensor, Tensor]:
         stride = self.num_body_points + 1
-        dn_count = self.num_dn if output.shape[0] > self.num_queries * stride else 0
+        dn_count = self.num_dn if self.training else 0
         normal_start = dn_count
         normal_length = output.shape[0] - normal_start
         box_indices = normal_start + torch.arange(0, normal_length, stride, device=output.device)

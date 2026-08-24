@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from contextlib import nullcontext
 import warnings
 
 import torch
@@ -14,10 +15,10 @@ from scipy.optimize import linear_sum_assignment
 from src.configs.base_config import BaseConfig
 from src.training.optim import build_adamw_with_schedule
 from torch import Tensor, nn
-from torchvision.ops import generalized_box_iou
 
 from .evaluation import (
     DiffusionRegPoseAPMetric,
+    DiffusionRegPoseBBoxAPMetric,
     box_cxcywh_to_xyxy,
     postprocess_crowdpose,
 )
@@ -25,6 +26,24 @@ from .model import DiffusionRegPoseModel
 
 
 CROWDPOSE_PERSON_LABEL = 1
+
+
+def _generalized_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    """Compute the reference GIoU formula, including its stabilizing epsilons."""
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    left_top = torch.maximum(boxes1[:, None, :2], boxes2[:, :2])
+    right_bottom = torch.minimum(boxes1[:, None, 2:], boxes2[:, 2:])
+    intersection_size = (right_bottom - left_top).clamp_min(0)
+    intersection = intersection_size[..., 0] * intersection_size[..., 1]
+    union = area1[:, None] + area2 - intersection
+    iou = intersection / (union + 1e-6)
+
+    enclosing_left_top = torch.minimum(boxes1[:, None, :2], boxes2[:, :2])
+    enclosing_right_bottom = torch.maximum(boxes1[:, None, 2:], boxes2[:, 2:])
+    enclosing_size = (enclosing_right_bottom - enclosing_left_top).clamp_min(0)
+    enclosing_area = enclosing_size[..., 0] * enclosing_size[..., 1]
+    return iou - (enclosing_area - union) / (enclosing_area + 1e-6)
 
 
 def diffusionregpose_ap_epoch_active(
@@ -42,14 +61,13 @@ def diffusionregpose_ap_epoch_active(
 
 
 @torch.no_grad()
-def update_diffusionregpose_ap_metric(
-    metric: DiffusionRegPoseAPMetric,
+def _postprocess_diffusionregpose_ap(
     outputs: dict[str, Tensor],
     batch: dict[str, Tensor],
     *,
     num_body_points: int = 14,
-) -> None:
-    """Add post-processed person predictions from one validation batch to AP."""
+) -> list[dict[str, Tensor]]:
+    """Match the sampled-model candidate path used by both AP evaluators."""
     images = batch["image"]
     target_sizes = batch.get("original_img_hw", batch["img_hw"]).to(
         images.device, dtype=torch.float32,
@@ -63,12 +81,28 @@ def update_diffusionregpose_ap_metric(
         ).expand(images.shape[0], -1)
     else:
         nms_target_sizes = nms_target_sizes.to(images.device, dtype=torch.float32)
-    results = postprocess_crowdpose(
+    return postprocess_crowdpose(
         outputs,
         target_sizes,
         num_body_points=num_body_points,
         nms_target_sizes=nms_target_sizes,
     )
+
+
+@torch.no_grad()
+def update_diffusionregpose_ap_metric(
+    metric: DiffusionRegPoseAPMetric,
+    outputs: dict[str, Tensor],
+    batch: dict[str, Tensor],
+    *,
+    num_body_points: int = 14,
+    results: list[dict[str, Tensor]] | None = None,
+) -> None:
+    """Add post-processed person predictions from one validation batch to AP."""
+    if results is None:
+        results = _postprocess_diffusionregpose_ap(
+            outputs, batch, num_body_points=num_body_points,
+        )
     for batch_index, result in enumerate(results):
         person = result["labels"] == CROWDPOSE_PERSON_LABEL
         serialized = result["keypoints"][person].reshape(-1, num_body_points, 3)
@@ -78,6 +112,23 @@ def update_diffusionregpose_ap_metric(
             scores[:, None].expand(-1, num_body_points).unsqueeze(0),
             batch["image_id"][batch_index : batch_index + 1],
             bbox_scores=scores.unsqueeze(0),
+        )
+
+
+@torch.no_grad()
+def update_diffusionregpose_bbox_ap_metric(
+    metric: DiffusionRegPoseBBoxAPMetric,
+    results: list[dict[str, Tensor]],
+    batch: dict[str, Tensor],
+) -> None:
+    """Add person boxes from the shared pose-NMS result set to bbox AP."""
+    for batch_index, result in enumerate(results):
+        person = result["labels"] == CROWDPOSE_PERSON_LABEL
+        metric.update(
+            result["boxes"][person].unsqueeze(0),
+            result["scores"][person].unsqueeze(0),
+            result["labels"][person].unsqueeze(0),
+            batch["image_id"][batch_index : batch_index + 1],
         )
 
 
@@ -96,6 +147,7 @@ def build_diffusionregpose_targets(
     num_proposals: int,
     num_body_points: int,
     noise: Tensor | None = None,
+    noise_seed: int | None = None,
 ) -> tuple[Tensor, Tensor, list[dict[str, Tensor]]]:
     """Build reference-format targets and timestep-zero diffusion inputs."""
     keypoints = batch["gt_keypoints"]
@@ -118,6 +170,19 @@ def build_diffusionregpose_targets(
         raise ValueError("diffusion keypoints must match batch and keypoint dimensions")
     if num_proposals < 1:
         raise ValueError("num_proposals must be positive")
+
+    generator = None
+    if noise_seed is not None:
+        generator = torch.Generator(device=keypoints.device)
+        generator.manual_seed(noise_seed)
+
+    def random_tensor(shape: tuple[int, ...]) -> Tensor:
+        return torch.randn(
+            shape,
+            device=keypoints.device,
+            dtype=keypoints.dtype,
+            generator=generator,
+        )
 
     targets: list[dict[str, Tensor]] = []
     diffusion_inputs = keypoints.new_empty(batch_size, num_proposals, num_body_points * 2)
@@ -166,14 +231,13 @@ def build_diffusionregpose_targets(
         else:
             count = 0
         if count < num_proposals:
-            diffusion_inputs[batch_index, count:] = torch.randn(
-                num_proposals - count,
-                num_body_points * 2,
-                device=keypoints.device,
-                dtype=keypoints.dtype,
-            ) * diffusion.scale
+            diffusion_inputs[batch_index, count:] = random_tensor((
+                num_proposals - count, num_body_points * 2,
+            )) * diffusion.scale
 
     timesteps = torch.zeros(batch_size, dtype=torch.long, device=keypoints.device)
+    if noise is None:
+        noise = random_tensor(tuple(diffusion_inputs.shape))
     diffusion_inputs = diffusion.q_sample(diffusion_inputs, timesteps, noise=noise).to(keypoints.dtype)
     return diffusion_inputs.clamp(-diffusion.scale, diffusion.scale), timesteps, targets
 
@@ -243,7 +307,7 @@ class DiffusionRegPoseMatcher(nn.Module):
                 ).sum(-1)
             else:
                 box_cost = torch.cdist(boxes, target["boxes"], p=1)
-                giou_cost = -generalized_box_iou(
+                giou_cost = -_generalized_box_iou(
                     box_cxcywh_to_xyxy(boxes), box_cxcywh_to_xyxy(target["boxes"])
                 )
                 keypoint_cost = torch.zeros_like(box_cost)
@@ -272,6 +336,8 @@ class DiffusionRegPoseCriterion(nn.Module):
         num_box_decoder_layers: int = 2,
         dn_label_coef: float = 0.3,
         dn_bbox_coef: float = 0.5,
+        interm_loss_coef: float = 1.0,
+        no_interm_box_loss: bool = False,
         weights: DiffusionRegPoseLossWeights | None = None,
     ) -> None:
         super().__init__()
@@ -280,18 +346,31 @@ class DiffusionRegPoseCriterion(nn.Module):
         self.num_box_decoder_layers = num_box_decoder_layers
         self.dn_label_coef = dn_label_coef
         self.dn_bbox_coef = dn_bbox_coef
+        self.interm_loss_coef = interm_loss_coef
+        self.no_interm_box_loss = no_interm_box_loss
         self.weights = weights or DiffusionRegPoseLossWeights()
         self.matcher = matcher or DiffusionRegPoseMatcher(
             num_body_points=num_body_points, weights=self.weights
         )
 
-    def _loss_for_outputs(self, outputs: dict[str, Tensor], targets: list[dict[str, Tensor]], *, include_keypoints: bool = True) -> dict[str, Tensor]:
+    def _loss_for_outputs(
+        self,
+        outputs: dict[str, Tensor],
+        targets: list[dict[str, Tensor]],
+        *,
+        include_keypoints: bool = True,
+        include_classification_diagnostics: bool = False,
+    ) -> dict[str, Tensor]:
         matches = self.matcher(outputs, targets)
         logits = outputs["pred_logits"]
         target_classes = torch.zeros_like(logits)
+        matched_queries = torch.zeros(
+            logits.shape[:2], dtype=torch.bool, device=logits.device,
+        )
         for batch_index, (source, target) in enumerate(matches):
             if source.numel():
                 target_classes[batch_index, source, targets[batch_index]["labels"][target]] = 1.0
+                matched_queries[batch_index, source] = True
         probabilities = logits.sigmoid()
         ce = F.binary_cross_entropy_with_logits(logits, target_classes, reduction="none")
         p_t = probabilities * target_classes + (1 - probabilities) * (1 - target_classes)
@@ -314,7 +393,7 @@ class DiffusionRegPoseCriterion(nn.Module):
             pred_boxes = outputs["pred_boxes"][batch_index, source]
             target_boxes = target["boxes"][target_indices]
             loss_bbox = loss_bbox + F.l1_loss(pred_boxes, target_boxes, reduction="sum")
-            loss_giou = loss_giou + (1 - torch.diag(generalized_box_iou(
+            loss_giou = loss_giou + (1 - torch.diag(_generalized_box_iou(
                 box_cxcywh_to_xyxy(pred_boxes), box_cxcywh_to_xyxy(target_boxes)
             ))).sum()
             if include_keypoints:
@@ -342,6 +421,28 @@ class DiffusionRegPoseCriterion(nn.Module):
             + self.weights.keypoints * values["loss_keypoints"]
             + self.weights.oks * values["loss_oks"]
         )
+        if include_classification_diagnostics:
+            person_scores = probabilities[..., CROWDPOSE_PERSON_LABEL]
+            zero = logits.new_zeros(())
+            values.update({
+                "loss_ce_positive": (
+                    (focal_loss * target_classes).mean(1).sum() / num_boxes
+                    * logits.shape[1]
+                ).detach(),
+                "loss_ce_negative": (
+                    (focal_loss * (1 - target_classes)).mean(1).sum() / num_boxes
+                    * logits.shape[1]
+                ).detach(),
+                "person_score_matched": (
+                    person_scores[matched_queries].mean()
+                    if matched_queries.any() else zero
+                ).detach(),
+                "person_score_unmatched": (
+                    person_scores[~matched_queries].mean()
+                    if (~matched_queries).any() else zero
+                ).detach(),
+                "matched_queries": matched_queries.sum().to(logits.dtype).detach(),
+            })
         return values
 
     def _weighted_clean_loss(self, values: dict[str, Tensor]) -> Tensor:
@@ -377,7 +478,7 @@ class DiffusionRegPoseCriterion(nn.Module):
         loss_ce = (alpha_t * ce * (1 - p_t).pow(2)).mean(1).sum() / num_targets * logits.shape[1]
         loss_bbox = F.l1_loss(boxes, target_boxes, reduction="sum") / num_targets
         loss_giou = (
-            1 - torch.diag(generalized_box_iou(
+            1 - torch.diag(_generalized_box_iou(
                 box_cxcywh_to_xyxy(boxes.flatten(0, 1)),
                 box_cxcywh_to_xyxy(target_boxes.flatten(0, 1)),
             ))
@@ -389,7 +490,9 @@ class DiffusionRegPoseCriterion(nn.Module):
         }
 
     def forward(self, outputs: dict, targets: list[dict[str, Tensor]]) -> dict[str, Tensor]:
-        losses = self._loss_for_outputs(outputs, targets)
+        losses = self._loss_for_outputs(
+            outputs, targets, include_classification_diagnostics=True,
+        )
         if "dn_class_pred" in outputs:
             dn_losses = self._denoising_losses(outputs)
             losses.update(dn_losses)
@@ -398,6 +501,23 @@ class DiffusionRegPoseCriterion(nn.Module):
                 + self.weights.bbox * self.dn_bbox_coef * dn_losses["dn_loss_bbox"]
                 + self.weights.giou * self.dn_bbox_coef * dn_losses["dn_loss_giou"]
             )
+        intermediate = outputs.get("interm_outputs")
+        if intermediate is not None:
+            intermediate_losses = self._loss_for_outputs(
+                intermediate, targets, include_keypoints=False,
+            )
+            coefficients = {
+                "loss_ce": self.weights.cls * self.interm_loss_coef,
+                "loss_bbox": (
+                    0.0 if self.no_interm_box_loss else self.weights.bbox * self.interm_loss_coef
+                ),
+                "loss_giou": (
+                    0.0 if self.no_interm_box_loss else self.weights.giou * self.interm_loss_coef
+                ),
+            }
+            for name, coefficient in coefficients.items():
+                losses[f"{name}_interm"] = intermediate_losses[name]
+                losses["total"] = losses["total"] + coefficient * intermediate_losses[name]
         for index, auxiliary in enumerate(outputs.get("aux_outputs", [])):
             auxiliary_losses = self._loss_for_outputs(
                 auxiliary, targets, include_keypoints=index >= self.num_box_decoder_layers
@@ -448,6 +568,8 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         split_weight_decay: bool = True,
         val_ap_every_n_epochs: int = 10,
         val_ann_file: str | None = None,
+        diffusion_noise_seed: int | None = None,
+        deterministic_seed: int | None = None,
     ) -> None:
         super().__init__()
         self.model = model
@@ -464,7 +586,12 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         if val_ap_every_n_epochs < 1:
             raise ValueError("val_ap_every_n_epochs must be positive")
         self.val_ap_every_n_epochs = val_ap_every_n_epochs
+        self.diffusion_noise_seed = diffusion_noise_seed
+        self.deterministic_seed = deterministic_seed
         self._val_ap = DiffusionRegPoseAPMetric(val_ann_file) if val_ann_file else None
+        self._val_bbox_ap = (
+            DiffusionRegPoseBBoxAPMetric(val_ann_file) if val_ann_file else None
+        )
         self.save_hyperparameters(ignore=["model", "criterion"])
 
     def forward(
@@ -483,14 +610,31 @@ class DiffusionRegPosePipeline(pl.LightningModule):
             self.model,
             num_proposals=self.model.num_proposals,
             num_body_points=self.model.transformer.decoder.num_body_points,
+            noise_seed=self.diffusion_noise_seed,
         )
-        outputs = self(
-            batch["image"], diffusion_keypoints, timesteps, targets,
-            batch.get("padding_mask"),
-        )
+        if self.deterministic_seed is None:
+            rng_context = nullcontext()
+        else:
+            rng_context = torch.random.fork_rng(
+                devices=[batch["image"].device] if batch["image"].is_cuda else [],
+            )
+        with rng_context:
+            if self.deterministic_seed is not None:
+                torch.manual_seed(self.deterministic_seed)
+            outputs = self(
+                batch["image"], diffusion_keypoints, timesteps, targets,
+                batch.get("padding_mask"),
+            )
         return self.criterion(outputs, targets)
 
     def _log_losses(self, prefix: str, losses: dict[str, Tensor], batch_size: int) -> None:
+        classification_diagnostics = {
+            "loss_ce_positive",
+            "loss_ce_negative",
+            "person_score_matched",
+            "person_score_unmatched",
+            "matched_queries",
+        }
         self.log(
             f"{prefix}/loss",
             losses["total"],
@@ -501,8 +645,9 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         )
         for name, value in losses.items():
             if name != "total":
+                metric_prefix = f"debug/{prefix}" if name in classification_diagnostics else prefix
                 self.log(
-                    f"{prefix}/{name}", value.detach(), batch_size=batch_size,
+                    f"{metric_prefix}/{name}", value.detach(), batch_size=batch_size,
                     on_step=False, on_epoch=True,
                 )
 
@@ -525,28 +670,48 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         losses = self._losses_for_batch(batch)
         self._log_losses("val", losses, batch["image"].shape[0])
         if self._ap_epoch_active():
-            update_diffusionregpose_ap_metric(
-                self._val_ap,
-                self.model.sample_keypoints(
-                    batch["image"],
-                    padding_mask=batch.get("padding_mask"),
-                ),
+            sampling_generator = None
+            if self.deterministic_seed is not None:
+                sampling_generator = torch.Generator(device=batch["image"].device)
+                sampling_generator.manual_seed(self.deterministic_seed)
+            sampling_kwargs = {"padding_mask": batch.get("padding_mask")}
+            if sampling_generator is not None:
+                sampling_kwargs["generator"] = sampling_generator
+            sampled_outputs = self.model.sample_keypoints(batch["image"], **sampling_kwargs)
+            ap_results = _postprocess_diffusionregpose_ap(
+                sampled_outputs,
                 batch,
                 num_body_points=self.model.transformer.decoder.num_body_points,
+            )
+            update_diffusionregpose_ap_metric(
+                self._val_ap,
+                sampled_outputs,
+                batch,
+                num_body_points=self.model.transformer.decoder.num_body_points,
+                results=ap_results,
+            )
+            assert self._val_bbox_ap is not None
+            update_diffusionregpose_bbox_ap_metric(
+                self._val_bbox_ap,
+                ap_results,
+                batch,
             )
 
     def on_validation_epoch_end(self) -> None:
         if not self._ap_epoch_active():
             return
         assert self._val_ap is not None
-        for name, value in self._val_ap.compute().items():
-            self.log(
-                f"ap-val/{name}",
-                value,
-                sync_dist=True,
-                prog_bar=name == "crowdpose/AP",
-            )
+        assert self._val_bbox_ap is not None
+        for metric in (self._val_ap, self._val_bbox_ap):
+            for name, value in metric.compute().items():
+                self.log(
+                    f"ap-val/{name}",
+                    value,
+                    sync_dist=True,
+                    prog_bar=name == "crowdpose/AP",
+                )
         self._val_ap.reset()
+        self._val_bbox_ap.reset()
 
     def test_step(self, batch: dict[str, Tensor], batch_idx: int) -> None:
         del batch_idx
@@ -607,6 +772,8 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     dn_label_noise_ratio: float = 0.5
     dn_label_coef: float = 0.3
     dn_bbox_coef: float = 0.5
+    interm_loss_coef: float = 1.0
+    no_interm_box_loss: bool = False
     freeze_backbone_stem_and_layer1: bool = True
     pretrained_checkpoint: str | None = None
     lr: float = 2e-4
@@ -618,6 +785,8 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     lr_decay_milestones: tuple[int, ...] = (31, 61)
     split_weight_decay: bool = False
     val_ap_every_n_epochs: int = 10
+    diffusion_noise_seed: int | None = None
+    deterministic_seed: int | None = None
     weights: DiffusionRegPoseLossWeightsConfig = DiffusionRegPoseLossWeightsConfig()
 
     @field_validator("num_classes")
@@ -691,6 +860,8 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                 num_box_decoder_layers=self.num_box_decoder_layers,
                 dn_label_coef=self.dn_label_coef,
                 dn_bbox_coef=self.dn_bbox_coef,
+                interm_loss_coef=self.interm_loss_coef,
+                no_interm_box_loss=self.no_interm_box_loss,
                 weights=weights,
             ),
             lr=self.lr,
@@ -704,4 +875,6 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             split_weight_decay=self.split_weight_decay,
             val_ap_every_n_epochs=self.val_ap_every_n_epochs,
             val_ann_file=val_ann_file,
+            diffusion_noise_seed=self.diffusion_noise_seed,
+            deterministic_seed=self.deterministic_seed,
         )

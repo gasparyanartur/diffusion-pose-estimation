@@ -65,6 +65,8 @@ class TrainingConfig(BaseConfig):
     skip_training: bool = False
     test_after_fit: bool = True
     limit_val_batches: int | float = 1.0
+    check_val_every_n_epoch: int = 1
+    enable_progress_bar: bool = True
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -80,4 +82,11 @@ class TrainingConfig(BaseConfig):
     def _validate_accumulate_grad_batches(cls, value: int) -> int:
         if value < 1:
             raise ValueError("accumulate_grad_batches must be positive")
+        return value
+
+    @field_validator("check_val_every_n_epoch")
+    @classmethod
+    def _validate_check_val_every_n_epoch(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("check_val_every_n_epoch must be positive")
         return value

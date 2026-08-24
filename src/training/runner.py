@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, TQDMProgressBar
 from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger
 
 from src.training.callbacks import build_checkpoint_callback
@@ -112,9 +112,14 @@ class TrainingRunner:
         checkpoint = build_checkpoint_callback(
             self.checkpoint_directory, checkpoint_config
         )
+        progress_callbacks = (
+            [TQDMProgressBar(refresh_rate=1)]
+            if self.config.enable_progress_bar else []
+        )
         all_callbacks = [
             checkpoint,
             LearningRateMonitor(logging_interval="epoch"),
+            *progress_callbacks,
             *spec.callbacks,
             *callbacks,
         ]
@@ -127,6 +132,8 @@ class TrainingRunner:
             accumulate_grad_batches=self.config.accumulate_grad_batches,
             gradient_clip_val=gradient_clip,
             limit_val_batches=self.config.limit_val_batches,
+            check_val_every_n_epoch=self.config.check_val_every_n_epoch,
+            enable_progress_bar=self.config.enable_progress_bar,
             callbacks=all_callbacks,
             logger=self._loggers(),
             log_every_n_steps=self.config.log_every_n_steps,

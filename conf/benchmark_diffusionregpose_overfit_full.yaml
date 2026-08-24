@@ -1,0 +1,18 @@
+# Full-resolution, full-structure augmented one-sample diagnostic.
+
+defaults:
+  - pipeline: diffusionregpose_overfit
+  - data: crowdpose_diffusionregpose_overfit_full
+  - hardware: auto
+  - training: diffusionregpose_overfit
+  - _self_
+
+run_name: diffusionregpose_overfit_full
+out_dir: results/diffusionregpose_overfit_full
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

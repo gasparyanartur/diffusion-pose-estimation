@@ -53,6 +53,9 @@ class CrowdPoseDataConfig(DataConfig):
     max_persons: int | None = None
     max_size: int | None = 512
     external_train_transforms: bool = False
+    train_random_flip: bool = True
+    train_random_crop: bool = True
+    train_transform_seed: int | None = None
     train_resize_scales: tuple[int, ...] = (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
     train_max_size: int = 1333
     train_crop_resize_scales: tuple[int, ...] = (400, 500, 600)
@@ -82,6 +85,9 @@ class CrowdPoseDataConfig(DataConfig):
             max_persons=self.max_persons,
             max_size=self.max_size,
             external_train_transforms=self.external_train_transforms,
+            train_random_flip=self.train_random_flip,
+            train_random_crop=self.train_random_crop,
+            train_transform_seed=self.train_transform_seed,
             train_resize_scales=self.train_resize_scales,
             train_max_size=self.train_max_size,
             train_crop_resize_scales=self.train_crop_resize_scales,

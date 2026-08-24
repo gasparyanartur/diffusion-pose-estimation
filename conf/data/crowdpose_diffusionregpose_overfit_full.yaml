@@ -1,0 +1,9 @@
+defaults:
+  - crowdpose_diffusionregpose
+  - _self_
+
+val_ann: crowdpose/annotations/crowdpose_trainval.json
+test_ann: crowdpose/annotations/crowdpose_trainval.json
+subset_frac: 0.0001
+batch_size: 1
+num_workers: 0

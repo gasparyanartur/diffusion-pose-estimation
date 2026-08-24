@@ -12,6 +12,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.diffusion import (
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
     DiffusionRegPoseAPMetric,
+    DiffusionRegPoseBBoxAPMetric,
     box_cxcywh_to_xyxy,
     postprocess_crowdpose,
 )
@@ -31,6 +32,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     build_diffusionregpose_targets,
     diffusionregpose_ap_epoch_active,
     update_diffusionregpose_ap_metric,
+    update_diffusionregpose_bbox_ap_metric,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     DeformableTransformerDecoder,
@@ -52,6 +54,7 @@ __all__ = [
     "box_cxcywh_to_xyxy",
     "postprocess_crowdpose",
     "DiffusionRegPoseAPMetric",
+    "DiffusionRegPoseBBoxAPMetric",
     "DeformableTransformerDecoder",
     "DeformableTransformerDecoderLayer",
     "DeformableTransformerEncoder",
@@ -73,5 +76,6 @@ __all__ = [
     "build_diffusionregpose_targets",
     "diffusionregpose_ap_epoch_active",
     "update_diffusionregpose_ap_metric",
+    "update_diffusionregpose_bbox_ap_metric",
     "CROWDPOSE_PERSON_LABEL",
 ]

@@ -1,0 +1,20 @@
+# One-sample low-resolution overfit diagnostic with mild crop augmentation.
+
+defaults:
+  - benchmark_diffusionregpose_overfit
+  - _self_
+
+run_name: diffusionregpose_overfit_lowres_near_crop
+out_dir: results/diffusionregpose_overfit_lowres_near_crop
+
+data:
+  train_random_flip: true
+  train_random_crop: true
+  train_crop_size: [230, 256]
+
+pipeline:
+  val_ap_every_n_epochs: 200
+
+training:
+  max_epochs: 2000
+  check_val_every_n_epoch: 200

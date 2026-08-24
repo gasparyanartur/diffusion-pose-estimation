@@ -1,0 +1,29 @@
+# Full-data 256/384 training using the crop policy validated by overfitting.
+
+defaults:
+  - benchmark_diffusionregpose_lowres
+  - _self_
+
+run_name: diffusionregpose_256_mild_crop
+out_dir: results/diffusionregpose_256_mild_crop
+
+data:
+  # Match the external training/evaluation protocol: train on train+val and
+  # evaluate on the disjoint CrowdPose test split.
+  val_ann: crowdpose/annotations/crowdpose_test.json
+  max_size: 384
+  train_resize_scales: [256]
+  train_max_size: 384
+  train_crop_resize_scales: [256]
+  train_crop_size: [192, 243]
+  eval_resize_scale: 256
+  eval_max_size: 384
+  train_random_flip: true
+  train_random_crop: true
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+training:
+  max_epochs: 80
+  check_val_every_n_epoch: 1

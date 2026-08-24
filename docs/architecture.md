@@ -183,7 +183,9 @@ checkpoint I/O policies.
 `DiffusionRegPosePipeline` wraps the checkpoint-compatible native model in the
 same Lightning boundary. Its target builder creates the reference xyxy-plus-
 visibility target layout and timestep-zero cosine diffusion inputs, while its
-criterion owns Hungarian matching and final/auxiliary decoder losses. The
+criterion owns Hungarian matching, final/auxiliary decoder losses, and the
+reference selected two-stage encoder classification, box, and GIoU losses
+(`interm_loss_coef=1`, with intermediate box loss enabled). The
 CrowdPose person target uses category label `1`, matching the annotation
 format and the reference implementation; checkpoints trained with the old
 label-`0` target contract must be retrained.
@@ -243,11 +245,18 @@ deformable-attention kernel whose scalar bilinear accumulation matches the
 checkpoint operator. CPU runs and environments where the extension cannot be
 built retain the differentiable PyTorch sampler. During training, validation
 loss is calculated every epoch and validation AP is calculated every tenth
-epoch through `DiffusionRegPoseAPMetric`. That metric accumulates the same
-CrowdPose result records consumed by the standalone evaluator and calls
-`crowdposetools.COCOeval` with `iou_type="keypoints"`, matching the external
-repository. The generic `KeypointAPMetric` remains available to other pose
+epoch. `DiffusionRegPoseAPMetric` accumulates the pose-NMS keypoint records,
+while `DiffusionRegPoseBBoxAPMetric` accumulates boxes from that same
+pose-NMS result. They call
+`crowdposetools.COCOeval` with `iou_type="keypoints"` and `iou_type="bbox"`,
+respectively. The generic `KeypointAPMetric` remains available to other pose
 pipelines.
+
+The DiffusionRegPose criterion logs its optimized clean focal classification
+loss as `loss_ce`, together with diagnostic positive/negative focal
+contributions, matched/unmatched person scores, and matched-query count. Those
+diagnostics are logged under `debug/{train,val}/`, detached from the graph, and
+do not change matching or loss weights.
 
 ---
 

@@ -1,0 +1,9 @@
+defaults:
+  - diffusionregpose
+  - _self_
+
+# Diagnostic-only settings: preserve the full checkpoint-compatible model while
+# making the one-sample objective deterministic and avoiding LR decay.
+diffusion_noise_seed: 17
+deterministic_seed: 17
+lr_decay_milestones: [10000]

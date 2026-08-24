@@ -1658,3 +1658,340 @@ Modified files:
 - Documented the paper's CrowdPose results: AP 71.4, 72.7, and 72.1 for 50,
   100, and 200 queries, respectively.
 - Verified the report with `git diff --check` and consistency checks.
+
+[2026-08-24] Established DiffusionRegPose bbox evaluation candidate boundary
+
+- Audited the external evaluation path: its bbox COCO evaluator receives raw,
+  sorted flattened-class top-k candidates without pose NMS.
+- Added `postprocess_crowdpose_detection` and a focused candidate-selection /
+  pixel-scaling parity test, leaving the current keypoint AP postprocessing
+  unchanged.
+- Verified the focused evaluation and training tests (36 passed) and
+  `git diff --check`.
+
+[2026-08-24] Added periodic DiffusionRegPose bbox AP
+
+- Added CrowdPose bbox AP accumulation using the external evaluator's raw,
+  sorted query-count candidates, category-1 filtering, and xyxy-to-xywh COCO
+  records.
+- Periodic validation now samples the model once and logs both keypoint AP and
+  `ap-val/crowdpose/bbox/*` metrics from that same sampled output.
+- Added fixture and callback-path tests; focused DiffusionRegPose suite: 38
+  passed. Updated project and architecture metric documentation.
+
+[2026-08-24] Corrected DiffusionRegPose bbox AP candidate parity
+
+- Corrected an evaluation-boundary mistake: the external model applies pose
+  NMS inside sampling before both bbox and keypoint COCO evaluation.
+- Periodic native validation now postprocesses the sampled output once, then
+  supplies that same pose-NMS result to both AP accumulators. Removed the
+  unused raw-detection helper and corrected metric documentation.
+- Added regression coverage for the shared suppressed result; focused suite:
+  37 passed, with `git diff --check` clean.
+
+[2026-08-24] Audited DiffusionRegPose classification loss
+
+- Verified native clean and denoising sigmoid focal-loss calculations against
+  the external formulas on fixed tensors, including the no-object DN sentinel;
+  both matched exactly.
+- Confirmed the active low-resolution run's training CE decreases while its
+  validation CE rises, and verified transformed train/validation targets are
+  finite and exclusively use CrowdPose person label 1.
+- Added detached positive/negative focal-loss, matched/unmatched person-score,
+  and matched-query diagnostics under `train/` and `val/`; these do not affect
+  gradients or optimization. Added regression coverage and documentation;
+  focused suite: 39 passed.
+
+[2026-08-24] Namespaced DiffusionRegPose classification diagnostics
+
+- Moved detached classification diagnostics from `train/` and `val/` to
+  `debug/train/` and `debug/val/`, while preserving all optimized-loss metric
+  names and total-loss behavior.
+- Added logger-boundary coverage and updated project/architecture
+  documentation; focused suite: 40 passed.
+
+[2026-08-24] Restored DiffusionRegPose two-stage encoder supervision
+
+- Evaluated the failed low-resolution epoch-79 checkpoint: 1.28 keypoint AP
+  on test and 1.05 AP on a deterministic 1,000-image train subset. The
+  supplied final checkpoint scored 12.46 AP on that same native subset, so the
+  evaluator is a useful qualitative gate rather than the primary failure.
+- Restored external `interm_outputs` supervision for the selected two-stage
+  encoder proposals: focal classification, L1 box, and GIoU losses with the
+  reference 2/5/2 coefficients and explicit reference-compatible options.
+- Added selected-encoder and criterion-weight regression coverage. Focused
+  model/training tests passed (41 passed), the synthetic criterion/update
+  parity probe passed, and the CUDA native one-step probe produced finite
+  gradients for all 404 trainable tensors and a nonzero optimizer update.
+
+[2026-08-24] Invalidated the 128-pixel DiffusionRegPose learning gate
+
+- A real-image external/native parity probe established that the 128/192
+  encoder has fewer than 900 feature tokens. The external reference fails its
+  900-proposal top-k selection at that size; native silently repeats proposals
+  to continue.
+- Consequently the completed 128-pixel run is not paper-like and its low AP
+  cannot be used to judge the corrected training objective. Future fast
+  iterations must either retain at least 900 encoder tokens or explicitly
+  reduce `num_queries` in both paths and be labelled non-paper.
+
+[2026-08-24] Completed five-stage DiffusionRegPose external parity audit
+
+- Added explicit CUDA device handling to `scripts/investigation/diffusionregpose_parity.py`.
+- On valid 256x384 inputs, backbone/projections, encoder memory, proposals,
+  all six decoder layers, and final heads matched the external model within
+  approximately 1e-5; the standalone attention operator differed only by
+  expected ~1e-7 CUDA roundoff.
+- Denoising labels, boxes, embeddings, and attention masks matched exactly.
+- Criterion losses/gradients and AdamW updates matched exactly on fixed tensors;
+  optimizer groups and milestones matched the external two-group policy.
+- The full 900-query decoder probe OOMs on the 24 GB GPU due to dense attention;
+  this is a resource limitation, not evidence of model divergence.
+
+[2026-08-24] Real-batch parity found and fixed decoder training divergences
+
+- Added a real CrowdPose one-image parity probe at valid 256x384 resolution.
+- Found that native used only the expanded attention mask after query expansion;
+  external uses a box-stage mask for the first two layers and an expanded mask
+  afterward. Added the two-stage mask contract.
+- Found that native kept updated decoder reference points attached across layers;
+  external detaches them. Matched the external detach boundary.
+- Real-batch outputs and all auxiliary/intermediate/DN losses now match within
+  floating-point roundoff; focused tests remain 41 passed.
+- Final-output gradients are close, but deformable-attention internal gradients
+  still differ (max ~8.14 on decoder layer 1 sampling offsets) and AdamW deltas
+  differ by ~4e-4. Training parity remains unresolved pending MSDA backward audit.
+
+[2026-08-24] Completed real-batch gradient-parity fix
+
+- Verified native and external compiled MSDA forward/backward operators match to
+  float32 roundoff; no CUDA kernel change was needed.
+- Replaced torchvision GIoU with the external implementation's 1e-6-stabilized
+  formula in matching and criterion code.
+- Corrected decoder reference-history graph semantics by recording updated
+  references before the per-layer detach and consuming `references[:-1]`.
+- Real-batch final outputs and total loss match exactly; maximum parameter
+  gradient difference fell from ~8.14 to ~9.87e-4 and AdamW delta difference
+  to ~2.61e-4, consistent with CUDA reduction order. Focused tests: 42 passed.
+[2026-08-24] Added deterministic DiffusionRegPose overfit controls
+
+- Added opt-in controls to disable random flip/crop in the external CrowdPose
+  training transform.
+- Added opt-in seeded diffusion target generation covering placeholder proposal
+  noise and q-sampling noise.
+- Preserved paper/default behavior when the new options are unset.
+- Added deterministic transform and target-builder tests.
+- Focused DiffusionRegPose training tests: 35 passed.
+[2026-08-24] Added deterministic one-sample overfit preset
+
+- Added opt-in model RNG replay for denoising-query randomness.
+- Added the full-structure `benchmark_diffusionregpose_overfit` preset with
+  one sample, matched 256/384 train/eval resizing, no flip/crop, fixed noise,
+  and no learning-rate decay during the 200-epoch diagnostic.
+- Hydra composition validated and focused tests remain passing.
+[2026-08-24] Stabilized diagnostic AP sampling
+
+- Validation sampling now accepts the deterministic diagnostic generator, so
+  AP checkpoints reuse the same initial diffusion state.
+- Preserved the old call shape when no diagnostic seed is configured.
+- The full-structure deterministic overfit run is active in tmux; at epoch 40
+  it had train loss ~86 and nonzero pose AP at epochs 10 and 40.
+- Focused DiffusionRegPose training tests: 35 passed.
+[2026-08-24] Completed deterministic no-augmentation overfit run
+
+- The full-structure one-sample run completed 200 epochs.
+- Train loss reached 51.14; best validation loss was 35.71 at epoch 120.
+- Pose AP peaked at 0.149 and bbox AP reached 0.150, confirming nonzero
+  learning under deterministic preprocessing.
+- Started the crop-enabled A/B run in tmux session
+  `diffusionregpose-overfit-crop` with all other settings unchanged.
+[2026-08-24] Completed crop-augmentation A/B comparison
+
+- The crop-enabled full-structure run completed 200 epochs with identical
+  model, fixed RNG, resolution, LR policy, and one-image split.
+- Its final train/validation losses were 119.93/82.51 versus 51.14/46.50
+  without augmentation.
+- Pose AP remained zero at the final checkpoint and was zero at most cadence
+  points; no-augmentation pose AP peaked at 0.149.
+- Crop augmentation is a strong low-resolution failure candidate; target
+  clipping/visibility statistics should be audited before re-enabling it.
+[2026-08-24] Started fixed-seed AP trajectory rerun
+
+- Launched a fresh full-structure no-augmentation one-sample run with fixed
+  training and validation diffusion RNG in tmux session
+  `diffusionregpose-overfit-fixed`.
+- This rerun replaces the previous invalid AP trend for the clean diagnostic;
+  earlier runs remain available for comparison.
+[2026-08-24] Completed fixed-seed AP trajectory rerun
+
+- The clean no-augmentation one-sample run completed 200 epochs with fixed
+  training and validation diffusion RNG.
+- Train/validation loss fell to 22.46/20.01.
+- Pose AP reached 0.323 and bbox AP 0.271 at epoch 200.
+- The corrected trajectory improved overall, showing that the previous
+  apparent AP decline was materially caused by unseeded validation sampling.
+[2026-08-24] Added progress-bar configuration and launched full-resolution augmentation test
+
+- Added explicit `training.enable_progress_bar` support and a refresh-rate-one
+  Lightning progress callback; disabled mode is handled without callback
+  conflicts.
+- Added the full-resolution augmented one-sample diagnostic preset using the
+  external augmentation scales.
+- Focused runner and DiffusionRegPose tests: 44 passed.
+- Launched tmux session `diffusionregpose-overfit-full`.
+[2026-08-24] Verified progress bar and launched full-resolution augmented run
+
+- Runner tests and DiffusionRegPose tests: 44 passed.
+- Progress output now advances through each one-batch train and validation loop
+  using the explicit TQDM callback.
+- Full-resolution augmented overfit run is active in tmux session
+  `diffusionregpose-overfit-full`.
+[2026-08-24] Started fixed-augmentation full-resolution diagnostic
+
+- Added opt-in `train_transform_seed` replay for crop/flip/resize transforms.
+- Added regression coverage; focused tests: 45 passed.
+- Launched tmux session `diffusionregpose-overfit-fixed-aug` using the full
+  resolution augmented one-sample preset.
+[2026-08-24] Fixed-augmentation test exposed train/eval view mismatch
+
+- The full-resolution fixed-augmentation run completed with train loss ~42.9,
+  validation loss ~75.2, and pose AP ~0.021.
+- The result is not a decisive transform failure: training used the replayed
+  crop/flip view while validation/AP used the unaugmented full-resolution view.
+- A crop requires inverse geometry before original-image AP can be compared.
+
+[2026-08-24] Fixed cropped-person diffusion mask divergence
+
+- Identified that cropped-out people were invalidated for clean losses but
+  remained active in `person_mask` and therefore in diffusion proposals.
+- Updated the external-transform batch path to derive `person_mask` from the
+  transformed box labels while retaining padded rows.
+- Added a regression test; DiffusionRegPose training tests: 37 passed.
+
+[2026-08-24] Matched isolated transform resize behavior
+
+- Found that disabling crop forced `scales[0]`, unlike the external
+  `RandomResize(scales)` used before the crop branch.
+- Changed the branch to sample the configured resize scale and added a
+  regression test.
+- Full repository tests: 322 passed.
+
+[2026-08-24] Completed isolated crop/flip transform diagnostic
+
+- Ran resize-only, flip-only, crop-only, and crop+flip on identical controlled
+  samples.
+- All outputs were finite and geometry remained coherent; crop+flip correctly
+  invalidated the person removed by the crop.
+- The corrected implementation is ready for short full-resolution crop-only
+  and flip-only overfit comparisons.
+
+[2026-08-24] Launched corrected full-augmentation diagnostic
+
+- Started `diffusionregpose-overfit-full-fixed-aug` in tmux.
+- The run initialized on CUDA with 49,304,924 trainable parameters and reached
+  the first epoch; the progress bar is active.
+- Configuration uses full-resolution external crop+flip augmentation,
+  transform seed 17, fixed model/diffusion seed 17, and 200 epochs.
+
+[2026-08-24] Launched stochastic full-augmentation diagnostic
+
+- Added `benchmark_diffusionregpose_overfit_full_aug` with
+  `train_transform_seed: null` so crop/flip choices vary as in the external
+  pipeline.
+- Launched tmux session `diffusionregpose-overfit-full-aug` on CUDA.
+- Initialization completed with the expected 49,304,924 trainable parameters;
+  validation remains non-augmented.
+
+[2026-08-24] Reduced validation frequency and extended stochastic run
+
+- Added `training.check_val_every_n_epoch` to the shared runner/config.
+- Set the stochastic full-augmentation diagnostic to validate every 5 epochs
+  and run for 500 epochs; AP cadence remains every 10 epochs.
+- Focused runner tests passed and tmux session
+  `diffusionregpose-overfit-full-aug` was restarted with the updated config.
+
+[2026-08-24] Reduced validation and AP cadence to 50 epochs
+
+- Set validation loss and AP evaluation to every 50 epochs for the 500-epoch
+  stochastic augmentation diagnostic.
+- Restarted `diffusionregpose-overfit-full-aug`; startup confirmed
+  `max_epochs=500`, `check_val_every_n_epoch=50`, and
+  `val_ap_every_n_epochs=50`.
+
+[2026-08-24] Extended stochastic diagnostic to 2000 epochs
+
+- Set `max_epochs=2000`, validation loss every 200 epochs, and AP every 200
+  epochs.
+- Restarted `diffusionregpose-overfit-full-aug`; startup confirmed the new
+  configuration and CUDA training is progressing.
+
+[2026-08-24] Crop+flip run diagnosed; launched flip-only comparison
+
+- The 2000-epoch crop+flip run completed with pose AP max 0.0208 and bbox AP
+  max 0.1088, despite lower validation loss.
+- On the selected image, stochastic crops removed at least one of five people
+  in 39.8% of sampled views and retained only two people in 33.9% of views.
+- Launched `diffusionregpose-overfit-full-flip` with stochastic flip, crop
+  disabled, 2000 epochs, and validation/AP every 200 epochs.
+
+[2026-08-24] Launched low-resolution flip-only training
+
+- Stopped the completed full-resolution flip-only session.
+- Started `diffusionregpose-lowres-flip` using 128/192 resolution, full data,
+  batch size 8, stochastic flips, disabled crops, 80 epochs, and validation/AP
+  every 10 epochs.
+
+[2026-08-24] Corrected low-resolution request to one-sample overfit
+
+- Stopped the mistakenly launched full-data low-resolution run.
+- Started `diffusionregpose-overfit-lowres-flip` using 256/384 resolution,
+  one sample, stochastic flips, disabled crops, 2000 epochs, and validation/AP
+  every 200 epochs.
+
+[2026-08-24] Launched mild-crop low-resolution overfit
+
+- Replaced the low-resolution flip-only run with crop range `[230, 256]`
+  after the 256-pixel resize, approximately 90–100% of the resized dimensions.
+- Stochastic flips remain enabled; launched
+  `diffusionregpose-overfit-near-crop` for 2000 epochs with validation/AP
+  every 200 epochs.
+
+[2026-08-24] Launched moderate-crop low-resolution overfit
+
+- Replaced the near-crop run with crop range `[192, 243]`, corresponding to
+  75–95% of the 256-pixel resized short side.
+- Stochastic flips remain enabled; launched
+  `diffusionregpose-overfit-mid-crop` with 2000 epochs and validation/AP every
+  200 epochs.
+
+[2026-08-24] Launched full-scale mild-crop training
+
+- Added `benchmark_diffusionregpose_full_mild_crop.yaml` with full data,
+  80 epochs, batch size 1, gradient accumulation 8, stochastic flips, and
+  full-resolution crop range `[450, 570]` after a 600-pixel pre-crop resize.
+- Stopped the moderate-crop overfit run and launched
+  `diffusionregpose-full-mild-crop` on CUDA.
+- Startup confirmed 49,304,924 trainable parameters and 12,000 training
+  samples.
+
+[2026-08-24] Corrected full-data run to overfit-test resolution
+
+- Stopped the mistakenly launched 128/192 full-data run.
+- Added `benchmark_diffusionregpose_256_mild_crop.yaml` and launched
+  `diffusionregpose-256-mild-crop` at 256/384 resolution with full data,
+  crop range `[192, 243]`, stochastic flips, batch size 8, 80 epochs, and
+  validation/AP every 10 epochs.
+
+[2026-08-24] Corrected validation cadence for 256/384 full-data run
+
+- Restored validation loss to every epoch (`check_val_every_n_epoch=1`).
+- Kept AP evaluation at every 10 epochs.
+- Restarted `diffusionregpose-256-mild-crop`; startup confirmed the corrected
+  cadence and 256/384 full-data configuration.
+
+[2026-08-24] Restarted full-data run with external disjoint evaluation split
+
+- Changed validation annotations to `crowdpose_test.json`; training remains
+  on `crowdpose_trainval.json`.
+- Restarted `diffusionregpose-256-mild-crop`; startup confirmed validation
+  every epoch and AP every 10 epochs.

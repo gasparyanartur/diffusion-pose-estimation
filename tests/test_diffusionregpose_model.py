@@ -7,6 +7,7 @@ import torch
 
 from src.models.pipelines.pose_estimators.diffusionregpose.model import (
     DiffusionRegPoseModel,
+    gen_encoder_output_proposals,
 )
 
 
@@ -101,14 +102,27 @@ def test_two_stage_selection_returns_encoder_queries_and_boxes() -> None:
     inputs = model.prepare_transformer_inputs(images, torch.zeros(1, 128, 128, dtype=torch.bool))
     memory = model.encode_features(inputs)
 
-    query_features, reference_boxes, class_logits, initial_boxes = model.select_two_stage_queries(
+    query_features, reference_boxes, class_logits, intermediate_boxes = model.select_two_stage_queries(
         memory, inputs
     )
 
     assert query_features.shape == (1, 32, 256)
     assert reference_boxes.shape == (1, 32, 4)
     assert class_logits.shape == (1, 32, 2)
-    assert initial_boxes.shape == (1, 32, 4)
+    assert intermediate_boxes.shape == (1, 32, 4)
+    output_memory, output_proposals = gen_encoder_output_proposals(
+        memory, inputs.padding_mask, inputs.spatial_shapes,
+    )
+    output_memory = model.transformer.enc_output_norm(model.transformer.enc_output(output_memory))
+    unselected_boxes = model.transformer.enc_out_bbox_embed(output_memory) + output_proposals
+    unselected_logits = model.transformer.enc_out_class_embed(output_memory)
+    indices = torch.topk(unselected_logits.max(-1).values, 32, dim=1).indices
+    expected_boxes = torch.gather(
+        unselected_boxes,
+        1,
+        indices.unsqueeze(-1).expand(-1, -1, 4),
+    ).sigmoid()
+    torch.testing.assert_close(intermediate_boxes, expected_boxes)
     assert torch.isfinite(query_features).all()
 
 
@@ -154,6 +168,31 @@ def test_forward_decodes_iterative_boxes_and_auxiliary_outputs() -> None:
     assert all(output["aux_outputs"][index]["pred_boxes"].shape == (1, 32, 4) for index in (0, 1))
     assert all(aux["pred_boxes"].shape == (1, 8, 4) for aux in output["aux_outputs"][2:])
     assert torch.isfinite(output["pred_boxes"]).all()
+
+
+def test_training_forward_exposes_selected_encoder_outputs_for_two_stage_loss() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        sampling_timesteps=1,
+        num_queries=32,
+        num_proposals=8,
+        num_group=8,
+    )
+    images = torch.rand(1, 3, 128, 128)
+    diffusion_keypoints = torch.rand(1, 8, 14 * 2)
+    timesteps = torch.zeros(1, dtype=torch.long)
+    targets = [{
+        "labels": torch.tensor([1]),
+        "boxes": torch.tensor([[0.5, 0.5, 0.2, 0.3]]),
+    }]
+
+    output = model(images, diffusion_keypoints, timesteps, targets)
+
+    intermediate = output["interm_outputs"]
+    assert intermediate["pred_logits"].shape == (1, 32, 2)
+    assert intermediate["pred_boxes"].shape == (1, 32, 4)
+    assert intermediate["pred_keypoints"].shape == (1, 32, 14 * 3)
+    assert torch.all((intermediate["pred_boxes"] >= 0) & (intermediate["pred_boxes"] <= 1))
 
 
 def test_forward_uses_timestep_conditioning() -> None:

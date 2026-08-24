@@ -1,0 +1,18 @@
+# Full-structure, deterministic one-sample overfit diagnostic.
+
+defaults:
+  - pipeline: diffusionregpose_overfit
+  - data: crowdpose_diffusionregpose_overfit
+  - hardware: auto
+  - training: diffusionregpose_overfit
+  - _self_
+
+run_name: diffusionregpose_overfit
+out_dir: results/diffusionregpose_overfit
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

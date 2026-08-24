@@ -1,0 +1,12 @@
+# Full-resolution, full-structure augmented one-sample diagnostic with a
+# replayed transform realization.
+
+defaults:
+  - benchmark_diffusionregpose_overfit_full
+  - _self_
+
+run_name: diffusionregpose_overfit_full_fixed_aug
+out_dir: results/diffusionregpose_overfit_full_fixed_aug
+
+data:
+  train_transform_seed: 17

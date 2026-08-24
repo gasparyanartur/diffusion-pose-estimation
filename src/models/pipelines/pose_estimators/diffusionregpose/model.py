@@ -325,6 +325,36 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
                 mask[batch_index, :, query_index, end:dn_count] = True
         return mask.flatten(0, 1)
 
+    def training_box_attention_mask(
+        self,
+        targets: list[dict[str, Tensor]],
+        batch_size: int,
+        device: torch.device,
+    ) -> Tensor:
+        """Build the external mask used before keypoint-query expansion."""
+        dn_count = self.transformer.decoder.num_dn
+        normal_count = self.num_queries
+        total_count = dn_count + normal_count
+        mask = torch.zeros(
+            batch_size,
+            self.transformer.decoder.num_heads,
+            total_count,
+            total_count,
+            dtype=torch.bool,
+            device=device,
+        )
+        mask[:, :, dn_count:, :dn_count] = True
+        for batch_index, target in enumerate(targets):
+            target_count = target["labels"].numel()
+            if target_count == 0:
+                continue
+            for query_index in range(dn_count):
+                start = (query_index // target_count) * target_count
+                end = min(start + target_count, dn_count)
+                mask[batch_index, :, query_index, :start] = True
+                mask[batch_index, :, query_index, end:dn_count] = True
+        return mask.flatten(0, 1)
+
     def _prepare_denoising_queries(
         self,
         targets: list[dict[str, Tensor]],
@@ -387,7 +417,12 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             images, padding_mask,
         )
         memory = self.encode_features(inputs, timesteps)
-        query_features, reference_boxes, _, _ = self.select_two_stage_queries(memory, inputs)
+        (
+            query_features,
+            reference_boxes,
+            intermediate_logits,
+            intermediate_boxes,
+        ) = self.select_two_stage_queries(memory, inputs)
         denoising = self.training and targets is not None
         dn_state: dict[str, Tensor] | None = None
         if denoising:
@@ -409,6 +444,10 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             # attention-mask argument; the decoder applies it only after
             # diffusion keypoint queries are expanded.
             tgt_mask=(
+                self.training_box_attention_mask(targets, images.shape[0], images.device)
+                if denoising else None
+            ),
+            tgt_mask2=(
                 self.training_attention_mask(targets, images.shape[0], images.device)
                 if denoising else self.inference_attention_mask(images.shape[0], images.device)
             ),
@@ -419,7 +458,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         dn_count = self.transformer.decoder.num_dn if denoising else 0
         for features, references, box_head, class_head in zip(
             decoder_features,
-            decoder_references[1:],
+            decoder_references[:-1],
             self.bbox_embed,
             self.class_embed,
         ):
@@ -467,6 +506,18 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         # The final decoder prediction is returned separately. Auxiliary
         # losses are applied only to the preceding decoder outputs.
         result = {**decoder_outputs[-1], "aux_outputs": decoder_outputs[:-1]}
+        if self.training:
+            result["interm_outputs"] = {
+                "pred_logits": intermediate_logits,
+                "pred_boxes": intermediate_boxes,
+                "pred_keypoints": torch.zeros(
+                    intermediate_logits.shape[0],
+                    intermediate_logits.shape[1],
+                    self.transformer.decoder.num_body_points * 3,
+                    dtype=intermediate_logits.dtype,
+                    device=intermediate_logits.device,
+                ),
+            }
         if dn_state is not None:
             result["dn_class_input"] = dn_state["labels"]
             result["dn_bbox_input"] = dn_state["boxes"]
@@ -565,7 +616,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             torch.gather(output_memory, 1, gather_features).detach(),
             torch.gather(box_logits, 1, gather_boxes).detach(),
             torch.gather(class_logits, 1, gather_boxes[..., :class_logits.shape[-1]]),
-            torch.gather(output_proposals, 1, gather_boxes).sigmoid(),
+            torch.gather(box_logits, 1, gather_boxes).sigmoid(),
         )
 
     def _level_position_offsets(self, inputs: TransformerInputs) -> Tensor:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +9,7 @@ import torch
 from hydra import compose, initialize_config_dir
 from src.data import DataConfig
 from src.data.data_module import (
+    CrowdPoseDataModule,
     _boxes_to_image_canonical_batch,
     _external_eval_transform,
     _external_train_transform,
@@ -19,10 +22,13 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     CROWDPOSE_PERSON_LABEL,
     DiffusionRegPoseCriterion,
     DiffusionRegPoseMatcher,
+    DiffusionRegPosePipeline,
     DiffusionRegPosePipelineConfig,
+    _generalized_box_iou,
     build_diffusionregpose_targets,
     diffusionregpose_ap_epoch_active,
     update_diffusionregpose_ap_metric,
+    update_diffusionregpose_bbox_ap_metric,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.model import DiffusionRegPoseModel
 
@@ -39,6 +45,24 @@ def _batch() -> dict[str, torch.Tensor]:
         "gt_box_labeled": torch.ones(1, 1),
         "img_hw": torch.tensor([[100.0, 100.0]]),
     }
+
+
+def test_diffusionregpose_giou_matches_reference_epsilon_formula() -> None:
+    boxes1 = torch.tensor([[0.01, 0.02, 0.08, 0.11]], requires_grad=True)
+    boxes2 = torch.tensor([[0.03, 0.01, 0.09, 0.10]])
+
+    actual = _generalized_box_iou(boxes1, boxes2)
+    intersection = torch.tensor(0.05 * 0.08)
+    union = torch.tensor(0.07 * 0.09 + 0.06 * 0.09) - intersection
+    enclosing_area = torch.tensor(0.08 * 0.10)
+    expected = intersection / (union + 1e-6) - (
+        enclosing_area - union
+    ) / (enclosing_area + 1e-6)
+
+    assert torch.allclose(actual, expected.unsqueeze(0), atol=1e-7)
+    actual.sum().backward()
+    assert boxes1.grad is not None
+    assert torch.isfinite(boxes1.grad).all()
 
 
 def test_diffusionregpose_config_accepts_data_subset_override() -> None:
@@ -149,6 +173,37 @@ def test_diffusionregpose_ap_uses_original_and_resized_dimensions_separately(mon
     assert torch.equal(captured["nms_target_sizes"], torch.tensor([[80.0, 120.0]]))
 
 
+def test_diffusionregpose_bbox_ap_uses_shared_pose_nms_results() -> None:
+    class Metric:
+        def update(self, boxes, scores, labels, image_ids):
+            self.boxes = boxes
+            self.scores = scores
+            self.labels = labels
+            self.image_ids = image_ids
+
+    metric = Metric()
+    update_diffusionregpose_bbox_ap_metric(
+        metric,
+        [{
+            "labels": torch.tensor([1, 0]),
+            "boxes": torch.tensor([[10.0, 20.0, 30.0, 40.0], [0.0, 0.0, 1.0, 1.0]]),
+            "scores": torch.tensor([0.9, 0.8]),
+            "keypoints": torch.zeros(2, 42),
+        }],
+        {
+            "image": torch.zeros(1, 3, 80, 120),
+            "original_img_hw": torch.tensor([[200.0, 300.0]]),
+            "img_hw": torch.tensor([[80.0, 120.0]]),
+            "image_id": torch.tensor([7]),
+        },
+    )
+
+    assert metric.boxes.tolist() == [[[10.0, 20.0, 30.0, 40.0]]]
+    torch.testing.assert_close(metric.scores, torch.tensor([[0.9]]))
+    assert metric.labels.tolist() == [[1]]
+    assert metric.image_ids.tolist() == [7]
+
+
 def test_reduced_pipeline_runs_validation_ap_on_configured_cadence(monkeypatch) -> None:
     class Metric:
         def __init__(self, ann_file):
@@ -166,9 +221,37 @@ def test_reduced_pipeline_runs_validation_ap_on_configured_cadence(monkeypatch) 
         def reset(self):
             self.reset_count += 1
 
+    class BBoxMetric(Metric):
+        def update(self, boxes, scores, labels, image_ids):
+            super().update(boxes, scores, labels, image_ids)
+            self.box_counts = getattr(self, "box_counts", []) + [boxes.shape[1]]
+
+        def compute(self):
+            return {"crowdpose/bbox/AP": 0.5}
+
     monkeypatch.setattr(
         "src.models.pipelines.pose_estimators.diffusionregpose.training.DiffusionRegPoseAPMetric",
         Metric,
+    )
+    monkeypatch.setattr(
+        "src.models.pipelines.pose_estimators.diffusionregpose.training.DiffusionRegPoseBBoxAPMetric",
+        BBoxMetric,
+    )
+    postprocess_calls = []
+
+    def fake_postprocess(outputs, target_sizes, *, num_body_points, nms_target_sizes):
+        del outputs, target_sizes, num_body_points, nms_target_sizes
+        postprocess_calls.append(None)
+        return [{
+            "labels": torch.tensor([1]),
+            "boxes": torch.full((1, 4), 0.5),
+            "scores": torch.ones(1),
+            "keypoints": torch.zeros(1, 42),
+        }]
+
+    monkeypatch.setattr(
+        "src.models.pipelines.pose_estimators.diffusionregpose.training.postprocess_crowdpose",
+        fake_postprocess,
     )
     pipeline = DiffusionRegPosePipelineConfig(
         backbone_pretrained=False,
@@ -222,8 +305,13 @@ def test_reduced_pipeline_runs_validation_ap_on_configured_cadence(monkeypatch) 
 
     assert pipeline._val_ap.update_count == 1
     assert pipeline._val_ap.reset_count == 1
+    assert pipeline._val_bbox_ap.update_count == 1
+    assert pipeline._val_bbox_ap.reset_count == 1
+    assert pipeline._val_bbox_ap.box_counts == [1]
     assert logged["ap-val/crowdpose/AP"]["prog_bar"] is True
+    assert logged["ap-val/crowdpose/bbox/AP"]["prog_bar"] is False
     assert seen_padding_masks == [batch["padding_mask"]]
+    assert len(postprocess_calls) == 1
 
 
 def test_diffusionregpose_debug_config_is_small_and_deterministic() -> None:
@@ -347,6 +435,112 @@ def test_external_crop_keeps_diffusion_keypoint_rows_after_clean_target_filter(m
     torch.testing.assert_close(diffusion_keypoints[1], torch.ones_like(clean_keypoints[1]))
 
 
+def test_external_train_transform_can_disable_random_augmentation() -> None:
+    image = torch.arange(3 * 40 * 60, dtype=torch.float32).reshape(3, 40, 60)
+    keypoints = torch.tensor([[[0.0, 0.0], [0.5, -0.5]]])
+    labeled = torch.ones(1, 2)
+    visible = torch.ones(1, 2)
+    boxes = torch.tensor([[10.0, 10.0, 20.0, 10.0]])
+    box_labeled = torch.ones(1)
+
+    first = _external_train_transform(
+        image, keypoints, labeled, visible, boxes, box_labeled,
+        scales=(32,), max_size=64, scales2_resize=(16,), scales2_crop=(8, 16),
+        random_flip=False, random_crop=False,
+    )
+    second = _external_train_transform(
+        image, keypoints, labeled, visible, boxes, box_labeled,
+        scales=(32,), max_size=64, scales2_resize=(16,), scales2_crop=(8, 16),
+        random_flip=False, random_crop=False,
+    )
+    for first_value, second_value in zip(first, second):
+        torch.testing.assert_close(first_value, second_value)
+
+
+def test_external_train_transform_samples_resize_scale_when_crop_is_disabled() -> None:
+    class ChooseLast:
+        def random(self) -> float:
+            return 0.0
+
+        def choice(self, values):
+            return values[-1]
+
+    image = torch.zeros(3, 40, 60)
+    keypoints = torch.zeros(1, 2, 2)
+    labeled = torch.ones(1, 2)
+    visible = torch.ones(1, 2)
+    boxes = torch.tensor([[10.0, 10.0, 20.0, 10.0]])
+    box_labeled = torch.ones(1)
+
+    transformed = _external_train_transform(
+        image, keypoints, labeled, visible, boxes, box_labeled,
+        scales=(32, 48), max_size=128, scales2_resize=(16,), scales2_crop=(8, 16),
+        random_flip=False, random_crop=False, rng=ChooseLast(),
+    )
+
+    assert transformed[0].shape[-2:] == (48, 72)
+
+
+def test_external_train_transform_replays_seeded_augmentation() -> None:
+    image = torch.zeros(3, 80, 100)
+    keypoints = torch.tensor([[[0.0, 0.0], [0.5, -0.5]]])
+    labeled = torch.ones(1, 2)
+    visible = torch.ones(1, 2)
+    boxes = torch.tensor([[10.0, 10.0, 40.0, 30.0]])
+    box_labeled = torch.ones(1)
+    kwargs = dict(
+        scales=(64,), max_size=96, scales2_resize=(64,), scales2_crop=(32, 64),
+        random_flip=True, random_crop=True,
+    )
+    first = _external_train_transform(
+        image, keypoints, labeled, visible, boxes, box_labeled,
+        rng=random.Random(17), **kwargs,
+    )
+    second = _external_train_transform(
+        image, keypoints, labeled, visible, boxes, box_labeled,
+        rng=random.Random(17), **kwargs,
+    )
+    for first_value, second_value in zip(first, second):
+        torch.testing.assert_close(first_value, second_value)
+
+
+def test_external_crop_updates_person_mask_for_removed_people(monkeypatch) -> None:
+    module = CrowdPoseDataModule(
+        train_ann=Path("train.json"), val_ann=Path("val.json"),
+        test_ann=Path("test.json"), img_dir=Path("images"),
+        val_pred_cache=None, test_pred_cache=None, batch_size=1,
+        num_workers=0, ap_batch_size=1, target_format="set",
+        external_train_transforms=True,
+    )
+    module.trainer = SimpleNamespace(training=True)
+
+    def fake_transform(*args, **kwargs):
+        del kwargs
+        image, keypoints, labeled, visible, boxes, box_labeled = args[:6]
+        return (
+            image, keypoints, keypoints.clone(), labeled, visible, boxes,
+            torch.tensor([1.0, 0.0]), image.new_tensor([100.0, 100.0]),
+            torch.ones(2),
+        )
+
+    monkeypatch.setattr("src.data.data_module._external_train_transform", fake_transform)
+    batch = {
+        "image": [torch.zeros(3, 100, 100)],
+        "gt_keypoints": torch.zeros(1, 2, 14, 2),
+        "gt_labeled": torch.ones(1, 2, 14),
+        "gt_visible": torch.ones(1, 2, 14),
+        "person_scale": torch.ones(1, 2),
+        "person_mask": torch.ones(1, 2),
+        "gt_boxes_pixel": torch.ones(1, 2, 4),
+        "gt_box_labeled": torch.ones(1, 2),
+        "img_hw": torch.tensor([[100.0, 100.0]]),
+    }
+
+    transformed = module.on_after_batch_transfer(batch, 0)
+
+    assert transformed["person_mask"].tolist() == [[1.0, 0.0]]
+
+
 def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
     batch = _batch()
     batch["gt_keypoints"] = torch.tensor([[[[-0.5, -0.5]], [[0.5, 0.5]]]])
@@ -372,6 +566,23 @@ def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
         diffusion_inputs,
         torch.tensor([[[-3.0, -3.0], [3.0, 3.0]]]),
     )
+
+
+def test_diffusion_targets_reuse_seeded_noise() -> None:
+    batch = _batch()
+    diffusion = type("Diffusion", (), {
+        "scale": 6.0,
+        "q_sample": lambda self, x_start, timesteps, noise: x_start + noise,
+    })()
+
+    first, first_timesteps, _ = build_diffusionregpose_targets(
+        batch, diffusion, num_proposals=3, num_body_points=2, noise_seed=17,
+    )
+    second, second_timesteps, _ = build_diffusionregpose_targets(
+        batch, diffusion, num_proposals=3, num_body_points=2, noise_seed=17,
+    )
+    torch.testing.assert_close(first, second)
+    assert torch.equal(first_timesteps, second_timesteps)
 
 
 def test_external_compatible_model_has_reference_trainable_parameter_count() -> None:
@@ -494,6 +705,90 @@ def test_diffusionregpose_classification_loss_has_one_query_scaling() -> None:
     torch.testing.assert_close(criterion(outputs, targets)["loss_ce"], expected)
 
 
+def test_diffusionregpose_classification_diagnostics_split_clean_focal_loss() -> None:
+    criterion = DiffusionRegPoseCriterion(
+        num_body_points=2,
+        num_box_decoder_layers=1,
+    )
+    outputs = {
+        "pred_logits": torch.tensor([[[0.0, 3.0], [0.0, -2.0]]]),
+        "pred_boxes": torch.tensor([[[0.0, 0.0, 0.2, 0.4], [0.5, 0.5, 0.2, 0.4]]]),
+        "pred_keypoints": torch.tensor([[[0.0, 0.0, 0.1, 0.1, 1.0, 1.0]] * 2]),
+    }
+    targets = [{
+        "labels": torch.tensor([CROWDPOSE_PERSON_LABEL]),
+        "boxes": torch.tensor([[0.0, 0.0, 0.2, 0.4]]),
+        "keypoints": torch.tensor([[0.0, 0.0, 0.1, 0.1, 1.0, 1.0]]),
+        "area": torch.tensor([0.08]),
+    }]
+
+    losses = criterion(outputs, targets)
+
+    torch.testing.assert_close(
+        losses["loss_ce_positive"] + losses["loss_ce_negative"],
+        losses["loss_ce"],
+    )
+    assert losses["matched_queries"].item() == 1
+    assert losses["person_score_matched"] > losses["person_score_unmatched"]
+
+
+def test_diffusionregpose_logs_classification_diagnostics_under_debug_namespace() -> None:
+    logged = {}
+    module = SimpleNamespace(
+        log=lambda name, value, **kwargs: logged.setdefault(name, (value, kwargs)),
+    )
+    losses = {
+        "total": torch.tensor(2.0),
+        "loss_ce": torch.tensor(1.0),
+        "loss_ce_positive": torch.tensor(0.25),
+        "loss_ce_negative": torch.tensor(0.75),
+        "person_score_matched": torch.tensor(0.8),
+        "person_score_unmatched": torch.tensor(0.2),
+        "matched_queries": torch.tensor(3.0),
+    }
+
+    DiffusionRegPosePipeline._log_losses(module, "train", losses, batch_size=2)
+
+    assert "train/loss" in logged
+    assert "train/loss_ce" in logged
+    assert "debug/train/loss_ce_positive" in logged
+    assert "debug/train/loss_ce_negative" in logged
+    assert "debug/train/person_score_matched" in logged
+    assert "debug/train/person_score_unmatched" in logged
+    assert "debug/train/matched_queries" in logged
+
+
+def test_diffusionregpose_denoising_classification_uses_external_sentinel_label() -> None:
+    criterion = DiffusionRegPoseCriterion(num_body_points=2, num_box_decoder_layers=1)
+    logits = torch.tensor([[[0.1, -0.2], [0.3, 0.4], [-0.5, 0.6]]])
+    labels = torch.tensor([[CROWDPOSE_PERSON_LABEL, 2, 0]])
+    outputs = {
+        "dn_class_pred": logits,
+        "dn_class_input": labels,
+        "dn_bbox_pred": torch.full((1, 3, 4), 0.5),
+        "dn_bbox_input": torch.full((1, 3, 4), 0.5),
+    }
+
+    actual = criterion._denoising_losses(outputs)["dn_loss_ce"]
+    # The external criterion creates C+1 classes then drops its C/no-object
+    # sentinel. Label 2 therefore becomes an all-zero binary target.
+    targets = torch.zeros(1, 3, 3)
+    targets.scatter_(2, labels.unsqueeze(-1), 1)
+    targets = targets[..., :-1]
+    probabilities = logits.sigmoid()
+    cross_entropy = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, reduction="none",
+    )
+    p_t = probabilities * targets + (1 - probabilities) * (1 - targets)
+    alpha_t = 0.25 * targets + 0.75 * (1 - targets)
+    expected = (
+        (alpha_t * cross_entropy * (1 - p_t).pow(2)).mean(1).sum()
+        / labels.shape[1] * logits.shape[1]
+    )
+
+    torch.testing.assert_close(actual, expected)
+
+
 def test_diffusionregpose_auxiliary_losses_use_reference_weights() -> None:
     criterion = DiffusionRegPoseCriterion(
         num_classes=2,
@@ -517,6 +812,46 @@ def test_diffusionregpose_auxiliary_losses_use_reference_weights() -> None:
     expected = final_values["total"] + criterion._weighted_clean_loss(auxiliary_values)
 
     torch.testing.assert_close(losses["total"], expected)
+
+
+def test_diffusionregpose_intermediate_encoder_losses_use_reference_weights() -> None:
+    criterion = DiffusionRegPoseCriterion(
+        num_classes=2,
+        num_body_points=2,
+        num_box_decoder_layers=0,
+    )
+    output = {
+        "pred_logits": torch.tensor([[[0.0, 1.0]]]),
+        "pred_boxes": torch.tensor([[[0.2, 0.3, 0.4, 0.5]]]),
+        "pred_keypoints": torch.tensor([[[0.2, 0.3, 0.4, 0.5, 1.0, 1.0]]]),
+    }
+    intermediate = {
+        "pred_logits": torch.tensor([[[0.3, 0.7]]]),
+        "pred_boxes": torch.tensor([[[0.4, 0.3, 0.2, 0.5]]]),
+        "pred_keypoints": torch.zeros(1, 1, 6),
+    }
+    targets = [{
+        "labels": torch.tensor([CROWDPOSE_PERSON_LABEL]),
+        "boxes": torch.tensor([[0.1, 0.2, 0.3, 0.4]]),
+        "keypoints": torch.tensor([[0.1, 0.2, 0.3, 0.4, 1.0, 1.0]]),
+        "area": torch.tensor([0.12]),
+    }]
+
+    final_values = criterion._loss_for_outputs(output, targets)
+    intermediate_values = criterion._loss_for_outputs(
+        intermediate, targets, include_keypoints=False,
+    )
+    losses = criterion({**output, "interm_outputs": intermediate}, targets)
+    expected = final_values["total"] + (
+        criterion.weights.cls * intermediate_values["loss_ce"]
+        + criterion.weights.bbox * intermediate_values["loss_bbox"]
+        + criterion.weights.giou * intermediate_values["loss_giou"]
+    )
+
+    torch.testing.assert_close(losses["total"], expected)
+    torch.testing.assert_close(losses["loss_ce_interm"], intermediate_values["loss_ce"])
+    torch.testing.assert_close(losses["loss_bbox_interm"], intermediate_values["loss_bbox"])
+    torch.testing.assert_close(losses["loss_giou_interm"], intermediate_values["loss_giou"])
 
 
 def test_build_targets_preserves_reference_layout_and_zero_timestep() -> None:

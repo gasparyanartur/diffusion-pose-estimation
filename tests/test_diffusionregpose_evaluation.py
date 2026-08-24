@@ -11,6 +11,7 @@ from scripts.evaluation.evaluate_diffusionregpose import extract_model_state_dic
 
 from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
     DiffusionRegPoseAPMetric,
+    DiffusionRegPoseBBoxAPMetric,
     crowdpose_result_records,
     evaluate_crowdpose_results,
     postprocess_crowdpose,
@@ -148,6 +149,29 @@ def test_diffusionregpose_metric_matches_reference_evaluator(tmp_path: Path) -> 
     assert actual["crowdpose/AP(E)"] == pytest.approx(expected["AP_E"], abs=1e-12)
     assert actual["crowdpose/AP(M)"] == pytest.approx(expected["AP_M"], abs=1e-12)
     assert actual["crowdpose/AP(H)"] == pytest.approx(expected["AP_H"], abs=1e-12)
+
+
+def test_diffusionregpose_bbox_metric_filters_labels_and_matches_perfect_boxes() -> None:
+    annotation_path = Path("tests/fixtures/mini_crowdpose_val.json")
+    annotation_data = json.loads(annotation_path.read_text())
+    metric = DiffusionRegPoseBBoxAPMetric(annotation_path)
+
+    for annotation in annotation_data["annotations"]:
+        x, y, width, height = annotation["bbox"]
+        metric.update(
+            torch.tensor([[[x, y, x + width, y + height], [0.0, 0.0, 1.0, 1.0]]]),
+            torch.tensor([[1.0, 1.0]]),
+            torch.tensor([[1, 0]]),
+            torch.tensor([annotation["image_id"]]),
+        )
+
+    assert all(record["category_id"] == 1 for record in metric._records)
+    assert metric._records[0]["bbox"] == pytest.approx(annotation_data["annotations"][0]["bbox"])
+    actual = metric.compute()
+
+    assert actual["crowdpose/bbox/AP"] == pytest.approx(1.0, abs=1e-12)
+    assert actual["crowdpose/bbox/AP .5"] == pytest.approx(1.0, abs=1e-12)
+    assert actual["crowdpose/bbox/AP .75"] == pytest.approx(1.0, abs=1e-12)
 
 
 def test_evaluation_accepts_external_and_lightning_checkpoint_layouts() -> None:

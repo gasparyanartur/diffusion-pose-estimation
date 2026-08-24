@@ -139,7 +139,9 @@ def reference_prediction(
 ):
     from util.misc import NestedTensor
 
-    samples = NestedTensor(images, torch.zeros(images.shape[0], *images.shape[2:], dtype=torch.bool))
+    samples = NestedTensor(
+        images, torch.zeros(images.shape[0], *images.shape[2:], dtype=torch.bool, device=images.device)
+    )
     features, positions = model.backbone(samples)
     sources, masks = [], []
     for feature in features:
@@ -215,7 +217,10 @@ def reference_prediction(
         images.shape[0], diffusion_keypoints.shape[1], 14, images.device
     )
     _, output = model.model_predictions(
-        torch.tensor([[images.shape[-1], images.shape[-2], images.shape[-1], images.shape[-2]]]),
+        torch.tensor(
+            [[images.shape[-1], images.shape[-2], images.shape[-1], images.shape[-2]]],
+            device=images.device,
+        ),
         None,
         sources,
         masks,
@@ -225,7 +230,7 @@ def reference_prediction(
         None,
         None,
         inference_mask,
-        torch.tensor([timestep]),
+        torch.tensor([timestep], device=images.device),
         None,
     )
     for handle in handles:
@@ -301,7 +306,9 @@ def native_prediction(images, diffusion_keypoints, timestep, query_count, group_
 def compare_frontend(native_model, reference_model, images: torch.Tensor) -> None:
     from util.misc import NestedTensor
 
-    padding_mask = torch.zeros(images.shape[0], *images.shape[2:], dtype=torch.bool)
+    padding_mask = torch.zeros(
+        images.shape[0], *images.shape[2:], dtype=torch.bool, device=images.device
+    )
     native_features, native_masks, native_positions = native_model.backbone(images, padding_mask)
     reference_features, reference_positions = reference_model.backbone(
         NestedTensor(images, padding_mask)
@@ -369,6 +376,7 @@ def main() -> None:
     parser.add_argument("--queries", type=int, default=32)
     parser.add_argument("--groups", type=int, default=8)
     parser.add_argument("--timestep", type=int, default=0)
+    parser.add_argument("--device", default="cpu")
     parser.add_argument(
         "--assert-tolerance",
         type=float,
@@ -378,19 +386,23 @@ def main() -> None:
     args = parser.parse_args()
 
     torch.manual_seed(7)
-    images = torch.rand(1, 3, args.height, args.width)
-    diffusion_keypoints = torch.rand(1, args.groups, 14 * 2)
+    device = torch.device(args.device)
+    images = torch.rand(1, 3, args.height, args.width, device=device)
+    diffusion_keypoints = torch.rand(1, args.groups, 14 * 2, device=device)
     diagnostics = {}
     native, native_model = native_prediction(
         images, diffusion_keypoints, args.timestep, args.queries, args.groups, diagnostics
     )
     reference_model = load_reference_model(args.queries, args.groups)
+    reference_model.to(device)
     compare_attention_operator()
     compare_frontend(native_model, reference_model, images)
     native_inputs = native_model.prepare_transformer_inputs(
-        images, torch.zeros(1, args.height, args.width, dtype=torch.bool)
+        images, torch.zeros(1, args.height, args.width, dtype=torch.bool, device=device)
     )
-    native_memory = native_model.encode_features(native_inputs, torch.tensor([args.timestep]))
+    native_memory = native_model.encode_features(
+        native_inputs, torch.tensor([args.timestep], device=device)
+    )
     reference = reference_prediction(
         reference_model,
         images,
@@ -457,7 +469,9 @@ def main() -> None:
 
     reference_position = diagnostics["reference_decoder_reference"][:, :, 0, :]
     native_sine_on_reference = sine_embedding_for_position(reference_position)
-    dim_t = 10000 ** (2 * (torch.arange(128, dtype=torch.float32) // 2) / 128)
+    dim_t = 10000 ** (
+        2 * (torch.arange(128, dtype=torch.float32, device=reference_position.device) // 2) / 128
+    )
     external_parts = []
     for index in ([1, 0] if reference_position.shape[-1] == 2 else [1, 0, 2, 3]):
         coordinate = reference_position[..., index]

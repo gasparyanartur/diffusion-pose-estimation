@@ -1,0 +1,18 @@
+# Full-scale DiffusionRegPose training with the validated mild-crop policy.
+
+defaults:
+  - benchmark_diffusionregpose
+  - _self_
+
+run_name: diffusionregpose_full_mild_crop
+out_dir: results/diffusionregpose_full_mild_crop
+
+data:
+  train_random_flip: true
+  train_random_crop: true
+  # Crop 75–95% of the fixed 600-pixel pre-crop short side.
+  train_crop_resize_scales: [600]
+  train_crop_size: [450, 570]
+
+pipeline:
+  val_ap_every_n_epochs: 10

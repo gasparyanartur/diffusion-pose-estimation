@@ -1,0 +1,7 @@
+defaults:
+  - diffusionregpose_debug
+  - _self_
+
+max_epochs: 200
+grad_clip: 0.1
+accumulate_grad_batches: 1

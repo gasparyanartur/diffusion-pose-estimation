@@ -131,6 +131,105 @@ class DiffusionRegPoseAPMetric:
                 del np.float  # type: ignore[attr-defined]
 
 
+class DiffusionRegPoseBBoxAPMetric:
+    """Accumulate pixel-space person boxes for CrowdPose bbox AP."""
+
+    def __init__(self, ann_file: str | Path) -> None:
+        self._ann_file = str(ann_file)
+        self._valid_img_ids = self._load_valid_image_ids()
+        self._records: list[dict] = []
+
+    def _load_valid_image_ids(self) -> frozenset[int]:
+        from crowdposetools.coco import COCO
+
+        return frozenset(COCO(self._ann_file).getImgIds())
+
+    def reset(self) -> None:
+        self._records.clear()
+
+    def update(
+        self,
+        boxes: Tensor,  # (B, N, 4), xyxy pixel space
+        scores: Tensor,  # (B, N)
+        labels: Tensor,  # (B, N), CrowdPose category ids
+        image_ids: Tensor,  # (B,)
+    ) -> None:
+        if boxes.ndim != 3 or boxes.shape[-1] != 4:
+            raise ValueError("boxes must have shape [B, N, 4] in xyxy format")
+        if scores.shape != boxes.shape[:2]:
+            raise ValueError("scores must have shape [B, N]")
+        if labels.shape != boxes.shape[:2]:
+            raise ValueError("labels must have shape [B, N]")
+        if image_ids.shape != (boxes.shape[0],):
+            raise ValueError("image_ids must have shape [B]")
+
+        boxes_np = boxes.detach().cpu().numpy()
+        scores_np = scores.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
+        for batch_index, image_id_value in enumerate(image_ids.detach().cpu().tolist()):
+            image_id = int(image_id_value)
+            if image_id not in self._valid_img_ids:
+                continue
+            for person_index, label in enumerate(labels_np[batch_index].tolist()):
+                if int(label) != 1:
+                    continue
+                xmin, ymin, xmax, ymax = boxes_np[batch_index, person_index]
+                self._records.append({
+                    "image_id": image_id,
+                    "category_id": 1,
+                    "bbox": [
+                        float(xmin),
+                        float(ymin),
+                        float(xmax - xmin),
+                        float(ymax - ymin),
+                    ],
+                    "score": float(scores_np[batch_index, person_index]),
+                })
+
+    def compute(self) -> dict[str, float]:
+        if not self._records:
+            return {}
+        from crowdposetools.coco import COCO
+        from crowdposetools.cocoeval import COCOeval
+
+        had_unicode = hasattr(builtins, "unicode")
+        had_numpy_float = hasattr(np, "float")
+        if not had_unicode:
+            builtins.unicode = str  # type: ignore[attr-defined]
+        if not had_numpy_float:
+            np.float = float  # type: ignore[attr-defined]
+        try:
+            ground_truth = COCO(self._ann_file)
+            image_ids = {record["image_id"] for record in self._records}
+            ground_truth.dataset["images"] = [
+                image for image in ground_truth.dataset["images"]
+                if image["id"] in image_ids
+            ]
+            ground_truth.dataset["annotations"] = [
+                annotation for annotation in ground_truth.dataset["annotations"]
+                if annotation["image_id"] in image_ids
+            ]
+            ground_truth.createIndex()
+            detected = COCO.loadRes(ground_truth, self._records)
+            evaluator = COCOeval(ground_truth, detected, "bbox")
+            with contextlib.redirect_stdout(io.StringIO()):
+                evaluator.evaluate()
+                evaluator.accumulate()
+                evaluator.summarize()
+            stats = evaluator.stats
+            return {
+                "crowdpose/bbox/AP": float(stats[0]),
+                "crowdpose/bbox/AP .5": float(stats[1]),
+                "crowdpose/bbox/AP .75": float(stats[2]),
+                "crowdpose/bbox/AR": float(stats[8]),
+            }
+        finally:
+            if not had_unicode:
+                del builtins.unicode  # type: ignore[attr-defined]
+            if not had_numpy_float:
+                del np.float  # type: ignore[attr-defined]
+
+
 def box_cxcywh_to_xyxy(boxes: Tensor) -> Tensor:
     center_x, center_y, width, height = boxes.unbind(-1)
     return torch.stack(

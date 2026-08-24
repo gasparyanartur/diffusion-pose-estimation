@@ -1,0 +1,17 @@
+defaults:
+  - crowdpose_diffusionregpose
+  - _self_
+
+val_ann: crowdpose/annotations/crowdpose_trainval.json
+test_ann: crowdpose/annotations/crowdpose_trainval.json
+train_resize_scales: [256]
+train_max_size: 384
+train_crop_resize_scales: [256]
+train_crop_size: [128, 256]
+train_random_flip: false
+train_random_crop: false
+eval_resize_scale: 256
+eval_max_size: 384
+subset_frac: 0.0001
+batch_size: 1
+num_workers: 0
