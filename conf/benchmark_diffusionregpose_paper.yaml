@@ -1,0 +1,27 @@
+# Paper-scale DiffusionRegPose training configuration.
+
+defaults:
+  - benchmark_diffusionregpose
+  - _self_
+
+run_name: diffusionregpose_paper_full
+out_dir: results/diffusionregpose_paper_full
+
+data:
+  # Match the external train/evaluation split.
+  val_ann: crowdpose/annotations/crowdpose_test.json
+  train_random_flip: true
+  train_random_crop: true
+  train_transform_seed: null
+  train_resize_scales: [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
+  train_max_size: 1333
+  train_crop_resize_scales: [400, 500, 600]
+  train_crop_size: [384, 600]
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+training:
+  max_epochs: 80
+  accumulate_grad_batches: 8
+  check_val_every_n_epoch: 1

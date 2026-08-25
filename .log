@@ -1995,3 +1995,13 @@ Modified files:
   on `crowdpose_trainval.json`.
 - Restarted `diffusionregpose-256-mild-crop`; startup confirmed validation
   every epoch and AP every 10 epochs.
+
+[2026-08-25] Launched paper-scale full-resolution training
+
+- Added `benchmark_diffusionregpose_paper.yaml` with the original external
+  crop policy: pre-crop resize `[400, 500, 600]`, crop `[384, 600]`.
+- Uses trainval for training, disjoint test for validation/AP, batch size 1,
+  gradient accumulation 8, 80 epochs, validation every epoch, and AP every
+  10 epochs.
+- Started `diffusionregpose-paper-full`; CUDA initialization and training
+  progress were confirmed.
