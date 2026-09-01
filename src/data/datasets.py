@@ -85,7 +85,9 @@ class PoseDataset(Dataset):
 
         by_image: dict[int, list[dict]] = defaultdict(list)
         for ann in data["annotations"]:
-            if ann.get("num_keypoints", 0) > 0:
+            # CrowdPose evaluation/training excludes crowd regions before
+            # converting annotations into model targets.
+            if ann.get("iscrowd", 0) == 0 and ann.get("num_keypoints", 0) > 0:
                 by_image[ann["image_id"]].append(ann)
 
         samples = []

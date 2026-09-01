@@ -96,6 +96,11 @@ def main() -> None:
             resolved_config.pipeline
         )
         pipeline_config = pipeline_config.model_copy(update={
+            # The checkpoint below supplies the complete learned model.  Do
+            # not load the training-time EDPose initialization as an
+            # intermediate state during evaluation.
+            "backbone_pretrained": False,
+            "pretrained_checkpoint": None,
             "sampling_timesteps": args.sampling_timesteps,
         })
         model = pipeline_config.build(max_epochs=1).model
@@ -108,11 +113,24 @@ def main() -> None:
     }
     skipped_keys = set(state_dict) - set(compatible_state)
     incompatible = model.load_state_dict(compatible_state, strict=False)
-    if incompatible.missing_keys or incompatible.unexpected_keys or skipped_keys:
+    parameter_names = set(dict(model.named_parameters()))
+    missing_parameters = [
+        key for key in incompatible.missing_keys if key in parameter_names
+    ]
+    missing_buffers = [
+        key for key in incompatible.missing_keys if key not in parameter_names
+    ]
+    if missing_parameters or incompatible.unexpected_keys or skipped_keys:
         warnings.warn(
-            f"Loaded {args.checkpoint} with {len(incompatible.missing_keys)} missing, "
-            f"{len(incompatible.unexpected_keys)} unexpected, and {len(skipped_keys)} "
-            "shape-incompatible keys.",
+            f"Loaded {args.checkpoint} with {len(missing_parameters)} missing "
+            f"parameters, {len(incompatible.unexpected_keys)} unexpected, and "
+            f"{len(skipped_keys)} shape-incompatible keys.",
+            stacklevel=2,
+        )
+    if missing_buffers:
+        warnings.warn(
+            f"Checkpoint omits {len(missing_buffers)} deterministic diffusion "
+            "schedule buffers; using the model-generated values.",
             stacklevel=2,
         )
     model.to(args.device).eval()

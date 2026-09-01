@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import pytest
 from hydra import compose, initialize_config_dir
 from src.data import DataConfig
 from src.data.data_module import (
@@ -546,6 +547,7 @@ def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
     batch["gt_keypoints"] = torch.tensor([[[[-0.5, -0.5]], [[0.5, 0.5]]]])
     batch["gt_diffusion_keypoints"] = torch.tensor([[[[-0.5, -0.5]], [[0.5, 0.5]]]])
     batch["gt_labeled"] = torch.tensor([[[1.0], [0.0]]])
+    batch["gt_visible"] = torch.tensor([[[1.0], [0.0]]])
     batch["person_mask"] = torch.tensor([[1.0, 1.0]])
     batch["gt_boxes_canon"] = torch.tensor([[[0.5, 0.5, 0.2, 0.2], [0.5, 0.5, 0.2, 0.2]]])
     diffusion = type("Diffusion", (), {
@@ -644,6 +646,11 @@ def test_multistep_scheduler_decays_at_paper_milestone() -> None:
         optimizer.step()
         scheduler.step()
     assert optimizer.param_groups[0]["lr"] == 2e-5
+
+    for _ in range(35):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(2e-6)
 
 
 def test_diffusionregpose_criterion_scores_person_class_column() -> None:
@@ -854,7 +861,7 @@ def test_diffusionregpose_intermediate_encoder_losses_use_reference_weights() ->
     torch.testing.assert_close(losses["loss_giou_interm"], intermediate_values["loss_giou"])
 
 
-def test_build_targets_preserves_reference_layout_and_zero_timestep() -> None:
+def test_build_targets_preserves_reference_layout_visibility_and_zero_timestep() -> None:
     batch = _batch()
     diffusion = type("Diffusion", (), {
         "scale": 6.0,

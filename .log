@@ -2005,3 +2005,88 @@ Modified files:
   10 epochs.
 - Started `diffusionregpose-paper-full`; CUDA initialization and training
   progress were confirmed.
+
+[2026-08-29] Cleaned official checkpoint loading
+
+- Confirmed the 12 missing checkpoint keys are deterministic diffusion-schedule
+  buffers, not learned parameters.
+- Updated the evaluator to initialize schedules locally, avoid redundant
+  EDPose loading, and report only meaningful parameter mismatches.
+- `py_compile` passes; official-checkpoint evaluation remains to be rerun.
+
+[2026-08-29] Reproduced released checkpoint evaluation
+
+- Evaluated `diffusionregpose_r50_crowdpose.pth` on all 8,000 CrowdPose test
+  images with the native evaluator.
+- Reproduced keypoint AP `0.726776` (reported as `0.727`), with AP-E/M/H
+  `0.7929 / 0.7330 / 0.6493`.
+- This confirms checkpoint loading, preprocessing, inference, result
+  serialization, and CrowdPose keypoint evaluation are compatible with the
+  released result.
+
+[2026-08-29] Resumed external effective-batch-8 training control
+
+- Verified the existing external 40-epoch run used batch 1 with gradient
+  accumulation 8 and saved at external epoch 30.
+- Batch-8 single-GPU training failed with CUDA OOM, so the batch-1 run was
+  stopped.
+- Resumed the saved checkpoint with the external trainer, batch 1,
+  accumulation 8, and an 80-epoch target in tmux session
+  `diffusionregpose-external-train`.
+
+[2026-09-01] Aligned schedule and corrected visibility weighting
+
+- Changed native DiffusionRegPose paper/debug milestones from `[31, 61]` to
+  `[31, 66]`, matching the released checkpoint metadata.
+- Added LR-boundary/config regression coverage; 39 focused tests pass.
+- Found that external CrowdPose targets preserve visibility values 0/1/2,
+  while native targets collapsed visible joints to 1.
+- Corrected native targets to use `labeled + visible`, preserving external
+  keypoint and OKS weighting; added mixed-visibility regression coverage.
+- No training run was restarted; existing checkpoints are unchanged.
+
+[2026-09-01] Continued native/external parity audit
+
+- Corrected DiffusionRegPose target visibility to preserve external values
+  0/1/2; visible joints are no longer collapsed to occluded weight 1.
+- Matched the external sorted image-ID order for native set-format CrowdPose
+  datasets.
+- Added regression coverage for mixed visibility and set-dataset ordering.
+- Data and DiffusionRegPose tests pass: 61 tests.
+
+[2026-09-01] Corrected executable LR schedule and excluded crowd regions
+
+- Direct inspection of the external executable config and effective-batch
+  control confirmed milestones `[31, 61]`; native configs/defaults/tests now
+  match it after an initial metadata-driven `[31, 66]` change.
+- Fixed native set-target loading to exclude `iscrowd=1` annotations, matching
+  the external CrowdPose converter. The dataset contains 664 trainval and 106
+  validation crowd annotations.
+- Added a regression test. Full suite passes: 326 tests.
+
+[2026-09-01] Completed CUDA real-batch parity comparison
+
+- Fixed the parity probe's external target construction to preserve visibility
+  weights `0/1/2`.
+- Compared one real CrowdPose batch at 128x192 with matched checkpoint weights
+  and reduced query/group counts. Backbone, diffusion, denoising, transformer,
+  predictions, losses, and gradients matched up to floating-point reduction
+  order; both sides had five targets.
+- No training was run.
+
+[2026-09-01] Corrected visibility audit conclusion
+
+- The external `ConvertCocoPolysToMask` explicitly executes `V[V == 2] = 1`.
+  Native binary `gt_labeled` visibility was therefore already correct.
+- Reverted the incorrect `labeled + visible` target change, removed its test,
+  and restored the parity probe's external targets to binary visibility.
+- JPEG decoding is byte-identical between PIL and torchvision; resize differs
+  by at most one uint8 value. Criterion parity with binary visibility passes.
+
+[2026-09-01] Launched fresh corrected native training
+
+- Started `diffusionregpose-native-paper80` in a user-visible tmux session.
+- Confirmed startup configuration: EDPose initialization, trainval training,
+  test validation, original augmentation, batch 1 with accumulation 8, 80
+  epochs, validation every epoch, AP every 10 epochs, and LR milestones
+  `[31, 61]`.

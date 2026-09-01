@@ -182,8 +182,8 @@ checkpoint I/O policies.
 
 `DiffusionRegPosePipeline` wraps the checkpoint-compatible native model in the
 same Lightning boundary. Its target builder creates the reference xyxy-plus-
-visibility target layout and timestep-zero cosine diffusion inputs, while its
-criterion owns Hungarian matching, final/auxiliary decoder losses, and the
+visibility target layout (binary labeled-joint supervision) and timestep-zero
+cosine diffusion inputs, while its criterion owns Hungarian matching, final/auxiliary decoder losses, and the
 reference selected two-stage encoder classification, box, and GIoU losses
 (`interm_loss_coef=1`, with intermediate box loss enabled). The
 CrowdPose person target uses category label `1`, matching the annotation

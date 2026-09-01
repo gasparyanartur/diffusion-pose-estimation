@@ -457,20 +457,28 @@ class CrowdPoseDataModule(PoseDataModule):
             self._train_ds = PoseDataset.from_path(
                 self.train_ann_path, img_root=self.img_dir, num_keypoints=self.num_keypoints,
             )
+            self._sort_set_samples(self._train_ds)
             self._maybe_subset(self._train_ds, "train")
             self._maybe_filter_persons(self._train_ds, "train")
         if self._val_ds is None:
             self._val_ds = PoseDataset.from_path(
                 self.val_ann_path, img_root=self.img_dir, num_keypoints=self.num_keypoints,
             )
+            self._sort_set_samples(self._val_ds)
             self._maybe_subset(self._val_ds, "val")
             self._maybe_filter_persons(self._val_ds, "val")
         if self._test_ds is None:
             self._test_ds = PoseDataset.from_path(
                 self.test_ann_path, img_root=self.img_dir, num_keypoints=self.num_keypoints,
             )
+            self._sort_set_samples(self._test_ds)
             self._maybe_subset(self._test_ds, "test")
             self._maybe_filter_persons(self._test_ds, "test")
+
+    def _sort_set_samples(self, dataset: PoseDataset) -> None:
+        """Match the external set-dataset image-ID ordering."""
+        if self.target_format == "set":
+            dataset.samples.sort(key=lambda sample: sample["image_id"])
 
     def _maybe_subset(self, ds: PoseDataset, split: str) -> None:
         if self.subset_frac >= 1.0:

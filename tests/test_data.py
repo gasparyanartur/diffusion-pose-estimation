@@ -12,6 +12,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
+from src.data.data_module import CrowdPoseDataModule
 from src.data import (
     CANONICAL_EDGE_INDEX,
     CROWDPOSE_EDGE_LIST,
@@ -121,6 +122,29 @@ def _make_gt_ann_json(image_ids: list[int], gt_counts: list[int], tmp_path) -> s
     return path
 
 
+def test_pose_dataset_excludes_crowd_annotations(tmp_path) -> None:
+    """Set-format targets must match the external CrowdPose converter."""
+    annotations = [
+        {
+            "id": 1, "image_id": 7, "bbox": [0, 0, 10, 10],
+            "keypoints": sum(([float(i), float(i), 2] for i in range(NUM_KEYPOINTS)), []),
+            "num_keypoints": NUM_KEYPOINTS, "category_id": 1, "iscrowd": 0,
+        },
+        {
+            "id": 2, "image_id": 7, "bbox": [0, 0, 20, 20],
+            "keypoints": sum(([float(i), float(i), 2] for i in range(NUM_KEYPOINTS)), []),
+            "num_keypoints": NUM_KEYPOINTS, "category_id": 1, "iscrowd": 1,
+        },
+    ]
+    path = tmp_path / "crowdpose.json"
+    path.write_text(json.dumps({"images": [{"id": 7}], "annotations": annotations}))
+
+    dataset = PoseDataset.from_path(path)
+
+    assert len(dataset.samples) == 1
+    assert dataset.samples[0]["keypoints"].shape[0] == 1
+
+
 # ---------------------------------------------------------------------------
 # PoseDataset tests
 # ---------------------------------------------------------------------------
@@ -149,6 +173,29 @@ def test_pose_dataset_from_path(tmp_path):
         assert s["keypoints"].shape == (n, NUM_KEYPOINTS, 2)
         assert s["visibility"].shape == (n, NUM_KEYPOINTS)
         assert s["keypoints"].dtype == torch.float32
+
+
+def test_diffusionregpose_set_samples_are_sorted_by_image_id(tmp_path):
+    module = CrowdPoseDataModule(
+        train_ann=tmp_path / "train.json",
+        val_ann=tmp_path / "val.json",
+        test_ann=tmp_path / "test.json",
+        img_dir=tmp_path,
+        val_pred_cache=None,
+        test_pred_cache=None,
+        batch_size=1,
+        num_workers=0,
+        ap_batch_size=1,
+        target_format="set",
+    )
+    dataset = PoseDataset(samples=[
+        {"image_id": 7, "keypoints": torch.zeros(1, NUM_KEYPOINTS, 2), "visibility": torch.ones(1, NUM_KEYPOINTS)},
+        {"image_id": 2, "keypoints": torch.zeros(1, NUM_KEYPOINTS, 2), "visibility": torch.ones(1, NUM_KEYPOINTS)},
+    ])
+
+    module._sort_set_samples(dataset)
+
+    assert [sample["image_id"] for sample in dataset.samples] == [2, 7]
 
 
 def test_sampler_groups_and_covers_all_indices(dataset):

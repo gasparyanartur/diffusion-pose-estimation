@@ -153,9 +153,8 @@ def build_diffusionregpose_targets(
     keypoints = batch["gt_keypoints"]
     diffusion_keypoints = batch.get("gt_diffusion_keypoints", keypoints)
     labeled = batch["gt_labeled"].bool()
-    # The external transform supervises both CrowdPose visibility values 1
-    # and 2. ``gt_visible`` contains only value 2, so the labeled mask is the
-    # correct visibility tensor for the training target.
+    # The external CrowdPose converter maps both visible and occluded labels
+    # to the binary supervision mask used by its criterion.
     target_visibility = labeled.float()
     boxes = batch["gt_boxes_canon"]
     batch_size, person_count, point_count, _ = keypoints.shape
