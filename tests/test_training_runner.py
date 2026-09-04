@@ -114,6 +114,17 @@ def test_runner_configures_validation_interval(tmp_path):
     assert trainer.check_val_every_n_epoch == 5
 
 
+def test_runner_disables_sanity_validation_when_configured(tmp_path):
+    config = TrainingConfig(
+        accelerator="cpu", devices=1, num_sanity_val_steps=0,
+        logging={"tensorboard": False, "csv": False},
+    )
+
+    trainer, _ = TrainingRunner(config, tmp_path).build_trainer(max_epochs=1)
+
+    assert trainer.num_sanity_val_steps == 0
+
+
 def test_runner_configures_progress_bar(tmp_path):
     enabled, _ = TrainingRunner(
         TrainingConfig(

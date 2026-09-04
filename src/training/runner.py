@@ -133,6 +133,7 @@ class TrainingRunner:
             gradient_clip_val=gradient_clip,
             limit_val_batches=self.config.limit_val_batches,
             check_val_every_n_epoch=self.config.check_val_every_n_epoch,
+            num_sanity_val_steps=self.config.num_sanity_val_steps,
             enable_progress_bar=self.config.enable_progress_bar,
             callbacks=all_callbacks,
             logger=self._loggers(),

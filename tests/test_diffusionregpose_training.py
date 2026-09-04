@@ -505,7 +505,7 @@ def test_external_train_transform_replays_seeded_augmentation() -> None:
         torch.testing.assert_close(first_value, second_value)
 
 
-def test_external_crop_updates_person_mask_for_removed_people(monkeypatch) -> None:
+def test_external_crop_preserves_diffusion_person_mask_for_removed_people(monkeypatch) -> None:
     module = CrowdPoseDataModule(
         train_ann=Path("train.json"), val_ann=Path("val.json"),
         test_ann=Path("test.json"), img_dir=Path("images"),
@@ -540,6 +540,7 @@ def test_external_crop_updates_person_mask_for_removed_people(monkeypatch) -> No
     transformed = module.on_after_batch_transfer(batch, 0)
 
     assert transformed["person_mask"].tolist() == [[1.0, 0.0]]
+    assert transformed["diffusion_person_mask"].tolist() == [[1.0, 1.0]]
 
 
 def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
@@ -548,7 +549,8 @@ def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
     batch["gt_diffusion_keypoints"] = torch.tensor([[[[-0.5, -0.5]], [[0.5, 0.5]]]])
     batch["gt_labeled"] = torch.tensor([[[1.0], [0.0]]])
     batch["gt_visible"] = torch.tensor([[[1.0], [0.0]]])
-    batch["person_mask"] = torch.tensor([[1.0, 1.0]])
+    batch["person_mask"] = torch.tensor([[1.0, 0.0]])
+    batch["diffusion_person_mask"] = torch.tensor([[1.0, 1.0]])
     batch["gt_boxes_canon"] = torch.tensor([[[0.5, 0.5, 0.2, 0.2], [0.5, 0.5, 0.2, 0.2]]])
     diffusion = type("Diffusion", (), {
         "scale": 6.0,
@@ -568,6 +570,28 @@ def test_diffusion_targets_use_unfiltered_diffusion_keypoint_stream() -> None:
         diffusion_inputs,
         torch.tensor([[[-3.0, -3.0], [3.0, 3.0]]]),
     )
+
+
+def test_validation_step_preserves_global_rng_state() -> None:
+    class RandomLossModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.parameter = torch.nn.Parameter(torch.zeros(()))
+
+    class EmptyCriterion(torch.nn.Module):
+        def forward(self, outputs, targets):
+            del outputs, targets
+            return {"total": torch.zeros(())}
+
+    pipeline = DiffusionRegPosePipeline(RandomLossModel(), EmptyCriterion())
+    pipeline._losses_for_batch = lambda batch: {"total": torch.rand(())}
+    pipeline._log_losses = lambda *args, **kwargs: None
+
+    torch.manual_seed(31)
+    rng_before = torch.get_rng_state()
+    pipeline.validation_step({"image": torch.zeros(1, 3, 4, 4)}, batch_idx=0)
+
+    assert torch.equal(torch.get_rng_state(), rng_before)
 
 
 def test_diffusion_targets_reuse_seeded_noise() -> None:

@@ -564,6 +564,8 @@ class CrowdPoseDataModule(PoseDataModule):
             # records the transformed, unpadded model-input dimensions.
             batch["original_img_hw"] = batch["img_hw"].clone()
             if getattr(self.trainer, "training", False):
+                if "person_mask" in batch:
+                    batch["diffusion_person_mask"] = batch["person_mask"].clone()
                 transformed = [
                     _external_train_transform(
                         image,
@@ -622,9 +624,8 @@ class CrowdPoseDataModule(PoseDataModule):
             batch["gt_boxes_pixel"] = torch.stack(list(boxes))
             transformed_box_labeled = torch.stack(list(box_labeled))
             batch["gt_box_labeled"] = transformed_box_labeled
-            # Cropping removes people from the external target set. Keep the
-            # padded rows for stable batching, but exclude those rows from
-            # the diffusion proposal stream as well.
+            # Cropping removes people from supervised targets but the external
+            # proposal stream retains their clipped keypoint rows.
             if "person_mask" in batch:
                 batch["person_mask"] = transformed_box_labeled.gt(0).to(
                     dtype=batch["person_mask"].dtype,

@@ -101,8 +101,12 @@ Visible-mask: `visible = visibility == 2`.
   focal-classification, box, keypoint, OKS, and denoising losses; its model-only
   evaluation path loads compatible tensors from the downloaded reference
   checkpoint. Selected two-stage encoder proposals receive the reference
-  intermediate classification, box, and GIoU supervision during training. Exact
-  CUDA training and evaluation use the repository-owned native
+  intermediate classification, box, and GIoU supervision during training.
+  Same-seed construction reproduces all shared external model tensors before
+  EDPose loading, including transformer reset order and time conditioning.
+  Crop augmentation removes cropped-out people from supervised targets while
+  retaining their clipped keypoints for diffusion proposals. Exact CUDA
+  training and evaluation use the repository-owned native
   forward/backward deformable-attention kernel; the PyTorch sampler remains
   the differentiable fallback when the extension is unavailable. CrowdPose
   person targets use category label `1`, matching the dataset and reference
@@ -121,7 +125,9 @@ Visible-mask: `visible = visibility == 2`.
   AdamW at `2e-4` (`1e-4` for the backbone), gradient clipping `0.1`,
   keypoint-loss weight `10`, and reference milestones `[31, 61]`. Validation
   loss runs after every epoch and validation-set CrowdPose AP is calculated
-  every 10 epochs; `last.ckpt` remains available after every epoch. The
+  every 10 epochs; validation preserves the training RNG state and the runner
+  skips Lightning sanity validation by default. `last.ckpt` remains available
+  after every epoch. The
   published DiffusionRegPose checkpoint is used only as an evaluation/parity
   target, not as the training initialization.
 - `benchmark_diffusionregpose_debug` is a deliberately reduced end-to-end

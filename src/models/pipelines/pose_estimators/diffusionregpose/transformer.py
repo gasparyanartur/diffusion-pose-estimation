@@ -86,11 +86,19 @@ class MultiScaleDeformableAttention(nn.Module):
         self.attention_weights = nn.Linear(d_model, num_heads * num_levels * num_points)
         self.value_proj = nn.Linear(d_model, d_model)
         self.output_proj = nn.Linear(d_model, d_model)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self) -> None:
         nn.init.constant_(self.sampling_offsets.weight, 0.0)
-        angles = torch.arange(num_heads, dtype=torch.float32) * (2 * math.pi / num_heads)
+        angles = torch.arange(self.num_heads, dtype=torch.float32) * (
+            2 * math.pi / self.num_heads
+        )
         grid = torch.stack((angles.cos(), angles.sin()), dim=-1)
-        grid = (grid / grid.abs().amax(-1, keepdim=True)).view(num_heads, 1, 1, 2).repeat(1, num_levels, num_points, 1)
-        for point in range(num_points):
+        grid = (grid / grid.abs().amax(-1, keepdim=True)).view(
+            self.num_heads, 1, 1, 2
+        ).repeat(1, self.num_levels, self.num_points, 1)
+        for point in range(self.num_points):
             grid[:, :, point] *= point + 1
         self.sampling_offsets.bias.data.copy_(grid.reshape(-1))
         nn.init.constant_(self.attention_weights.weight, 0.0)

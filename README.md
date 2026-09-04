@@ -180,7 +180,8 @@ python scripts/training/train_diffusionregpose.py
 # EDPose checkpoint, clips gradients at 0.1, uses keypoint loss
 # weight 10, and applies reference LR milestones [31, 61]. It includes 100
 # denoising queries and uses FP32. Validation loss runs every epoch and
-# validation AP is calculated every 10 epochs.
+# validation AP is calculated every 10 epochs. Sanity validation is disabled,
+# and validation preserves the training RNG state.
 # CrowdPose person targets use category label 1, matching the annotations and
 # the external implementation; retrain native checkpoints created before this
 # label-contract correction.

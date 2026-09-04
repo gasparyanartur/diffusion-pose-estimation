@@ -199,7 +199,9 @@ target semantics: it samples the reference resize/crop policy, normalizes
 images with ImageNet statistics, updates pixel targets before converting
 keypoints to per-image canonical coordinates and boxes to normalized sigmoid
 coordinates, and pads transformed images only to the largest height/width in
-each batch. The default model freezes the ResNet stem
+each batch. Crop augmentation removes people from supervised targets but keeps
+their clipped keypoints in the diffusion-proposal stream, matching external
+`keypoints_buquan` behavior. The default model freezes the ResNet stem
 and `layer1` and shares the pose height/width prediction head across decoder
 layers, matching the reference trainable parameter set of 49,304,924.
 The training preset initializes from the EDPose CrowdPose checkpoint and uses
@@ -210,7 +212,10 @@ Its paper-compatible schedule runs for 80 epochs with AdamW at `2e-4`
 `10`, applies reference milestones `[31, 61]`, and includes 100 denoising
 queries with their classification/box losses. Validation loss runs after each
 epoch and validation AP runs every 10 epochs; `last.ckpt` is saved after every
-training epoch and separate test/AP evaluation runs after fitting. The
+training epoch and separate test/AP evaluation runs after fitting. Model
+construction follows the external same-seed initialization/reset order, and
+validation fences CPU/CUDA RNG use while the runner skips Lightning sanity
+validation by default. The
 published DiffusionRegPose checkpoint is an evaluation/parity target, not the
 training initialization.
 

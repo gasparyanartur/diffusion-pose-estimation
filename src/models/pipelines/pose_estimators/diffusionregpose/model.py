@@ -18,6 +18,7 @@ from .transformer import (
     DiffusionRegPosePredictionHeads,
     DiffusionRegPoseTimeConditioning,
     MLP,
+    MultiScaleDeformableAttention,
     build_input_projections,
     inverse_sigmoid,
 )
@@ -100,10 +101,10 @@ class DiffusionRegPoseTransformer(nn.Module):
         num_box_decoder_layers: int,
         num_group: int,
         num_classes: int,
-        bbox_embed: nn.ModuleList,
-        class_embed: nn.ModuleList,
-        pose_embed: nn.ModuleList,
-        pose_hw_embed: nn.ModuleList,
+        bbox_embed: nn.ModuleList | None = None,
+        class_embed: nn.ModuleList | None = None,
+        pose_embed: nn.ModuleList | None = None,
+        pose_hw_embed: nn.ModuleList | None = None,
     ) -> None:
         super().__init__()
         encoder_layer = DeformableTransformerEncoderLayer(
@@ -133,17 +134,47 @@ class DiffusionRegPoseTransformer(nn.Module):
             num_group=num_group,
         )
         self.level_embed = nn.Parameter(torch.empty(num_feature_levels, hidden_dim))
-        nn.init.normal_(self.level_embed)
         self.enc_output = nn.Linear(hidden_dim, hidden_dim)
         self.enc_output_norm = nn.LayerNorm(hidden_dim)
-        self.enc_out_bbox_embed = copy.deepcopy(bbox_embed[0])
-        self.enc_out_class_embed = copy.deepcopy(class_embed[0])
-        self.time_mlp = DiffusionRegPoseTimeConditioning(hidden_dim).time_mlp
-        self.block_time_mlp = DiffusionRegPoseTimeConditioning(hidden_dim).block_time_mlp
+        self.enc_out_bbox_embed = None
+        self.enc_out_class_embed = None
+        self._reset_parameters()
+        time_conditioning = DiffusionRegPoseTimeConditioning(hidden_dim)
+        self.time_mlp = time_conditioning.time_mlp
+        self.block_time_mlp = time_conditioning.block_time_mlp
+        if any(head is not None for head in (bbox_embed, class_embed, pose_embed, pose_hw_embed)):
+            if any(head is None for head in (bbox_embed, class_embed, pose_embed, pose_hw_embed)):
+                raise ValueError("prediction heads must be supplied together")
+            self.attach_prediction_heads(
+                bbox_embed=bbox_embed,
+                class_embed=class_embed,
+                pose_embed=pose_embed,
+                pose_hw_embed=pose_hw_embed,
+            )
+
+    def _reset_parameters(self) -> None:
+        for parameter in self.parameters():
+            if parameter.dim() > 1:
+                nn.init.xavier_uniform_(parameter)
+        for module in self.modules():
+            if isinstance(module, MultiScaleDeformableAttention):
+                module._reset_parameters()
+        nn.init.normal_(self.level_embed)
+
+    def attach_prediction_heads(
+        self,
+        *,
+        bbox_embed: nn.ModuleList,
+        class_embed: nn.ModuleList,
+        pose_embed: nn.ModuleList,
+        pose_hw_embed: nn.ModuleList,
+    ) -> None:
         self.decoder.bbox_embed = bbox_embed
-        self.decoder.class_embed = class_embed
         self.decoder.pose_embed = pose_embed
         self.decoder.pose_hw_embed = pose_hw_embed
+        self.decoder.class_embed = class_embed
+        self.enc_out_bbox_embed = copy.deepcopy(bbox_embed[0])
+        self.enc_out_class_embed = copy.deepcopy(class_embed[0])
 
 
 class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
@@ -188,15 +219,29 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         if dn_number < 0:
             raise ValueError("dn_number must be non-negative")
         self.num_feature_levels = num_feature_levels
-        self.label_enc = nn.Embedding(101, hidden_dim)
-        self.backbone = _BackboneJoiner(
+        backbone = _BackboneJoiner(
             DiffusionRegPoseResNetBackbone(
                 pretrained=backbone_pretrained,
                 freeze_stem_and_layer1=freeze_backbone_stem_and_layer1,
             ),
             PositionEmbeddingSineHW(hidden_dim // 2, temperature_h=20, temperature_w=20),
         )
-        self.input_proj = build_input_projections((512, 1024, 2048), hidden_dim=hidden_dim, num_levels=num_feature_levels)
+        self.transformer = DiffusionRegPoseTransformer(
+            num_encoder_layers=num_encoder_layers,
+            num_decoder_layers=num_decoder_layers,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_feature_levels=num_feature_levels,
+            num_body_points=num_body_points,
+            num_box_decoder_layers=num_box_decoder_layers,
+            num_group=num_group,
+            num_classes=num_classes,
+        )
+        self.label_enc = nn.Embedding(101, hidden_dim)
+        self.input_proj = build_input_projections(
+            (512, 1024, 2048), hidden_dim=hidden_dim, num_levels=num_feature_levels,
+        )
+        self.backbone = backbone
         heads = DiffusionRegPosePredictionHeads(
             hidden_dim=hidden_dim,
             num_classes=num_classes,
@@ -208,25 +253,22 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         self.class_embed = heads.class_embed
         self.pose_embed = heads.pose_embed
         self.pose_hw_embed = heads.pose_hw_embed
-        self.transformer = DiffusionRegPoseTransformer(
-            num_encoder_layers=num_encoder_layers,
-            num_decoder_layers=num_decoder_layers,
-            hidden_dim=hidden_dim,
-            num_heads=num_heads,
-            num_feature_levels=num_feature_levels,
-            num_body_points=num_body_points,
-            num_box_decoder_layers=num_box_decoder_layers,
-            num_group=num_group,
-            num_classes=num_classes,
+        self.transformer.attach_prediction_heads(
             bbox_embed=self.bbox_embed,
             class_embed=self.class_embed,
             pose_embed=self.pose_embed,
             pose_hw_embed=self.pose_hw_embed,
         )
+        self._reset_input_projections()
         self.transformer.decoder.num_queries = num_queries
         self.transformer.decoder.num_dn = dn_number
         self.dn_box_noise_scale = dn_box_noise_scale
         self.dn_label_noise_ratio = dn_label_noise_ratio
+
+    def _reset_input_projections(self) -> None:
+        for projection in self.input_proj:
+            nn.init.xavier_uniform_(projection[0].weight)
+            nn.init.constant_(projection[0].bias, 0.0)
 
     def prepare_transformer_inputs(self, images: Tensor, padding_mask: Tensor) -> TransformerInputs:
         features, masks, positions = self.backbone(images, padding_mask)

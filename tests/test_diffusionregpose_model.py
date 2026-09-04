@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 import pytest
 import torch
 
 from src.models.pipelines.pose_estimators.diffusionregpose.model import (
     DiffusionRegPoseModel,
+    DiffusionRegPoseTransformer,
     gen_encoder_output_proposals,
+)
+from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
+    DiffusionRegPosePredictionHeads,
 )
 
 
@@ -27,6 +32,64 @@ def _make_model() -> DiffusionRegPoseModel:
         num_body_points=14,
         num_box_decoder_layers=2,
     )
+
+
+def test_transformer_uses_reference_xavier_reset_for_diffusion_attention() -> None:
+    torch.manual_seed(17)
+    heads = DiffusionRegPosePredictionHeads(
+        hidden_dim=32,
+        num_classes=2,
+        num_decoder_layers=3,
+        num_box_decoder_layers=2,
+        num_body_points=2,
+    )
+    transformer = DiffusionRegPoseTransformer(
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        hidden_dim=32,
+        num_heads=8,
+        num_feature_levels=3,
+        num_body_points=2,
+        num_box_decoder_layers=2,
+        num_group=2,
+        num_classes=2,
+        bbox_embed=heads.bbox_embed,
+        class_embed=heads.class_embed,
+        pose_embed=heads.pose_embed,
+        pose_hw_embed=heads.pose_hw_embed,
+    )
+
+    # The external transformer runs Xavier reset over decoder linear weights
+    # before creating its time-conditioning layers. A default Linear(2, 32)
+    # would have a substantially larger Kaiming-uniform standard deviation.
+    assert 0.15 < transformer.decoder.emb_Q.weight.std().item() < 0.35
+
+
+def test_model_initialization_matches_external_with_same_seed(monkeypatch) -> None:
+    external_root = Path("external/DiffusionRegPose").resolve()
+    if not external_root.exists():
+        pytest.skip("external DiffusionRegPose source is not available")
+
+    monkeypatch.syspath_prepend(str(external_root))
+    from util.config import Config
+    from models.diffusionregpose.diffusionregpose import build_diffusionregpose
+    import models.diffusionregpose.backbones.backbone as external_backbone
+
+    monkeypatch.setattr(external_backbone, "is_main_process", lambda: False)
+    external_config = Config.fromfile(
+        str(external_root / "config" / "diffusionregpose.cfg.py")
+    )
+    external_config.device = "cpu"
+
+    torch.manual_seed(17)
+    external_model = build_diffusionregpose(external_config)[0]
+    torch.manual_seed(17)
+    native_model = DiffusionRegPoseModel(backbone_pretrained=False)
+
+    native_state = native_model.state_dict()
+    assert set(external_model.state_dict()).issubset(native_state)
+    for name, external_value in external_model.state_dict().items():
+        torch.testing.assert_close(native_state[name], external_value, rtol=0, atol=0)
 
 
 def test_model_state_shapes_match_available_checkpoint() -> None:

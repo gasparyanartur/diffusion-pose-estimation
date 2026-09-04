@@ -2090,3 +2090,35 @@ Modified files:
   test validation, original augmentation, batch 1 with accumulation 8, 80
   epochs, validation every epoch, AP every 10 epochs, and LR milestones
   `[31, 61]`.
+
+[2026-09-02] Resumed corrected native training
+
+- Verified the prior run ended from `KeyboardInterrupt` after epoch 12, not a
+  CUDA or system crash.
+- Resumed it from `last.ckpt` in `diffusionregpose-native-paper80-resume`;
+  Lightning restored optimizer/scheduler state and continued at epoch 13.
+- Clarified that binary visibility was already active in this run; loss changes
+  reflect corrected crowd filtering and stochastic ordering, not visibility
+  reweighting.
+
+[2026-09-02] Fixed remaining DiffusionRegPose training divergences
+
+- Reordered native model assembly and restored the external transformer reset
+  sequence. Same-seed construction now matches all 741 external state tensors
+  exactly; the native time-conditioning layers are constructed once.
+- Preserved pre-crop people for diffusion proposal inputs while continuing to
+  exclude cropped-out people from supervised targets.
+- Fenced validation CPU/CUDA RNG and disabled Lightning sanity validation by
+  default through `TrainingConfig.num_sanity_val_steps`.
+- Added focused regressions for initialization, crop proposal rows, validation
+  RNG, and trainer configuration. Full suite passes: 329 tests. CPU/CUDA
+  criterion-update parity and native EDPose one-step smoke tests pass.
+
+[2026-09-03] Launched corrected paper-scale DiffusionRegPose training
+
+- Stopped the pre-fix resumed model and started a new no-resume 80-epoch run in
+  tmux session `diffusionregpose-native-paper80-corrected`.
+- Confirmed EDPose initialization, 49,304,924 trainable parameters, original
+  augmentation, full CrowdPose data, FP32 micro-batch 1 with accumulation 8,
+  milestones `[31, 61]`, and zero Lightning sanity-validation steps.
+- The first 74 batches ran cleanly at approximately 2.15 iterations/s.

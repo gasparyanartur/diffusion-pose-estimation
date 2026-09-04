@@ -206,7 +206,7 @@ def build_diffusionregpose_targets(
         })
 
         if "gt_diffusion_keypoints" in batch:
-            person_mask = batch.get("person_mask")
+            person_mask = batch.get("diffusion_person_mask", batch.get("person_mask"))
             if person_mask is None:
                 diffusion_indices = torch.arange(
                     diffusion_keypoints.shape[1], device=keypoints.device
@@ -666,35 +666,38 @@ class DiffusionRegPosePipeline(pl.LightningModule):
 
     def validation_step(self, batch: dict[str, Tensor], batch_idx: int) -> None:
         del batch_idx
-        losses = self._losses_for_batch(batch)
-        self._log_losses("val", losses, batch["image"].shape[0])
-        if self._ap_epoch_active():
-            sampling_generator = None
-            if self.deterministic_seed is not None:
-                sampling_generator = torch.Generator(device=batch["image"].device)
-                sampling_generator.manual_seed(self.deterministic_seed)
-            sampling_kwargs = {"padding_mask": batch.get("padding_mask")}
-            if sampling_generator is not None:
-                sampling_kwargs["generator"] = sampling_generator
-            sampled_outputs = self.model.sample_keypoints(batch["image"], **sampling_kwargs)
-            ap_results = _postprocess_diffusionregpose_ap(
-                sampled_outputs,
-                batch,
-                num_body_points=self.model.transformer.decoder.num_body_points,
-            )
-            update_diffusionregpose_ap_metric(
-                self._val_ap,
-                sampled_outputs,
-                batch,
-                num_body_points=self.model.transformer.decoder.num_body_points,
-                results=ap_results,
-            )
-            assert self._val_bbox_ap is not None
-            update_diffusionregpose_bbox_ap_metric(
-                self._val_bbox_ap,
-                ap_results,
-                batch,
-            )
+        image = batch["image"]
+        devices = [image.get_device()] if image.is_cuda else []
+        with torch.random.fork_rng(devices=devices):
+            losses = self._losses_for_batch(batch)
+            self._log_losses("val", losses, image.shape[0])
+            if self._ap_epoch_active():
+                sampling_generator = None
+                if self.deterministic_seed is not None:
+                    sampling_generator = torch.Generator(device=image.device)
+                    sampling_generator.manual_seed(self.deterministic_seed)
+                sampling_kwargs = {"padding_mask": batch.get("padding_mask")}
+                if sampling_generator is not None:
+                    sampling_kwargs["generator"] = sampling_generator
+                sampled_outputs = self.model.sample_keypoints(image, **sampling_kwargs)
+                ap_results = _postprocess_diffusionregpose_ap(
+                    sampled_outputs,
+                    batch,
+                    num_body_points=self.model.transformer.decoder.num_body_points,
+                )
+                update_diffusionregpose_ap_metric(
+                    self._val_ap,
+                    sampled_outputs,
+                    batch,
+                    num_body_points=self.model.transformer.decoder.num_body_points,
+                    results=ap_results,
+                )
+                assert self._val_bbox_ap is not None
+                update_diffusionregpose_bbox_ap_metric(
+                    self._val_bbox_ap,
+                    ap_results,
+                    batch,
+                )
 
     def on_validation_epoch_end(self) -> None:
         if not self._ap_epoch_active():
