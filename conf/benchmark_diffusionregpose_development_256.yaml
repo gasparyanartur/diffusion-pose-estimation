@@ -1,0 +1,22 @@
+defaults:
+  - pipeline: diffusionregpose_development
+  - data: crowdpose_diffusionregpose_development_256
+  - hardware: auto
+  - training: diffusionregpose_development
+  - _self_
+
+run_name: diffusionregpose_development_256
+out_dir: results/diffusionregpose_development_256
+skip_training: false
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+training:
+  accumulate_grad_batches: 1
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

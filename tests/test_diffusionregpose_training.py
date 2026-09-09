@@ -110,6 +110,38 @@ def test_diffusionregpose_development_config_is_reduced_end_to_end() -> None:
     assert config.pipeline.val_ap_every_n_epochs == 10
 
 
+def test_diffusionregpose_development_512_config_uses_full_proportional_data() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_diffusionregpose_development_512")
+
+    assert config.data.subset_frac == 1.0
+    assert config.data.batch_size == 8
+    assert config.data.train_resize_scales == [512]
+    assert config.data.train_max_size == 853
+    assert config.data.train_crop_resize_scales == [256, 320, 384]
+    assert config.data.train_crop_size == [246, 384]
+    assert config.data.eval_resize_scale == 512
+    assert config.data.eval_max_size == 853
+    assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_development_256_config_uses_full_proportional_data() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_diffusionregpose_development_256")
+
+    assert config.data.subset_frac == 1.0
+    assert config.data.batch_size == 8
+    assert config.data.train_resize_scales == [256]
+    assert config.data.train_max_size == 427
+    assert config.data.train_crop_resize_scales == [128, 160, 192]
+    assert config.data.train_crop_size == [123, 192]
+    assert config.data.eval_resize_scale == 256
+    assert config.data.eval_max_size == 427
+    assert config.training.accumulate_grad_batches == 1
+
+
 def test_diffusionregpose_ap_cadence_uses_completed_epoch_numbers() -> None:
     assert diffusionregpose_ap_epoch_active(9, 40, 10)
     assert not diffusionregpose_ap_epoch_active(10, 40, 10)

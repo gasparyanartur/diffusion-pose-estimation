@@ -2161,3 +2161,14 @@ Modified files:
   85.47% of model parameter elements are checkpoint-compatible.
 - Added the runtime audit, raw JSON/CSV evidence, plots, README and architecture
   documentation. Full suite passes: 342 tests; `git diff --check` passes.
+- Launched the 80-epoch reduced development training run in tmux session
+  `diffusionregpose-dev80`; CUDA initialization and early epoch-0 loss decrease
+  verified.
+- Replaced the reduced 128-pixel subset experiment with the approved full-data
+  512-pixel run in `diffusionregpose-dev512-full`, using batch size 8 and no
+  gradient accumulation. It started on CUDA with 1,500 batches per epoch and
+  an observed steady estimate of approximately 20-25 minutes per epoch.
+- Replaced the 512 run with the full-data 256-pixel run in
+  `diffusionregpose-dev256-full`; batch size 8 and no gradient accumulation
+  are active. It started on CUDA at approximately 2.4 batches/sec, or 10-11
+  minutes per epoch.
