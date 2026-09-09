@@ -1,0 +1,489 @@
+{
+  "schema_version": 1,
+  "dimensions": {
+    "hidden_dim": 256,
+    "feedforward_dim": 2048,
+    "num_heads": 8,
+    "num_feature_levels": 4,
+    "num_sampling_points": 4,
+    "num_encoder_layers": 6,
+    "num_decoder_layers": 6,
+    "num_box_decoder_layers": 2,
+    "num_queries": 900,
+    "num_groups": 100,
+    "num_proposals": 100,
+    "num_body_points": 14,
+    "num_denoising_queries": 100
+  },
+  "parameters": {
+    "parameter_tensors": 415,
+    "parameters": 49527324,
+    "trainable_parameters": 49304924,
+    "frozen_parameters": 222400,
+    "parameter_bytes": 198109296
+  },
+  "parameter_partition": {
+    "label_embedding": {
+      "parameter_tensors": 1,
+      "parameters": 25856,
+      "trainable_parameters": 25856,
+      "frozen_parameters": 0
+    },
+    "backbone": {
+      "parameter_tensors": 53,
+      "parameters": 23454912,
+      "trainable_parameters": 23232512,
+      "frozen_parameters": 222400
+    },
+    "input_projections": {
+      "parameter_tensors": 16,
+      "parameters": 5639168,
+      "trainable_parameters": 5639168,
+      "frozen_parameters": 0
+    },
+    "box_heads": {
+      "parameter_tensors": 36,
+      "parameters": 795672,
+      "trainable_parameters": 795672,
+      "frozen_parameters": 0
+    },
+    "class_heads": {
+      "parameter_tensors": 12,
+      "parameters": 3084,
+      "trainable_parameters": 3084,
+      "frozen_parameters": 0
+    },
+    "pose_heads": {
+      "parameter_tensors": 24,
+      "parameters": 528392,
+      "trainable_parameters": 528392,
+      "frozen_parameters": 0
+    },
+    "pose_size_head": {
+      "parameter_tensors": 6,
+      "parameters": 132098,
+      "trainable_parameters": 132098,
+      "frozen_parameters": 0
+    },
+    "transformer_exclusive": {
+      "parameter_tensors": 267,
+      "parameters": 18948142,
+      "trainable_parameters": 18948142,
+      "frozen_parameters": 0
+    }
+  },
+  "module_inventory": {
+    "Bottleneck": 16,
+    "Conv2d": 57,
+    "DeformableTransformerDecoder": 1,
+    "DeformableTransformerDecoderLayer": 6,
+    "DeformableTransformerEncoder": 1,
+    "DeformableTransformerEncoderLayer": 6,
+    "DiffusionRegPoseModel": 1,
+    "DiffusionRegPoseResNetBackbone": 1,
+    "DiffusionRegPoseTransformer": 1,
+    "Dropout": 42,
+    "Embedding": 3,
+    "FrozenBatchNorm2d": 53,
+    "GELU": 1,
+    "GroupNorm": 4,
+    "IntermediateLayerGetter": 1,
+    "LayerNorm": 32,
+    "Linear": 127,
+    "MLP": 13,
+    "MaxPool2d": 1,
+    "ModuleList": 20,
+    "MultiScaleDeformableAttention": 12,
+    "MultiheadAttention": 6,
+    "NonDynamicallyQuantizableLinear": 6,
+    "PositionEmbeddingSineHW": 1,
+    "ReLU": 23,
+    "Sequential": 14,
+    "SiLU": 1,
+    "SinusoidalPositionEmbeddings": 1,
+    "_BackboneJoiner": 1
+  },
+  "analytical_macs": {
+    "128x192": {
+      "inference": {
+        "image_height": 128,
+        "image_width": 192,
+        "feature_tokens": 510,
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 17139548160,
+        "total": 23269389312
+      },
+      "training_layout": {
+        "image_height": 128,
+        "image_width": 192,
+        "feature_tokens": 510,
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 18853724160,
+        "total": 24983565312
+      }
+    },
+    "512x512": {
+      "inference": {
+        "image_height": 512,
+        "image_width": 512,
+        "feature_tokens": 5440,
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 19078103040,
+        "total": 84463075328
+      },
+      "training_layout": {
+        "image_height": 512,
+        "image_width": 512,
+        "feature_tokens": 5440,
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 20792279040,
+        "total": 86177251328
+      }
+    },
+    "800x800": {
+      "inference": {
+        "image_height": 800,
+        "image_width": 800,
+        "feature_tokens": 13294,
+        "backbone": 52131840000,
+        "input_projections": 3091202048,
+        "encoder": 101934563328,
+        "proposal_path": 2634126336,
+        "decoder": 22166421504,
+        "total": 181958153216
+      },
+      "training_layout": {
+        "image_height": 800,
+        "image_width": 800,
+        "feature_tokens": 13294,
+        "backbone": 52131840000,
+        "input_projections": 3091202048,
+        "encoder": 101934563328,
+        "proposal_path": 2634126336,
+        "decoder": 23880597504,
+        "total": 183672329216
+      }
+    },
+    "800x1333": {
+      "inference": {
+        "image_height": 800,
+        "image_width": 1333,
+        "feature_tokens": 22223,
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 25677447168,
+        "total": 292942249472
+      },
+      "training_layout": {
+        "image_height": 800,
+        "image_width": 1333,
+        "feature_tokens": 22223,
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 27391623168,
+        "total": 294656425472
+      }
+    }
+  },
+  "reduction_matrix": {
+    "paper_800x1333": {
+      "image_shape": [
+        800,
+        1333
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 292942249472,
+      "training_macs": 294656425472,
+      "training_components": {
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 27391623168
+      }
+    },
+    "paper_800x1216": {
+      "image_shape": [
+        800,
+        1216
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 267639889408,
+      "training_macs": 269354065408,
+      "training_components": {
+        "backbone": 79240396800,
+        "input_projections": 4652007424,
+        "encoder": 154864779264,
+        "proposal_path": 4001914368,
+        "decoder": 26594967552
+      }
+    },
+    "paper_512x512": {
+      "image_shape": [
+        512,
+        512
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 84463075328,
+      "training_macs": 86177251328,
+      "training_components": {
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 20792279040
+      }
+    },
+    "paper_192x192": {
+      "image_shape": [
+        192,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 26434579968,
+      "training_macs": 28148755968,
+      "training_components": {
+        "backbone": 3002793984,
+        "input_projections": 174587904,
+        "encoder": 5865799680,
+        "proposal_path": 151580160,
+        "decoder": 18953994240
+      }
+    },
+    "query_reduced_192x192": {
+      "image_shape": [
+        192,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 300,
+        "num_groups": 30,
+        "num_proposals": 30,
+        "num_body_points": 14,
+        "num_denoising_queries": 30
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 13541395968,
+      "training_macs": 13883309568,
+      "training_components": {
+        "backbone": 3002793984,
+        "input_projections": 174587904,
+        "encoder": 5865799680,
+        "proposal_path": 151580160,
+        "decoder": 4688547840
+      }
+    },
+    "compact_r50_192x192": {
+      "image_shape": [
+        192,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 192,
+        "feedforward_dim": 768,
+        "num_heads": 6,
+        "num_feature_levels": 3,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 3,
+        "num_decoder_layers": 4,
+        "num_box_decoder_layers": 2,
+        "num_queries": 300,
+        "num_groups": 30,
+        "num_proposals": 30,
+        "num_body_points": 14,
+        "num_denoising_queries": 30
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 5233669632,
+      "training_macs": 5332096512,
+      "training_components": {
+        "backbone": 3002793984,
+        "input_projections": 99090432,
+        "encoder": 930134016,
+        "proposal_path": 84478464,
+        "decoder": 1215599616
+      }
+    },
+    "development_r50_192x192": {
+      "image_shape": [
+        192,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 1024,
+        "num_heads": 8,
+        "num_feature_levels": 3,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 2,
+        "num_decoder_layers": 3,
+        "num_box_decoder_layers": 2,
+        "num_queries": 200,
+        "num_groups": 20,
+        "num_proposals": 20,
+        "num_body_points": 14,
+        "num_denoising_queries": 20
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 5270755328,
+      "training_macs": 5341247488,
+      "training_components": {
+        "backbone": 3002793984,
+        "input_projections": 132120576,
+        "encoder": 1102381056,
+        "proposal_path": 149796864,
+        "decoder": 954155008
+      }
+    },
+    "tiny_r50_192x192": {
+      "image_shape": [
+        192,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 128,
+        "feedforward_dim": 512,
+        "num_heads": 4,
+        "num_feature_levels": 3,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 2,
+        "num_decoder_layers": 3,
+        "num_box_decoder_layers": 1,
+        "num_queries": 200,
+        "num_groups": 20,
+        "num_proposals": 20,
+        "num_body_points": 14,
+        "num_denoising_queries": 20
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 3660807168,
+      "training_macs": 3683191808,
+      "training_components": {
+        "backbone": 3002793984,
+        "input_projections": 66060288,
+        "encoder": 275595264,
+        "proposal_path": 37739520,
+        "decoder": 301002752
+      }
+    }
+  },
+  "parameter_variants": {
+    "paper": {
+      "parameter_tensors": 415,
+      "parameters": 49527324,
+      "trainable_parameters": 49304924,
+      "frozen_parameters": 222400,
+      "parameter_bytes": 198109296
+    },
+    "development": {
+      "parameter_tensors": 239,
+      "parameters": 31495844,
+      "trainable_parameters": 31273444,
+      "frozen_parameters": 222400,
+      "parameter_bytes": 125983376
+    },
+    "compact_192": {
+      "parameter_tensors": 291,
+      "parameters": 29286388,
+      "trainable_parameters": 29063988,
+      "frozen_parameters": 222400,
+      "parameter_bytes": 117145552
+    },
+    "tiny_128": {
+      "parameter_tensors": 245,
+      "parameters": 25745366,
+      "trainable_parameters": 25522966,
+      "frozen_parameters": 222400,
+      "parameter_bytes": 102981464
+    }
+  },
+  "counting_scope": {
+    "mac_to_flop_ratio": 2,
+    "included": "convolution, linear, FFN, and dense attention matrix products",
+    "excluded": "normalization, activation, softmax, deformable bilinear sampling, prediction/refinement heads, matching, losses, backward, and optimizer"
+  }
+}

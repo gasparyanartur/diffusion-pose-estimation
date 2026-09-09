@@ -87,6 +87,29 @@ def test_diffusionregpose_config_accepts_data_subset_override() -> None:
     )
 
 
+def test_diffusionregpose_development_config_is_reduced_end_to_end() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_diffusionregpose_development")
+
+    assert config.pipeline.num_queries == 200
+    assert config.pipeline.num_proposals == 20
+    assert config.pipeline.num_group == 20
+    assert config.pipeline.dn_number == 20
+    assert config.pipeline.num_feature_levels == 3
+    assert config.pipeline.num_encoder_layers == 2
+    assert config.pipeline.num_decoder_layers == 3
+    assert config.pipeline.num_box_decoder_layers == 2
+    assert config.pipeline.hidden_dim == 256
+    assert config.pipeline.feedforward_dim == 1024
+    assert config.data.subset_frac == 0.1
+    assert config.data.batch_size == 16
+    assert config.data.train_crop_size == [96, 122]
+    assert config.training.accumulate_grad_batches == 1
+    assert config.training.check_val_every_n_epoch == 1
+    assert config.pipeline.val_ap_every_n_epochs == 10
+
+
 def test_diffusionregpose_ap_cadence_uses_completed_epoch_numbers() -> None:
     assert diffusionregpose_ap_epoch_active(9, 40, 10)
     assert not diffusionregpose_ap_epoch_active(10, 40, 10)

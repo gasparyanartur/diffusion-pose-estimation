@@ -1,0 +1,24 @@
+{
+  "source_run": "/storage/outputs/pose-graph-diff/results/diffusionregpose_paper_full/diffusionregpose_paper_full/20260903_000016",
+  "source": "TensorBoard scalar wall_time fields across five original and resumed event files",
+  "training_images": 12000,
+  "validation_images": 8000,
+  "accumulate_grad_batches": 8,
+  "epochs": 80,
+  "microbatch_seconds": {
+    "interval_count": 2351,
+    "median": 0.3215868556499481,
+    "mean": 0.3983619264306945,
+    "p10": 0.3115758603811264,
+    "p90": 0.670626779794693
+  },
+  "epoch_minutes": {
+    "interval_count": 79,
+    "median_all": 84.70306030909221,
+    "mean_all": 107.9359152661094,
+    "median_without_ap": 83.74482094248137,
+    "median_with_ap": 100.93296854098638
+  },
+  "active_event_span_hours": 152.93666964239543,
+  "method": "Adjacent train/loss_step events in the same 1500-step epoch were divided by global-step delta and accumulation 8. Adjacent epoch-start LR events provided epoch cadence. Intervals longer than 20000 seconds and non-consecutive steps were excluded."
+}

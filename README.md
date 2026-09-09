@@ -209,6 +209,19 @@ python scripts/training/train_diffusionregpose.py \
 # and tensor-contract smoke tests. Its reduced decoder is not a valid submodel
 # of the downloaded checkpoint and should not be used as an AP gate.
 
+# Measured architecture-development loop: 31.5M parameters, 10% of each data
+# split, batch 16, validation each epoch, and AP every 10 epochs. This is not a
+# paper-scale or released-checkpoint-compatible model.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development
+
+# Reproduce the CPU/static and CUDA profiling artifacts described in
+# reports/diffusionregpose-runtime-audit.md. Runtime profiling exits before CUDA
+# allocation when less than 18 GiB is free.
+python scripts/investigation/profile_diffusionregpose_runtime.py \
+    --runtime-config benchmark_diffusionregpose_development \
+    --output reports/diffusionregpose_runtime/runtime_development_preset.json
+
 # Full-data low-resolution learning gate. This keeps the full model structure
 # but uses 128/192-pixel train and validation resizing, batch size 8 with no
 # accumulation, and AP every 10 epochs. Its 80 epochs and `[31, 61]` LR

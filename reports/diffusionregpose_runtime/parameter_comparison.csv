@@ -1,0 +1,3 @@
+variant,backbone,projections,prediction_heads,transformer_and_conditioning,label_embedding,total
+Paper,23454912,5639168,1459246,18948142,25856,49527324
+Development,23454912,919808,663574,6431694,25856,31495844

@@ -85,18 +85,35 @@ class TrainingRunner:
     def _loggers(self) -> list[Any]:
         loggers: list[Any] = []
         if self.config.logging.tensorboard:
+            tensorboard_version = self._logger_version(
+                self.config.logging.tensorboard_name
+            )
             loggers.append(TensorBoardLogger(
                 save_dir=str(self.run_directory),
                 name=self.config.logging.tensorboard_name,
-                version="",
+                version=tensorboard_version,
             ))
         if self.config.logging.csv:
+            csv_version = self._logger_version(self.config.logging.csv_name)
             loggers.append(CSVLogger(
                 save_dir=str(self.run_directory),
                 name=self.config.logging.csv_name,
-                version="",
+                version=csv_version,
             ))
         return loggers
+
+    def _logger_version(self, logger_name: str) -> str:
+        """Choose a non-destructive logger directory for resumed runs."""
+        if not self.config.resume:
+            return ""
+
+        logger_directory = self.run_directory / logger_name
+        version = "resume"
+        suffix = 0
+        while (logger_directory / version).exists():
+            suffix += 1
+            version = f"resume_{suffix}"
+        return version
 
     def build_trainer(
         self,

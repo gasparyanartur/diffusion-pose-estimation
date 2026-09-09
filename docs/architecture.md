@@ -244,6 +244,18 @@ not be confused with the paper benchmark because its image resolution is lower.
 defaults are 800/1333 so the paper-compatible preset remains unchanged. The
 low-resolution run evaluates AP every 10 epochs.
 
+For architecture-development feedback,
+`benchmark_diffusionregpose_development` reduces both dense and query-side
+work: three feature levels, two encoder layers, three decoder layers (two box
+and one pose), 200 initial queries, 20 groups/proposals, 20 denoising queries,
+and a 1024-wide FFN. Its 10% data preset uses batch 16, validates every epoch,
+and evaluates AP every 10 epochs. It keeps the same data/target, diffusion,
+matching/loss, optimizer, and evaluator boundaries as the paper model. The
+resolved model has 31,495,844 unique parameters and is intentionally a separate,
+checkpoint-incompatible development architecture. See
+[`reports/diffusionregpose-runtime-audit.md`](../reports/diffusionregpose-runtime-audit.md)
+for measured timing and memory.
+
 Its evaluation path is independent of the external repository. CUDA training
 and inference use a lazily compiled, repository-owned forward/backward
 deformable-attention kernel whose scalar bilinear accumulation matches the

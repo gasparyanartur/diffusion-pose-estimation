@@ -1,0 +1,9 @@
+defaults:
+  - diffusionregpose
+  - _self_
+
+max_epochs: 80
+accumulate_grad_batches: 1
+check_val_every_n_epoch: 1
+test_after_fit: true
+

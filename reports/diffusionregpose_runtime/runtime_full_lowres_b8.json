@@ -1,0 +1,579 @@
+{
+  "schema_version": 1,
+  "dimensions": {
+    "hidden_dim": 256,
+    "feedforward_dim": 2048,
+    "num_heads": 8,
+    "num_feature_levels": 4,
+    "num_sampling_points": 4,
+    "num_encoder_layers": 6,
+    "num_decoder_layers": 6,
+    "num_box_decoder_layers": 2,
+    "num_queries": 900,
+    "num_groups": 100,
+    "num_proposals": 100,
+    "num_body_points": 14,
+    "num_denoising_queries": 100
+  },
+  "parameters": {
+    "parameter_tensors": 415,
+    "parameters": 49527324,
+    "trainable_parameters": 49304924,
+    "frozen_parameters": 222400,
+    "parameter_bytes": 198109296
+  },
+  "parameter_partition": {
+    "label_embedding": {
+      "parameter_tensors": 1,
+      "parameters": 25856,
+      "trainable_parameters": 25856,
+      "frozen_parameters": 0
+    },
+    "backbone": {
+      "parameter_tensors": 53,
+      "parameters": 23454912,
+      "trainable_parameters": 23232512,
+      "frozen_parameters": 222400
+    },
+    "input_projections": {
+      "parameter_tensors": 16,
+      "parameters": 5639168,
+      "trainable_parameters": 5639168,
+      "frozen_parameters": 0
+    },
+    "box_heads": {
+      "parameter_tensors": 36,
+      "parameters": 795672,
+      "trainable_parameters": 795672,
+      "frozen_parameters": 0
+    },
+    "class_heads": {
+      "parameter_tensors": 12,
+      "parameters": 3084,
+      "trainable_parameters": 3084,
+      "frozen_parameters": 0
+    },
+    "pose_heads": {
+      "parameter_tensors": 24,
+      "parameters": 528392,
+      "trainable_parameters": 528392,
+      "frozen_parameters": 0
+    },
+    "pose_size_head": {
+      "parameter_tensors": 6,
+      "parameters": 132098,
+      "trainable_parameters": 132098,
+      "frozen_parameters": 0
+    },
+    "transformer_exclusive": {
+      "parameter_tensors": 267,
+      "parameters": 18948142,
+      "trainable_parameters": 18948142,
+      "frozen_parameters": 0
+    }
+  },
+  "module_inventory": {
+    "Bottleneck": 16,
+    "Conv2d": 57,
+    "DeformableTransformerDecoder": 1,
+    "DeformableTransformerDecoderLayer": 6,
+    "DeformableTransformerEncoder": 1,
+    "DeformableTransformerEncoderLayer": 6,
+    "DiffusionRegPoseModel": 1,
+    "DiffusionRegPoseResNetBackbone": 1,
+    "DiffusionRegPoseTransformer": 1,
+    "Dropout": 42,
+    "Embedding": 3,
+    "FrozenBatchNorm2d": 53,
+    "GELU": 1,
+    "GroupNorm": 4,
+    "IntermediateLayerGetter": 1,
+    "LayerNorm": 32,
+    "Linear": 127,
+    "MLP": 13,
+    "MaxPool2d": 1,
+    "ModuleList": 20,
+    "MultiScaleDeformableAttention": 12,
+    "MultiheadAttention": 6,
+    "NonDynamicallyQuantizableLinear": 6,
+    "PositionEmbeddingSineHW": 1,
+    "ReLU": 23,
+    "Sequential": 14,
+    "SiLU": 1,
+    "SinusoidalPositionEmbeddings": 1,
+    "_BackboneJoiner": 1
+  },
+  "analytical_macs": {
+    "128x192": {
+      "inference": {
+        "image_height": 128,
+        "image_width": 192,
+        "feature_tokens": 510,
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 17139548160,
+        "total": 23269389312
+      },
+      "training_layout": {
+        "image_height": 128,
+        "image_width": 192,
+        "feature_tokens": 510,
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 18853724160,
+        "total": 24983565312
+      }
+    },
+    "512x512": {
+      "inference": {
+        "image_height": 512,
+        "image_width": 512,
+        "feature_tokens": 5440,
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 19078103040,
+        "total": 84463075328
+      },
+      "training_layout": {
+        "image_height": 512,
+        "image_width": 512,
+        "feature_tokens": 5440,
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 20792279040,
+        "total": 86177251328
+      }
+    },
+    "800x800": {
+      "inference": {
+        "image_height": 800,
+        "image_width": 800,
+        "feature_tokens": 13294,
+        "backbone": 52131840000,
+        "input_projections": 3091202048,
+        "encoder": 101934563328,
+        "proposal_path": 2634126336,
+        "decoder": 22166421504,
+        "total": 181958153216
+      },
+      "training_layout": {
+        "image_height": 800,
+        "image_width": 800,
+        "feature_tokens": 13294,
+        "backbone": 52131840000,
+        "input_projections": 3091202048,
+        "encoder": 101934563328,
+        "proposal_path": 2634126336,
+        "decoder": 23880597504,
+        "total": 183672329216
+      }
+    },
+    "800x1333": {
+      "inference": {
+        "image_height": 800,
+        "image_width": 1333,
+        "feature_tokens": 22223,
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 25677447168,
+        "total": 292942249472
+      },
+      "training_layout": {
+        "image_height": 800,
+        "image_width": 1333,
+        "feature_tokens": 22223,
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 27391623168,
+        "total": 294656425472
+      }
+    }
+  },
+  "reduction_matrix": {
+    "paper_800x1333": {
+      "image_shape": [
+        800,
+        1333
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 292942249472,
+      "training_macs": 294656425472,
+      "training_components": {
+        "backbone": 87333299200,
+        "input_projections": 5128585216,
+        "encoder": 170399563776,
+        "proposal_path": 4403354112,
+        "decoder": 27391623168
+      }
+    },
+    "paper_512x512": {
+      "image_shape": [
+        512,
+        512
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 84463075328,
+      "training_macs": 86177251328,
+      "training_components": {
+        "backbone": 21353201664,
+        "input_projections": 1241513984,
+        "encoder": 41712353280,
+        "proposal_path": 1077903360,
+        "decoder": 20792279040
+      }
+    },
+    "paper_128x192": {
+      "image_shape": [
+        128,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 900,
+        "num_groups": 100,
+        "num_proposals": 100,
+        "num_body_points": 14,
+        "num_denoising_queries": 100
+      },
+      "checkpoint_compatible": true,
+      "inference_macs": 23269389312,
+      "training_macs": 24983565312,
+      "training_components": {
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 18853724160
+      }
+    },
+    "query_reduced_128x192": {
+      "image_shape": [
+        128,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 256,
+        "feedforward_dim": 2048,
+        "num_heads": 8,
+        "num_feature_levels": 4,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 6,
+        "num_decoder_layers": 6,
+        "num_box_decoder_layers": 2,
+        "num_queries": 300,
+        "num_groups": 30,
+        "num_proposals": 30,
+        "num_body_points": 14,
+        "num_denoising_queries": 30
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 10376205312,
+      "training_macs": 10718118912,
+      "training_components": {
+        "backbone": 2001862656,
+        "input_projections": 116391936,
+        "encoder": 3910533120,
+        "proposal_path": 101053440,
+        "decoder": 4588277760
+      }
+    },
+    "compact_r50_128x192": {
+      "image_shape": [
+        128,
+        192
+      ],
+      "dimensions": {
+        "hidden_dim": 192,
+        "feedforward_dim": 2048,
+        "num_heads": 6,
+        "num_feature_levels": 3,
+        "num_sampling_points": 4,
+        "num_encoder_layers": 3,
+        "num_decoder_layers": 4,
+        "num_box_decoder_layers": 2,
+        "num_queries": 300,
+        "num_groups": 30,
+        "num_proposals": 30,
+        "num_body_points": 14,
+        "num_denoising_queries": 30
+      },
+      "checkpoint_compatible": false,
+      "inference_macs": 5304803328,
+      "training_macs": 5462212608,
+      "training_components": {
+        "backbone": 2001862656,
+        "input_projections": 66060288,
+        "encoder": 1363267584,
+        "proposal_path": 56318976,
+        "decoder": 1974703104
+      }
+    }
+  },
+  "counting_scope": {
+    "mac_to_flop_ratio": 2,
+    "included": "convolution, linear, FFN, and dense attention matrix products",
+    "excluded": "normalization, activation, softmax, deformable bilinear sampling, prediction/refinement heads, matching, losses, backward, and optimizer"
+  },
+  "runtime": {
+    "device": {
+      "name": "NVIDIA GeForce RTX 3090",
+      "total_memory_gib": 24.0,
+      "free_memory_before_profile_gib": 22.193359375,
+      "torch_version": "2.4.1+cu121",
+      "cuda_version": "12.1"
+    },
+    "config_name": "benchmark_diffusionregpose_lowres",
+    "batch_size": 8,
+    "image_shape": [
+      8,
+      3,
+      192,
+      192
+    ],
+    "warmup_iterations": 3,
+    "measured_iterations": 10,
+    "data": {
+      "loading_and_collate": {
+        "count": 10,
+        "mean_ms": 7.849708362482488,
+        "median_ms": 0.29809202533215284,
+        "p10_ms": 0.25446084327995777,
+        "p90_ms": 8.059966657310698,
+        "min_ms": 0.20571588538587093,
+        "max_ms": 75.62586199492216
+      },
+      "host_to_device": {
+        "count": 10,
+        "mean_ms": 1.0341825429350138,
+        "median_ms": 1.0497310431674123,
+        "p10_ms": 0.8258023532107472,
+        "p90_ms": 1.2536394177004695,
+        "min_ms": 0.809964956715703,
+        "max_ms": 1.3069321867078543
+      },
+      "gpu_augmentation": {
+        "count": 10,
+        "mean_ms": 32.511151558719575,
+        "median_ms": 15.856400015763938,
+        "p10_ms": 11.616536439396441,
+        "p90_ms": 41.2348336540162,
+        "min_ms": 10.021760128438473,
+        "max_ms": 180.05624087527394
+      }
+    },
+    "training_stages": {
+      "target_preparation": {
+        "count": 10,
+        "mean_ms": 5.259513854980469,
+        "median_ms": 5.2565744845196605,
+        "p10_ms": 4.734325874596834,
+        "p90_ms": 5.927765998058021,
+        "min_ms": 4.634253913536668,
+        "max_ms": 6.0174420941621065
+      },
+      "forward": {
+        "count": 10,
+        "mean_ms": 230.65161865670234,
+        "median_ms": 231.76849202718586,
+        "p10_ms": 222.45745349209756,
+        "p90_ms": 236.54298931360245,
+        "min_ms": 222.23395109176636,
+        "max_ms": 238.22838510386646
+      },
+      "criterion_and_matching": {
+        "count": 10,
+        "mean_ms": 158.52295469958335,
+        "median_ms": 158.25952345039696,
+        "p10_ms": 154.01974567212164,
+        "p90_ms": 162.48265826143324,
+        "min_ms": 153.44873815774918,
+        "max_ms": 164.73427298478782
+      },
+      "backward": {
+        "count": 10,
+        "mean_ms": 335.2428197860718,
+        "median_ms": 335.1573884719983,
+        "p10_ms": 331.7878795322031,
+        "p90_ms": 337.40147727075964,
+        "min_ms": 330.2986810449511,
+        "max_ms": 343.3957230299711
+      },
+      "optimizer": {
+        "count": 10,
+        "mean_ms": 9.514509909786284,
+        "median_ms": 9.038249612785876,
+        "p10_ms": 8.415890182368457,
+        "p90_ms": 11.112144193612039,
+        "min_ms": 8.364195004105568,
+        "max_ms": 11.266783811151981
+      },
+      "full_update": {
+        "count": 10,
+        "mean_ms": 739.1914169071242,
+        "median_ms": 739.8038390092552,
+        "p10_ms": 736.5063467528671,
+        "p90_ms": 742.3096762504429,
+        "min_ms": 729.5854608528316,
+        "max_ms": 745.6421009264886
+      }
+    },
+    "forward_modules_cuda_events": {
+      "backbone_and_position": {
+        "count": 10,
+        "mean_ms": 13.094073677062989,
+        "median_ms": 12.862304210662842,
+        "p10_ms": 12.738163280487061,
+        "p90_ms": 13.982221221923828,
+        "min_ms": 12.614784240722656,
+        "max_ms": 14.044256210327148
+      },
+      "encoder": {
+        "count": 10,
+        "mean_ms": 11.011923122406007,
+        "median_ms": 10.785280227661133,
+        "p10_ms": 9.990777683258056,
+        "p90_ms": 12.168294143676757,
+        "min_ms": 9.971712112426758,
+        "max_ms": 12.924927711486816
+      },
+      "decoder": {
+        "count": 10,
+        "mean_ms": 116.90468139648438,
+        "median_ms": 119.06918334960938,
+        "p10_ms": 109.99575500488281,
+        "p90_ms": 120.75141296386718,
+        "min_ms": 109.8089599609375,
+        "max_ms": 122.1918716430664
+      },
+      "input_projection_0": {
+        "count": 10,
+        "mean_ms": 0.18289599940180779,
+        "median_ms": 0.1945600062608719,
+        "p10_ms": 0.11407360211014747,
+        "p90_ms": 0.2207743927836418,
+        "min_ms": 0.09011200070381165,
+        "max_ms": 0.22630399465560913
+      },
+      "input_projection_1": {
+        "count": 10,
+        "mean_ms": 0.19724480137228967,
+        "median_ms": 0.17159999907016754,
+        "p10_ms": 0.15403840318322182,
+        "p90_ms": 0.2308095946907996,
+        "min_ms": 0.0655359998345375,
+        "max_ms": 0.5017600059509277
+      },
+      "input_projection_2": {
+        "count": 10,
+        "mean_ms": 0.1536159984767437,
+        "median_ms": 0.16627199947834015,
+        "p10_ms": 0.06604800000786781,
+        "p90_ms": 0.1887232020497322,
+        "min_ms": 0.06143999844789505,
+        "max_ms": 0.22835199534893036
+      },
+      "input_projection_3": {
+        "count": 10,
+        "mean_ms": 0.2852288007736206,
+        "median_ms": 0.2648639976978302,
+        "p10_ms": 0.25292799174785613,
+        "p90_ms": 0.3036607921123504,
+        "min_ms": 0.21606400609016418,
+        "max_ms": 0.4935680031776428
+      }
+    },
+    "validation": {
+      "sampling": {
+        "count": 10,
+        "mean_ms": 150.0437947222963,
+        "median_ms": 149.20763717964292,
+        "p10_ms": 148.41852255631238,
+        "p90_ms": 152.5493694934994,
+        "min_ms": 148.4052068553865,
+        "max_ms": 152.9888620134443
+      },
+      "postprocess_and_pose_nms": {
+        "count": 10,
+        "mean_ms": 79.92038675583899,
+        "median_ms": 80.32546599861234,
+        "p10_ms": 77.76186147239059,
+        "p90_ms": 81.49726230185479,
+        "min_ms": 76.41121814958751,
+        "max_ms": 83.9305859990418
+      }
+    },
+    "peak_memory": {
+      "allocated": {
+        "count": 10,
+        "mean_gib": 8.097454071044922,
+        "median_gib": 8.097454071044922,
+        "p10_gib": 8.097454071044922,
+        "p90_gib": 8.097454071044922,
+        "min_gib": 8.097454071044922,
+        "max_gib": 8.097454071044922
+      },
+      "reserved": {
+        "count": 10,
+        "mean_gib": 17.197265625,
+        "median_gib": 17.197265625,
+        "p10_gib": 17.197265625,
+        "p90_gib": 17.197265625,
+        "min_gib": 17.197265625,
+        "max_gib": 17.197265625
+      }
+    },
+    "loss_range": [
+      636.173095703125,
+      646.9166870117188
+    ]
+  }
+}

@@ -2122,3 +2122,42 @@ Modified files:
   augmentation, full CrowdPose data, FP32 micro-batch 1 with accumulation 8,
   milestones `[31, 61]`, and zero Lightning sanity-validation steps.
 - The first 74 batches ran cleanly at approximately 2.15 iterations/s.
+[2026-09-08] Made resumed training logging non-destructive
+
+- Updated `TrainingRunner` to place resumed CSV and TensorBoard logs in unique
+  `resume`, `resume_1`, ... directories instead of reusing the original logger
+  directory.
+- Existing log files are now preserved when a Lightning checkpoint is resumed.
+- Added regression tests for preserving original logs and incrementing resume
+  logger directories; `tests/test_training_runner.py` passes 13 tests.
+[2026-09-09] Added DiffusionRegPose training gap report
+
+- Added `reports/diffusionregpose-training-gap.md` documenting the official
+  checkpoint, external 80-epoch reproduction, and native training results.
+- Added CPU-only report generation with AP comparison, native trajectory, and
+  late-validation-loss visualizations under `reports/diffusionregpose_training_gap/`.
+- Explicitly labeled reconstructed native early AP points after the original CSV
+  logger was overwritten during the first resume attempt.
+
+[2026-09-09] Revalidated DiffusionRegPose static model cost
+
+- Added a tested CPU profiling script for unique parameter ownership, module
+  inventory, feature/query shapes, and analytical MAC attribution.
+- Confirmed 49,527,324 unique parameters and a 292.942G-MAC main-operation
+  inference floor at 800x1333 in the current checkout.
+- Stored the reproducible baseline in
+  `reports/diffusionregpose_runtime/static_profile.json`; 5 focused tests pass.
+
+[2026-09-09] Added measured DiffusionRegPose development model
+
+- Profiled real CrowdPose training, validation sampling, memory, and model
+  sub-stages on the RTX 3090 across paper, low-resolution full, compact, and
+  tiny architectures.
+- Added configurable FFN width and fixed non-256 decoder position embeddings
+  without changing paper defaults or external same-seed initialization parity.
+- Added `benchmark_diffusionregpose_development`: 31.50M parameters, measured
+  38.58 images/s at batch 16, and 1.56 GiB peak allocated memory.
+- Completed a real EDPose-initialized one-epoch Lightning/AP/checkpoint smoke;
+  85.47% of model parameter elements are checkpoint-compatible.
+- Added the runtime audit, raw JSON/CSV evidence, plots, README and architecture
+  documentation. Full suite passes: 342 tests; `git diff --check` passes.

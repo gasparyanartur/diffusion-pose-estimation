@@ -1,0 +1,11 @@
+{
+  "official_checkpoint": "external/DiffusionRegPose/pretrain_models/diffusionregpose_r50_crowdpose.pth",
+  "external_reproduction_checkpoint": "external/DiffusionRegPose/logs/crowdpose_r50_effective_batch8_resume80/checkpoint.pth",
+  "native_run": "results/diffusionregpose_paper_full/diffusionregpose_paper_full/20260903_000016",
+  "native_checkpoint": "results/diffusionregpose_paper_full/diffusionregpose_paper_full/20260903_000016/checkpoints/epoch079.ckpt",
+  "native_evaluator_anchor": {
+    "keypoint_ap": 0.726776,
+    "bbox_ap": 0.631
+  },
+  "native_history_caveat": "Epochs 10-60 were reconstructed from recorded status artifacts after the original CSV logger was overwritten during the first resume attempt."
+}

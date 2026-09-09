@@ -146,6 +146,14 @@ Visible-mask: `visible = visibility == 2`.
   not a paper benchmark, because of its lower image resolution. Evaluation
   resizing is configurable on `CrowdPoseDataConfig`; the paper-compatible
   defaults remain 800 and 1333.
+- `benchmark_diffusionregpose_development` is the measured short-feedback
+  model. It uses a 10% deterministic split, 128/192-pixel resizing, batch 16,
+  three feature levels, two encoder layers, three decoder layers, 200 initial
+  queries, 20 person/proposal groups, 20 denoising queries, and FFN width 1024.
+  It preserves the CrowdPose target, diffusion, criterion, optimizer, and AP
+  interfaces, but its architecture is not compatible with the released
+  DiffusionRegPose checkpoint and its AP is not a paper result. Its two box
+  stages and 256-wide retained tensors allow partial EDPose initialization.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

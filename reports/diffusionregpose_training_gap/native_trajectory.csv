@@ -1,0 +1,9 @@
+epoch,keypoint_ap,bbox_ap,source
+10,0.535704,0.507207,reconstructed status record
+20,0.559386,0.526618,reconstructed status record
+30,0.592805,0.558205,reconstructed status record
+40,0.696976,0.615994,reconstructed status record
+50,0.700491,0.620248,reconstructed status record
+60,0.683309,0.603909,reconstructed status record
+70,0.671823,0.587275,resume CSV
+80,0.6745,0.592545,resume CSV

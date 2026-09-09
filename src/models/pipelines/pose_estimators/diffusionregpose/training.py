@@ -765,6 +765,7 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     num_encoder_layers: int = 6
     num_decoder_layers: int = 6
     hidden_dim: int = 256
+    feedforward_dim: int = 2048
     num_heads: int = 8
     num_body_points: int = 14
     num_box_decoder_layers: int = 2
@@ -818,6 +819,7 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             num_encoder_layers=self.num_encoder_layers,
             num_decoder_layers=self.num_decoder_layers,
             hidden_dim=self.hidden_dim,
+            feedforward_dim=self.feedforward_dim,
             num_heads=self.num_heads,
             num_body_points=self.num_body_points,
             num_box_decoder_layers=self.num_box_decoder_layers,

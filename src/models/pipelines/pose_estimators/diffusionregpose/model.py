@@ -95,6 +95,7 @@ class DiffusionRegPoseTransformer(nn.Module):
         num_encoder_layers: int,
         num_decoder_layers: int,
         hidden_dim: int,
+        feedforward_dim: int = 2048,
         num_heads: int,
         num_feature_levels: int,
         num_body_points: int,
@@ -109,7 +110,7 @@ class DiffusionRegPoseTransformer(nn.Module):
         super().__init__()
         encoder_layer = DeformableTransformerEncoderLayer(
             d_model=hidden_dim,
-            d_ffn=2048,
+            d_ffn=feedforward_dim,
             dropout=0.0,
             num_levels=num_feature_levels,
             num_heads=num_heads,
@@ -117,7 +118,7 @@ class DiffusionRegPoseTransformer(nn.Module):
         )
         decoder_layer = DeformableTransformerDecoderLayer(
             d_model=hidden_dim,
-            d_ffn=2048,
+            d_ffn=feedforward_dim,
             dropout=0.0,
             num_levels=num_feature_levels,
             num_heads=num_heads,
@@ -193,6 +194,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         num_encoder_layers: int = 6,
         num_decoder_layers: int = 6,
         hidden_dim: int = 256,
+        feedforward_dim: int = 2048,
         num_heads: int = 8,
         num_body_points: int = 14,
         num_box_decoder_layers: int = 2,
@@ -218,6 +220,12 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         self.num_classes = num_classes
         if dn_number < 0:
             raise ValueError("dn_number must be non-negative")
+        if hidden_dim % 32:
+            raise ValueError("hidden_dim must be divisible by 32 for GroupNorm")
+        if hidden_dim % num_heads:
+            raise ValueError("hidden_dim must be divisible by num_heads")
+        if hidden_dim % 4:
+            raise ValueError("hidden_dim must be divisible by 4 for position embeddings")
         self.num_feature_levels = num_feature_levels
         backbone = _BackboneJoiner(
             DiffusionRegPoseResNetBackbone(
@@ -230,6 +238,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             num_encoder_layers=num_encoder_layers,
             num_decoder_layers=num_decoder_layers,
             hidden_dim=hidden_dim,
+            feedforward_dim=feedforward_dim,
             num_heads=num_heads,
             num_feature_levels=num_feature_levels,
             num_body_points=num_body_points,

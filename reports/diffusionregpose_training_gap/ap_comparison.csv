@@ -1,0 +1,5 @@
+run,keypoint_ap,bbox_ap,evaluation
+Official released checkpoint,0.726776,0.631,all-test official
+"External reproduction, epoch 80",0.688012,0.620572,all-test external
+"Native best, epoch 50",0.700491,0.620248,all-test native validation
+"Native final, epoch 80",0.6745,0.592545,all-test native validation

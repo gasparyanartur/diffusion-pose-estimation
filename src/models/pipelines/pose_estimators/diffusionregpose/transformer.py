@@ -294,10 +294,16 @@ def inverse_sigmoid(values, eps=1e-3):
     return torch.log(values.clamp_min(eps) / (1 - values).clamp_min(eps))
 
 
-def sine_embedding_for_position(position):
+def sine_embedding_for_position(position, *, num_pos_feats=128):
     if position.shape[-1] not in (2, 4):
         raise ValueError("position must have last dimension 2 or 4")
-    frequencies = 10000 ** (2 * (torch.arange(128, device=position.device) // 2) / 128)
+    if num_pos_feats <= 0 or num_pos_feats % 2:
+        raise ValueError("num_pos_feats must be a positive even integer")
+    frequencies = 10000 ** (
+        2
+        * (torch.arange(num_pos_feats, device=position.device) // 2)
+        / num_pos_feats
+    )
     embeddings = []
     coordinate_indices = [1, 0] if position.shape[-1] == 2 else [1, 0, 2, 3]
     for index in coordinate_indices:
@@ -328,7 +334,10 @@ class DeformableTransformerDecoder(nn.Module):
         intermediate, references = [], [reference_points]
         for layer_id, layer in enumerate(self.layers):
             reference_points_input = reference_points[:, :, None] * torch.cat((valid_ratios, valid_ratios), -1)[None]
-            query_pos = self.ref_point_head(sine_embedding_for_position(reference_points_input[:, :, 0, :]))
+            query_pos = self.ref_point_head(sine_embedding_for_position(
+                reference_points_input[:, :, 0, :],
+                num_pos_feats=self.d_model // 2,
+            ))
             layer_mask = tgt_mask if layer_id < self.num_box_decoder_layers else tgt_mask2
             output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask)
             intermediate.append(self.norm(output))

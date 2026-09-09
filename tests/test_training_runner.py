@@ -216,3 +216,41 @@ def test_logger_does_not_duplicate_file_handlers(tmp_path):
         handler for handler in logger.handlers if isinstance(handler, logging.FileHandler)
     ]
     assert len(file_handlers) == 1
+
+
+def test_resumed_loggers_preserve_existing_history(tmp_path):
+    csv_directory = tmp_path / "csv_logs"
+    tensorboard_directory = tmp_path / "tb_logs"
+    csv_directory.mkdir()
+    tensorboard_directory.mkdir()
+    (csv_directory / "metrics.csv").write_text("epoch,loss\n1,2\n")
+    (tensorboard_directory / "events.out.tfevents.previous").write_text("old")
+
+    config = TrainingConfig(
+        resume="checkpoints/last.ckpt",
+        logging={"tensorboard": True, "csv": True},
+    )
+    loggers = TrainingRunner(config, tmp_path)._loggers()
+
+    assert {logger.log_dir for logger in loggers} == {
+        str(csv_directory / "resume"),
+        str(tensorboard_directory / "resume"),
+    }
+    assert (csv_directory / "metrics.csv").read_text() == "epoch,loss\n1,2\n"
+    assert (tensorboard_directory / "events.out.tfevents.previous").read_text() == "old"
+
+
+def test_resumed_loggers_increment_existing_continuation_directory(tmp_path):
+    (tmp_path / "csv_logs" / "resume").mkdir(parents=True)
+    (tmp_path / "tb_logs" / "resume").mkdir(parents=True)
+
+    config = TrainingConfig(
+        resume="checkpoints/last.ckpt",
+        logging={"tensorboard": True, "csv": True},
+    )
+    loggers = TrainingRunner(config, tmp_path)._loggers()
+
+    assert {logger.log_dir for logger in loggers} == {
+        str(tmp_path / "csv_logs" / "resume_1"),
+        str(tmp_path / "tb_logs" / "resume_1"),
+    }

@@ -1,0 +1,11 @@
+defaults:
+  - crowdpose_diffusionregpose_lowres
+  - _self_
+
+# The same deterministic fraction is applied to train, validation, and test.
+subset_frac: 0.1
+batch_size: 16
+
+# Crops retain 75-95% of the 128-pixel pre-crop short side.
+train_crop_size: [96, 122]
+

@@ -1,0 +1,17 @@
+defaults:
+  - diffusionregpose
+  - _self_
+
+# Retain the ED-Pose-compatible width and box-stage semantics while reducing
+# repeated transformer, query, and matching work.
+num_queries: 200
+num_proposals: 20
+num_feature_levels: 3
+num_encoder_layers: 2
+num_decoder_layers: 3
+num_box_decoder_layers: 2
+num_group: 20
+dn_number: 20
+hidden_dim: 256
+feedforward_dim: 1024
+
