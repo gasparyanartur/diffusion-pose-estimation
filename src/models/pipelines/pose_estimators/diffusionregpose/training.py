@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import nullcontext
@@ -26,6 +27,68 @@ from .model import DiffusionRegPoseModel
 
 
 CROWDPOSE_PERSON_LABEL = 1
+
+_CRITICAL_CHECKPOINT_PREFIXES = {
+    "input projections": ("input_proj.",),
+    "level embeddings": ("transformer.level_embed",),
+    "transformer encoder": ("transformer.encoder.",),
+    "transformer decoder": ("transformer.decoder.",),
+    "prediction heads": (
+        "bbox_embed.",
+        "class_embed.",
+        "pose_embed.",
+        "pose_hw_embed.",
+    ),
+}
+
+
+def diffusionregpose_checkpoint_component_coverage(
+    model_state: Mapping[str, Tensor],
+    checkpoint_state: Mapping[str, Tensor],
+) -> dict[str, float]:
+    """Measure shape-compatible checkpoint elements in critical model components."""
+    coverage = {}
+    for component, prefixes in _CRITICAL_CHECKPOINT_PREFIXES.items():
+        component_state = {
+            name: value
+            for name, value in model_state.items()
+            if name.startswith(prefixes)
+        }
+        total_elements = sum(value.numel() for value in component_state.values())
+        if total_elements == 0:
+            continue
+        compatible_elements = sum(
+            value.numel()
+            for name, value in component_state.items()
+            if name in checkpoint_state
+            and checkpoint_state[name].shape == value.shape
+        )
+        coverage[component] = compatible_elements / total_elements
+    return coverage
+
+
+def validate_diffusionregpose_checkpoint_coverage(
+    coverage: Mapping[str, float],
+    *,
+    minimum: float,
+) -> None:
+    """Reject pretrained checkpoints that leave critical components uninitialized."""
+    if not 0.0 <= minimum <= 1.0:
+        raise ValueError("minimum checkpoint coverage must be between zero and one")
+    insufficient = {
+        component: value
+        for component, value in coverage.items()
+        if value < minimum
+    }
+    if not insufficient:
+        return
+    details = ", ".join(
+        f"{component}={value:.2%}"
+        for component, value in insufficient.items()
+    )
+    raise ValueError(
+        f"pretrained checkpoint critical coverage is below {minimum:.2%}: {details}"
+    )
 
 
 def _generalized_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
@@ -779,6 +842,7 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     no_interm_box_loss: bool = False
     freeze_backbone_stem_and_layer1: bool = True
     pretrained_checkpoint: str | None = None
+    pretrained_minimum_critical_coverage: float | None = None
     lr: float = 2e-4
     lr_backbone: float | None = 1e-4
     weight_decay: float = 1e-4
@@ -799,6 +863,15 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             raise ValueError(
                 "num_classes must include CrowdPose person label "
                 f"{CROWDPOSE_PERSON_LABEL}, got {value}"
+            )
+        return value
+
+    @field_validator("pretrained_minimum_critical_coverage")
+    @classmethod
+    def _validate_pretrained_coverage(cls, value: float | None) -> float | None:
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise ValueError(
+                "pretrained_minimum_critical_coverage must be between zero and one"
             )
         return value
 
@@ -841,18 +914,42 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                 if isinstance(value, Tensor)
             }
             model_state = model.state_dict()
+            coverage = diffusionregpose_checkpoint_component_coverage(
+                model_state, state
+            )
+            if self.pretrained_minimum_critical_coverage is not None:
+                validate_diffusionregpose_checkpoint_coverage(
+                    coverage,
+                    minimum=self.pretrained_minimum_critical_coverage,
+                )
             compatible_state = {
                 key: value
                 for key, value in state.items()
                 if key in model_state and model_state[key].shape == value.shape
             }
-            skipped_keys = set(state) - set(compatible_state)
+            checkpoint_only_keys = set(state) - set(model_state)
+            shape_incompatible_keys = {
+                key
+                for key in set(state) & set(model_state)
+                if state[key].shape != model_state[key].shape
+            }
             incompatible = model.load_state_dict(compatible_state, strict=False)
-            if incompatible.missing_keys or incompatible.unexpected_keys or skipped_keys:
+            if (
+                incompatible.missing_keys
+                or incompatible.unexpected_keys
+                or checkpoint_only_keys
+                or shape_incompatible_keys
+            ):
+                coverage_summary = ", ".join(
+                    f"{component}={value:.2%}"
+                    for component, value in coverage.items()
+                )
                 warnings.warn(
                     f"Loaded {checkpoint_path} with {len(incompatible.missing_keys)} missing and "
-                    f"{len(incompatible.unexpected_keys)} unexpected and {len(skipped_keys)} "
-                    "shape-incompatible keys.",
+                    f"{len(incompatible.unexpected_keys)} unexpected model keys, "
+                    f"{len(checkpoint_only_keys)} unused checkpoint keys, and "
+                    f"{len(shape_incompatible_keys)} shape-incompatible keys. "
+                    f"Critical coverage: {coverage_summary}.",
                     stacklevel=2,
                 )
         weights = self.weights.to_dataclass()

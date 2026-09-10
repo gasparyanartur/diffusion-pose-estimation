@@ -6,6 +6,28 @@ current native implementation under
 
 ## Outcome
 
+### Learning-gate correction (2026-09-10)
+
+The 31.50M preset below is a successful runtime benchmark but a failed learning
+proxy. Its full-data 256-pixel run reached only 0.00334 peak pose AP through
+epoch 60. Aggregate checkpoint coverage hid that the backbone supplied most
+loaded elements: retained EDPose coverage was only 18.15% in the encoder,
+53.29% in the decoder, and zero for level embeddings. Two box decoder layers
+also left only one pose-refinement layer.
+
+The replacement preset is
+`benchmark_diffusionregpose_development_compatible_256`. It retains four
+feature levels, FFN width 2048, six encoder layers, six decoder layers, 200
+initial queries, and 50 person/proposal/DN groups. It has 49.53M parameters and
+loads 100% of retained EDPose encoder tensors, 99.97% of decoder elements, and
+100% of input projections, level embeddings, and prediction heads. A new
+per-component coverage gate rejects silent shape loss below 99%. Its runtime
+profile measured a 681.9 ms median batch-8 update and 6.10 GiB peak allocated
+memory at the 256/427-pixel data setting. This predicts about 17 minutes of
+training compute per 1,500-batch epoch before validation and checkpoint I/O.
+The timing tables below otherwise remain measurements of the original 31.50M
+preset.
+
 Image resolution was not the only problem. Reducing the paper model to
 192-pixel inputs increased throughput, but the unchanged query layout left the
 decoder, repeated Hungarian matching, and backward pass expensive. The selected
@@ -31,14 +53,14 @@ must not be read as an isolated model-only speedup. At the same low-resolution
 batch size 8, reducing the full model to the 3-encoder/4-decoder, 300-query,
 30-group compact model improved update time from 739.8 ms to 293.5 ms, or 2.52x.
 
-The recommended command is:
+The original measured command is:
 
 ```bash
 venv/bin/python scripts/training/train_diffusionregpose.py \
     --config-name benchmark_diffusionregpose_development
 ```
 
-This is a development model. It does not load the released DiffusionRegPose
+This is now a runtime-only development model. It does not load the released DiffusionRegPose
 checkpoint as a complete model and it must not be used for paper-AP claims.
 Its 10% subset and batch size 16 also change the number of optimizer updates
 per epoch and the effective batch size relative to paper training. The preset
@@ -238,10 +260,12 @@ The reduction candidates rank as follows:
    benefit at the selected operating point; defer until the development model
    has a measured learning baseline.
 
-The selected model loads 26,920,184 of 31,495,844 parameter elements (85.47%)
+The original selected model loads 26,920,184 of 31,495,844 parameter elements (85.47%)
 from the EDPose checkpoint. The incompatible entries are primarily removed
 layers, fourth-level tensors, level-dependent attention offsets/weights, and
 reduced FFNs. The two box-layer semantics remain aligned with the source model.
+This aggregate percentage is not a valid initialization-quality gate because
+the backbone dominates it; use the per-component coverage check instead.
 
 ## Feedback-loop estimate and validation status
 
@@ -268,8 +292,9 @@ A one-epoch integration smoke used a 1% override and the real EDPose checkpoint:
   `results/diffusionregpose_development_smoke/runtime_audit_smoke/20260909_200636/checkpoints/epoch000.ckpt`.
 
 The smoke run's AP was zero after one epoch on 20 validation images. It proves
-wiring, not learning quality. The development preset still needs one complete
-80-epoch run before it can claim a useful AP feedback gate.
+wiring, not learning quality. The subsequent full-data run rejected this preset
+as an AP feedback gate; the EDPose-compatible replacement must establish its
+own initialization and epoch-10 AP before acceptance.
 
 ## Remaining optimization opportunities
 

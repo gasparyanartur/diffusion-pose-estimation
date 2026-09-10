@@ -254,7 +254,21 @@ matching/loss, optimizer, and evaluator boundaries as the paper model. The
 resolved model has 31,495,844 unique parameters and is intentionally a separate,
 checkpoint-incompatible development architecture. See
 [`reports/diffusionregpose-runtime-audit.md`](../reports/diffusionregpose-runtime-audit.md)
-for measured timing and memory.
+for measured timing and memory. Its completed full-data 256-pixel experiment
+showed that this is too aggressive for an AP learning gate: only 18.15% of the
+retained encoder and 53.29% of the retained decoder elements load from EDPose,
+and only one decoder layer operates on pose queries.
+
+`benchmark_diffusionregpose_development_compatible_256` preserves the tensor
+shapes of retained EDPose components: four feature levels, a 2048-wide FFN,
+six encoder layers, and six decoder layers (two box and four pose). It reduces
+runtime through 200 initial queries and 50 person/proposal/DN groups. The model
+has 49,527,324 unique parameters and its checkpoint loader enforces 99% minimum
+coverage separately across input projections, level embeddings, transformer
+encoder, transformer decoder, and prediction heads. Validation sampling uses a
+fixed seed so AP checkpoints are directly comparable. A controlled EDPose
+initialization evaluation showed that two encoder layers destroy pretrained
+bbox AP while the 200/50 query reduction with all six layers preserves it.
 
 Its evaluation path is independent of the external repository. CUDA training
 and inference use a lazily compiled, repository-owned forward/backward

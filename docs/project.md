@@ -147,13 +147,22 @@ Visible-mask: `visible = visibility == 2`.
   resizing is configurable on `CrowdPoseDataConfig`; the paper-compatible
   defaults remain 800 and 1333.
 - `benchmark_diffusionregpose_development` is the measured short-feedback
-  model. It uses a 10% deterministic split, 128/192-pixel resizing, batch 16,
+  model from the initial runtime audit. It uses a 10% deterministic split,
+  128/192-pixel resizing, batch 16,
   three feature levels, two encoder layers, three decoder layers, 200 initial
   queries, 20 person/proposal groups, 20 denoising queries, and FFN width 1024.
-  It preserves the CrowdPose target, diffusion, criterion, optimizer, and AP
-  interfaces, but its architecture is not compatible with the released
-  DiffusionRegPose checkpoint and its AP is not a paper result. Its two box
-  stages and 256-wide retained tensors allow partial EDPose initialization.
+  Its full-data 256-pixel run remained near zero AP because those reductions
+  leave one pose layer and make most retained EDPose transformer tensors
+  shape-incompatible. It is retained for runtime/wiring measurements only.
+- `benchmark_diffusionregpose_development_compatible_256` is the replacement
+  learning gate. It keeps four feature levels, FFN width 2048, and all four
+  pose-refinement layers while reducing initial queries to 200 and
+  person/proposal/DN groups to 50. All six pretrained encoder layers are
+  retained because a two-layer initialization control reduced bbox AP from
+  approximately 0.29 to zero. Its EDPose load requires
+  at least 99% element coverage independently for each critical component and
+  uses a fixed validation diffusion seed. It remains a development experiment,
+  not a paper-scale result.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

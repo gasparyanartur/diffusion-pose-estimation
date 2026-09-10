@@ -2172,3 +2172,27 @@ Modified files:
   `diffusionregpose-dev256-full`; batch size 8 and no gradient accumulation
   are active. It started on CUDA at approximately 2.4 batches/sec, or 10-11
   minutes per epoch.
+
+[2026-09-10] Added EDPose-compatible development learning gate
+
+- Diagnosed the 31.50M compact model as a failed AP proxy: its full-data
+  256-pixel run remained near zero AP because critical EDPose transformer
+  tensors were shape-incompatible and only one pose-refinement layer remained.
+- Added per-component checkpoint coverage measurement and an opt-in minimum
+  coverage guard. Checkpoint warnings now distinguish unused keys from genuine
+  shape mismatches and report critical-component coverage.
+- Added `benchmark_diffusionregpose_development_compatible_256`: four feature
+  levels, FFN 2048, two encoder layers, six decoder layers, 200 initial queries,
+  50 proposal/group/DN queries, and fixed-seed AP evaluation.
+- Initialization controls showed that reducing the encoder to two layers
+  destroys EDPose bbox AP, while reducing only queries/groups to 200/50
+  preserves it. Updated the replacement to retain all six encoder layers.
+- Verified the 49.53M replacement against the real EDPose checkpoint: encoder
+  100%, decoder 99.97%, and all other guarded components 100%, with zero shape
+  mismatches. Focused model/training/evaluation tests pass: 66 tests.
+- Measured the revised batch-8 preset at 681.9 ms median per update and 6.10 GiB
+  peak allocated CUDA memory, then launched the full-data 80-epoch run in tmux
+  session `diffusionregpose-dev256-compatible`.
+- Startup verified 49,304,924 trainable parameters, fixed-seed AP, full
+  CrowdPose trainval data, 1,500 batches per epoch, finite decreasing loss, and
+  the intended 200 initial / 50 proposal-group query layout.

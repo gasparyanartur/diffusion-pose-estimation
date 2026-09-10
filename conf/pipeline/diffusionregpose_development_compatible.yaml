@@ -1,0 +1,19 @@
+defaults:
+  - diffusionregpose
+  - _self_
+
+# Preserve every retained EDPose tensor shape and all four pose-refinement
+# stages. Query counts reduce runtime without changing parameter shapes.
+num_queries: 200
+num_proposals: 50
+num_feature_levels: 4
+num_encoder_layers: 6
+num_decoder_layers: 6
+num_box_decoder_layers: 2
+num_group: 50
+dn_number: 50
+hidden_dim: 256
+feedforward_dim: 2048
+
+pretrained_minimum_critical_coverage: 0.99
+deterministic_seed: 42

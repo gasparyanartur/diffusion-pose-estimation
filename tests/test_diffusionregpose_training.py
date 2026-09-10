@@ -27,9 +27,11 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     DiffusionRegPosePipelineConfig,
     _generalized_box_iou,
     build_diffusionregpose_targets,
+    diffusionregpose_checkpoint_component_coverage,
     diffusionregpose_ap_epoch_active,
     update_diffusionregpose_ap_metric,
     update_diffusionregpose_bbox_ap_metric,
+    validate_diffusionregpose_checkpoint_coverage,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.model import DiffusionRegPoseModel
 
@@ -140,6 +142,102 @@ def test_diffusionregpose_development_256_config_uses_full_proportional_data() -
     assert config.data.eval_resize_scale == 256
     assert config.data.eval_max_size == 427
     assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_compatible_development_config_preserves_pretrained_shapes() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256"
+        )
+
+    assert config.pipeline.num_queries == 200
+    assert config.pipeline.num_proposals == 50
+    assert config.pipeline.num_group == 50
+    assert config.pipeline.dn_number == 50
+    assert config.pipeline.num_feature_levels == 4
+    assert config.pipeline.num_encoder_layers == 6
+    assert config.pipeline.num_decoder_layers == 6
+    assert config.pipeline.num_box_decoder_layers == 2
+    assert config.pipeline.hidden_dim == 256
+    assert config.pipeline.feedforward_dim == 2048
+    assert config.pipeline.deterministic_seed == 42
+    assert config.pipeline.pretrained_minimum_critical_coverage == 0.99
+    assert config.data.subset_frac == 1.0
+    assert config.data.batch_size == 8
+    assert config.data.eval_resize_scale == 256
+    assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_checkpoint_coverage_is_measured_per_critical_component() -> None:
+    model_state = {
+        "input_proj.weight": torch.zeros(4),
+        "transformer.level_embed": torch.zeros(4),
+        "transformer.encoder.layer.weight": torch.zeros(4),
+        "transformer.decoder.layer.weight": torch.zeros(4),
+        "bbox_embed.0.weight": torch.zeros(4),
+    }
+    checkpoint_state = {
+        **model_state,
+        "transformer.encoder.layer.weight": torch.zeros(2),
+    }
+
+    coverage = diffusionregpose_checkpoint_component_coverage(
+        model_state, checkpoint_state
+    )
+
+    assert coverage == {
+        "input projections": 1.0,
+        "level embeddings": 1.0,
+        "transformer encoder": 0.0,
+        "transformer decoder": 1.0,
+        "prediction heads": 1.0,
+    }
+
+
+def test_diffusionregpose_checkpoint_coverage_rejects_critical_shape_loss() -> None:
+    with pytest.raises(ValueError, match="transformer encoder=98.00%"):
+        validate_diffusionregpose_checkpoint_coverage(
+            {
+                "input projections": 1.0,
+                "level embeddings": 1.0,
+                "transformer encoder": 0.98,
+                "transformer decoder": 1.0,
+                "prediction heads": 1.0,
+            },
+            minimum=0.99,
+        )
+
+
+def test_compatible_development_model_meets_available_edpose_coverage() -> None:
+    checkpoint_path = Path(
+        "external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth"
+    )
+    if not checkpoint_path.exists():
+        pytest.skip("EDPose initialization checkpoint is not available")
+
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint_state = {
+        name.removeprefix("module."): value
+        for name, value in checkpoint["model"].items()
+    }
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        num_queries=200,
+        num_proposals=50,
+        num_feature_levels=4,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        feedforward_dim=2048,
+        num_group=50,
+        dn_number=50,
+    )
+
+    coverage = diffusionregpose_checkpoint_component_coverage(
+        model.state_dict(), checkpoint_state
+    )
+
+    assert min(coverage.values()) >= 0.99
 
 
 def test_diffusionregpose_ap_cadence_uses_completed_epoch_numbers() -> None:
