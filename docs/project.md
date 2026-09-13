@@ -97,8 +97,10 @@ Visible-mask: `visible = visibility == 2`.
   lifecycle, and optimizer setup.
 - `GraphPosePipeline` is the direct image-to-box-and-pose diffusion set model.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
-  pose model. Its training criterion reproduces the reference Hungarian,
-  focal-classification, box, keypoint, OKS, and denoising losses; its model-only
+  pose model. Its training criterion defaults to the reference Hungarian
+  assignment and supports opt-in DiffusionDet-style Dynamic-K OTA while
+  retaining the focal-classification, box, keypoint, OKS, and denoising losses;
+  its model-only
   evaluation path loads compatible tensors from the downloaded reference
   checkpoint. Selected two-stage encoder proposals receive the reference
   intermediate classification, box, and GIoU supervision during training.
@@ -106,15 +108,33 @@ Visible-mask: `visible = visibility == 2`.
   EDPose loading, including transformer reset order and time conditioning.
   Crop augmentation removes cropped-out people from supervised targets while
   retaining their clipped keypoints for diffusion proposals. Exact CUDA
-  training and evaluation use the repository-owned native
-  forward/backward deformable-attention kernel; the PyTorch sampler remains
-  the differentiable fallback when the extension is unavailable. CrowdPose
+  training and evaluation use the vendored DINOv3 native
+  forward/backward deformable-attention kernel at a pinned revision; its
+  DINOv3 and Deformable DETR/SenseTime attribution and license are preserved
+  beside the imported sources. The PyTorch sampler remains the differentiable
+  fallback when the extension is unavailable. CrowdPose
   person targets use category label `1`, matching the dataset and reference
   implementation; native checkpoints trained before this correction require
-  retraining. Its clean classification diagnostics separately report focal
+  retraining. OTA assigns complete person groups rather than individual joints:
+  box IoU controls spatial candidates and Dynamic-K cardinality, while
+  pose-capable layers retain the visibility-masked keypoint and OKS matching
+  costs. Each clean decoder/encoder output is matched independently and its OTA
+  losses are normalized by that output's positive assignments. Denoising
+  queries retain their explicit correspondence and are never OTA-matched.
+  Its clean classification diagnostics separately report focal
   contributions from matched positives and all remaining negatives, matched
-  and unmatched person scores, and the matched-query count under `debug/`
-  without changing the optimized loss.
+  and unmatched person scores, matched-query count, and matches-per-target
+  statistics under `debug/` without changing the optimized loss.
+- PoseFlowPipeline retains the DiffusionRegPose ED-Pose backbone, decoder,
+  prediction heads, denoising path, task criterion, evaluation, and pose NMS,
+  but uses pose-aware Dynamic-K OTA by default. Its generative state is only
+  flattened keypoint XY. Training samples continuous per-image flow time and
+  linearly interpolates from a Gaussian source to a padded endpoint set;
+  source-prior padding is the default and is not a semantic ground-truth
+  target. Sampling uses forward Euler with a fixed original source anchor:
+  velocity is predicted endpoint minus source, not endpoint minus current
+  state. DiffusionRegPose remains the checkpoint/external-parity reference; a
+  trained PoseFlow model requires its own retraining provenance.
 - The native training wrapper has passed one-image CPU and CUDA smoke runs,
   including checkpoint restore. The external-compatible preset freezes the
   ResNet stem and `layer1`, shares the decoder pose-size head, and applies the
@@ -163,6 +183,33 @@ Visible-mask: `visible = visibility == 2`.
   at least 99% element coverage independently for each critical component and
   uses a fixed validation diffusion seed. It remains a development experiment,
   not a paper-scale result.
+- `benchmark_diffusionregpose_development_compatible_128` keeps the same
+  checkpoint-compatible architecture, optimizer, losses, and evaluator while
+  using 128/192-pixel train and validation resizing. It is a full-data
+  lower-resolution learning gate, not a paper-scale benchmark.
+- `benchmark_diffusionregpose_development_compatible_256_freeze_backbone` is a
+  controlled 256-pixel comparison preset that freezes every ResNet parameter
+  while retaining the compatible transformer, diffusion, losses, optimizer,
+  and evaluator. It has approximately 26.1M trainable parameters versus
+  49.3M in the standard compatible preset; it is not the paper-default recipe.
+- `benchmark_diffusionregpose_development_compatible_256_head_only` loads the
+  EDPose checkpoint and freezes the backbone, input projections, label
+  embedding, and transformer computation while retaining prediction and
+  encoder proposal heads. It is a diagnostic transfer/runtime experiment,
+  not a paper training recipe.
+- `benchmark_diffusionregpose_development_compatible_256_keep_layers` is a
+  reduced transfer experiment. It runs three encoder and three decoder layers,
+  retaining EDPose checkpoint layers 2, 4, and 6 through explicit one-based
+  checkpoint-key remapping. Decoder layer 2 supplies the box stage and layers
+  4 and 6 supply the two pose-refinement stages; the original expansion pose
+  head is retained separately. Because skipped layers change the activations,
+  this preset cannot reproduce the full checkpoint's outputs or serve as a
+  paper-parity evaluator.
+- `benchmark_diffusionregpose_development_compatible_256_keep_layers_ota` is
+  the matched OTA experiment for that selected-layer fast run. It inherits the
+  same 3E/3D architecture, EDPose layer remapping, 256/427 resizing, batch 4,
+  accumulation 2, initialization, optimizer, schedule, and evaluator; only
+  clean-query assignment changes from Hungarian to pose-aware Dynamic-K OTA.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
 - Box diffusion and DiffusionDet are separate object-detection models whose

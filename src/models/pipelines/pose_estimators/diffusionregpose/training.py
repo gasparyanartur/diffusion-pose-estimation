@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from contextlib import nullcontext
+from typing import Literal
 import warnings
 
 import torch
@@ -40,6 +41,149 @@ _CRITICAL_CHECKPOINT_PREFIXES = {
         "pose_hw_embed.",
     ),
 }
+
+
+def _normalize_kept_layer_indices(
+    indices: Sequence[int],
+    *,
+    target_count: int,
+    source_count: int,
+    component: str,
+) -> tuple[int, ...]:
+    if len(indices) != target_count:
+        raise ValueError(
+            f"{component} keep-layers must contain {target_count} one-based "
+            f"indices; got {len(indices)}"
+        )
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"{component} keep-layers must not contain duplicates")
+    if any(index < 1 or index > source_count for index in indices):
+        raise ValueError(
+            f"{component} keep-layers must be between 1 and {source_count}; "
+            f"got {tuple(indices)}"
+        )
+    return tuple(index - 1 for index in indices)
+
+
+def remap_diffusionregpose_checkpoint_layers(
+    checkpoint_state: Mapping[str, Tensor],
+    *,
+    encoder_layer_indices: Sequence[int],
+    decoder_layer_indices: Sequence[int],
+    target_num_encoder_layers: int,
+    target_num_decoder_layers: int,
+    target_num_box_decoder_layers: int,
+    source_num_encoder_layers: int = 6,
+    source_num_decoder_layers: int = 6,
+    source_num_box_decoder_layers: int = 2,
+) -> dict[str, Tensor]:
+    """Map one-based retained EDPose layers into a reduced model state dict."""
+    if target_num_box_decoder_layers != 1:
+        raise ValueError(
+            "selected decoder initialization currently requires one target "
+            "box decoder layer"
+        )
+    encoder_indices = _normalize_kept_layer_indices(
+        encoder_layer_indices,
+        target_count=target_num_encoder_layers,
+        source_count=source_num_encoder_layers,
+        component="encoder",
+    )
+    decoder_indices = _normalize_kept_layer_indices(
+        decoder_layer_indices,
+        target_count=target_num_decoder_layers,
+        source_count=source_num_decoder_layers,
+        component="decoder",
+    )
+    source_box_indices = [
+        index for index in decoder_indices if index < source_num_box_decoder_layers
+    ]
+    source_pose_indices = [
+        index - source_num_box_decoder_layers
+        for index in decoder_indices
+        if index >= source_num_box_decoder_layers
+    ]
+    if len(source_box_indices) != target_num_box_decoder_layers:
+        raise ValueError(
+            "selected decoder layers must retain exactly one source box stage; "
+            f"got zero-based source box indices {source_box_indices}"
+        )
+    target_pose_count = target_num_decoder_layers - target_num_box_decoder_layers
+    if len(source_pose_indices) != target_pose_count:
+        raise ValueError(
+            "selected decoder layers do not provide the target number of pose "
+            f"stages: expected {target_pose_count}, got {len(source_pose_indices)}"
+        )
+
+    remapped: dict[str, Tensor] = {}
+    for key, value in checkpoint_state.items():
+        normalized_key = key.removeprefix("module.")
+        target_key = normalized_key
+        for prefix, selected_indices in (
+            ("transformer.encoder.layers", encoder_indices),
+            ("transformer.decoder.layers", decoder_indices),
+        ):
+            marker = f"{prefix}."
+            if normalized_key.startswith(marker):
+                remainder = normalized_key[len(marker):]
+                source_index_text, separator, suffix = remainder.partition(".")
+                if not separator:
+                    break
+                source_index = int(source_index_text)
+                if source_index not in selected_indices:
+                    target_key = ""
+                    break
+                target_index = selected_indices.index(source_index)
+                target_key = f"{prefix}.{target_index}.{suffix}"
+                break
+        if not target_key:
+            continue
+
+        for head_name in ("bbox_embed", "class_embed"):
+            for prefix in ("", "transformer.decoder."):
+                marker = f"{prefix}{head_name}."
+                if not normalized_key.startswith(marker):
+                    continue
+                remainder = normalized_key[len(marker):]
+                source_index_text, separator, suffix = remainder.partition(".")
+                if not separator:
+                    continue
+                source_index = int(source_index_text)
+                if source_index not in decoder_indices:
+                    target_key = ""
+                    break
+                target_index = decoder_indices.index(source_index)
+                target_key = f"{prefix}{head_name}.{target_index}.{suffix}"
+                break
+            if not target_key:
+                break
+        if not target_key:
+            continue
+
+        for head_name in ("pose_embed", "pose_hw_embed"):
+            for prefix in ("", "transformer.decoder."):
+                marker = f"{prefix}{head_name}."
+                if not normalized_key.startswith(marker):
+                    continue
+                remainder = normalized_key[len(marker):]
+                source_index_text, separator, suffix = remainder.partition(".")
+                if not separator:
+                    continue
+                source_index = int(source_index_text)
+                if source_index == 0 and head_name == "pose_embed":
+                    target_key = f"{prefix}expansion_pose_embed.{suffix}"
+                elif source_index in source_pose_indices:
+                    target_index = source_pose_indices.index(source_index)
+                    target_key = f"{prefix}{head_name}.{target_index}.{suffix}"
+                else:
+                    target_key = ""
+                break
+            if not target_key:
+                break
+
+        if target_key:
+            remapped[target_key] = value
+    return remapped
 
 
 def diffusionregpose_checkpoint_component_coverage(
@@ -319,6 +463,99 @@ class DiffusionRegPoseLossWeights:
     focal_alpha: float = 0.25
 
 
+def _pairwise_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
+    intersection_left_top = torch.maximum(boxes1[:, None, :2], boxes2[:, :2])
+    intersection_right_bottom = torch.minimum(boxes1[:, None, 2:], boxes2[:, 2:])
+    intersection_size = (intersection_right_bottom - intersection_left_top).clamp_min(0)
+    intersection = intersection_size[..., 0] * intersection_size[..., 1]
+    area1 = (
+        (boxes1[:, 2] - boxes1[:, 0]).clamp_min(0)
+        * (boxes1[:, 3] - boxes1[:, 1]).clamp_min(0)
+    )
+    area2 = (
+        (boxes2[:, 2] - boxes2[:, 0]).clamp_min(0)
+        * (boxes2[:, 3] - boxes2[:, 1]).clamp_min(0)
+    )
+    union = area1[:, None] + area2 - intersection
+    return intersection / union.clamp_min(torch.finfo(intersection.dtype).eps)
+
+
+def _diffusionregpose_pairwise_matching_cost(
+    logits: Tensor,
+    boxes: Tensor,
+    keypoints: Tensor,
+    target: dict[str, Tensor],
+    *,
+    num_body_points: int,
+    sigmas: Tensor,
+    weights: DiffusionRegPoseLossWeights,
+) -> Tensor:
+    probabilities = logits.sigmoid()
+    alpha, gamma = weights.focal_alpha, 2.0
+    negative_class_cost = (
+        (1 - alpha)
+        * probabilities.pow(gamma)
+        * -(1 - probabilities + 1e-8).log()
+    )
+    positive_class_cost = (
+        alpha
+        * (1 - probabilities).pow(gamma)
+        * -(probabilities + 1e-8).log()
+    )
+    class_cost = (
+        positive_class_cost[:, target["labels"]]
+        - negative_class_cost[:, target["labels"]]
+    )
+
+    coordinate_count = num_body_points * 2
+    use_pose_costs = bool(keypoints[..., :coordinate_count].sum().item() > 0)
+    if not use_pose_costs:
+        box_cost = torch.cdist(boxes, target["boxes"], p=1)
+        giou_cost = -_generalized_box_iou(
+            box_cxcywh_to_xyxy(boxes),
+            box_cxcywh_to_xyxy(target["boxes"]),
+        )
+        keypoint_cost = torch.zeros_like(box_cost)
+        oks = torch.ones_like(box_cost)
+    else:
+        box_cost = torch.zeros_like(torch.cdist(boxes, target["boxes"], p=1))
+        giou_cost = torch.zeros_like(box_cost)
+        predicted_xy = keypoints[:, :coordinate_count].reshape(
+            -1, num_body_points, 2,
+        )
+        target_xy = target["keypoints"][:, :coordinate_count].reshape(
+            -1, num_body_points, 2,
+        )
+        target_visible = target["keypoints"][:, coordinate_count:]
+        squared_distance = (
+            predicted_xy[:, None] - target_xy[None]
+        ).pow(2).sum(-1)
+        variances = (sigmas.to(predicted_xy) * 2).pow(2)
+        oks = torch.exp(
+            -squared_distance
+            / (target["area"][None, :, None] * variances[None, None] * 2)
+        )
+        oks = (
+            (oks * target_visible[None]).sum(-1)
+            / (target_visible.sum(-1)[None] + 1e-6)
+        )
+        keypoint_cost = (
+            (
+                keypoints[:, None, :coordinate_count]
+                - target["keypoints"][None, :, :coordinate_count]
+            ).abs()
+            * target_visible[None].repeat_interleave(2, dim=-1)
+        ).sum(-1)
+
+    return (
+        weights.set_cost_class * class_cost
+        + weights.set_cost_bbox * box_cost
+        + weights.set_cost_giou * giou_cost
+        + weights.set_cost_keypoints * keypoint_cost
+        + weights.set_cost_oks * (1 - oks.clamp_min(1e-6))
+    )
+
+
 class DiffusionRegPoseMatcher(nn.Module):
     """Hungarian matcher matching the reference classification/box/pose costs."""
 
@@ -336,6 +573,14 @@ class DiffusionRegPoseMatcher(nn.Module):
             raise ValueError("DiffusionRegPose supports at most 14 keypoints")
         self.register_buffer("sigmas", torch.tensor(sigmas[:num_body_points], dtype=torch.float32) / 10.0)
 
+    def normalization_count(
+        self,
+        matches: list[tuple[Tensor, Tensor]],
+        targets: list[dict[str, Tensor]],
+    ) -> int:
+        del matches
+        return sum(target["labels"].numel() for target in targets)
+
     @torch.no_grad()
     def forward(self, outputs: dict[str, Tensor], targets: list[dict[str, Tensor]]) -> list[tuple[Tensor, Tensor]]:
         matches: list[tuple[Tensor, Tensor]] = []
@@ -347,42 +592,162 @@ class DiffusionRegPoseMatcher(nn.Module):
                 empty = torch.empty(0, dtype=torch.long, device=logits.device)
                 matches.append((empty, empty))
                 continue
-            probabilities = logits.sigmoid()
-            alpha, gamma = self.weights.focal_alpha, 2.0
-            neg = (1 - alpha) * probabilities.pow(gamma) * -(1 - probabilities + 1e-8).log()
-            pos = alpha * (1 - probabilities).pow(gamma) * -(probabilities + 1e-8).log()
-            class_cost = pos[:, target_labels] - neg[:, target_labels]
-            use_pose_costs = bool(keypoints[..., : self.num_body_points * 2].sum().item() > 0)
-            if use_pose_costs:
-                box_cost = torch.zeros_like(torch.cdist(boxes, target["boxes"], p=1))
-                giou_cost = torch.zeros_like(box_cost)
-                pred_xy = keypoints[:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
-                target_xy = target["keypoints"][:, : self.num_body_points * 2].reshape(-1, self.num_body_points, 2)
-                target_visible = target["keypoints"][:, self.num_body_points * 2 :]
-                distance = (pred_xy[:, None] - target_xy[None]).pow(2).sum(-1)
-                variances = (self.sigmas.to(pred_xy) * 2).pow(2)
-                oks = torch.exp(-distance / (target["area"][None, :, None] * variances[None, None] * 2))
-                oks = (oks * target_visible[None]).sum(-1) / (target_visible.sum(-1)[None] + 1e-6)
-                keypoint_cost = (
-                    (keypoints[:, None, : self.num_body_points * 2] - target["keypoints"][None, :, : self.num_body_points * 2]).abs()
-                    * target_visible[None].repeat_interleave(2, dim=-1)
-                ).sum(-1)
-            else:
-                box_cost = torch.cdist(boxes, target["boxes"], p=1)
-                giou_cost = -_generalized_box_iou(
-                    box_cxcywh_to_xyxy(boxes), box_cxcywh_to_xyxy(target["boxes"])
-                )
-                keypoint_cost = torch.zeros_like(box_cost)
-                oks = torch.ones_like(box_cost)
-            cost = (
-                self.weights.set_cost_class * class_cost
-                + self.weights.set_cost_bbox * box_cost
-                + self.weights.set_cost_giou * giou_cost
-                + self.weights.set_cost_keypoints * keypoint_cost
-                + self.weights.set_cost_oks * (1 - oks.clamp_min(1e-6))
+            cost = _diffusionregpose_pairwise_matching_cost(
+                logits,
+                boxes,
+                keypoints,
+                target,
+                num_body_points=self.num_body_points,
+                sigmas=self.sigmas,
+                weights=self.weights,
             )
             row, column = linear_sum_assignment(cost.detach().cpu())
             matches.append((torch.as_tensor(row, device=logits.device), torch.as_tensor(column, device=logits.device)))
+        return matches
+
+
+_OTA_BOX_AND_CENTER_PENALTY = 100.0
+_OTA_OUTSIDE_CANDIDATE_PENALTY = 10_000.0
+
+
+class DiffusionRegPoseOTAMatcher(DiffusionRegPoseMatcher):
+    """Assign complete person queries with box-IoU Dynamic-K matching."""
+
+    def __init__(
+        self,
+        *,
+        num_body_points: int = 14,
+        weights: DiffusionRegPoseLossWeights | None = None,
+        candidate_topk: int = 5,
+        center_radius: float = 2.5,
+    ) -> None:
+        super().__init__(num_body_points=num_body_points, weights=weights)
+        if candidate_topk < 1:
+            raise ValueError("OTA candidate_topk must be positive")
+        if center_radius <= 0:
+            raise ValueError("OTA center_radius must be positive")
+        self.candidate_topk = candidate_topk
+        self.center_radius = center_radius
+
+    def normalization_count(
+        self,
+        matches: list[tuple[Tensor, Tensor]],
+        targets: list[dict[str, Tensor]],
+    ) -> int:
+        del targets
+        return sum(source_indices.numel() for source_indices, _ in matches)
+
+    def _candidate_penalties(self, boxes: Tensor, target_boxes: Tensor) -> Tensor:
+        query_centers = boxes[:, :2]
+        target_xyxy = box_cxcywh_to_xyxy(target_boxes)
+        in_boxes = (
+            (query_centers[:, None, 0] > target_xyxy[None, :, 0])
+            & (query_centers[:, None, 0] < target_xyxy[None, :, 2])
+            & (query_centers[:, None, 1] > target_xyxy[None, :, 1])
+            & (query_centers[:, None, 1] < target_xyxy[None, :, 3])
+        )
+
+        target_centers = target_boxes[:, :2]
+        center_half_size = target_boxes[:, 2:] * self.center_radius
+        center_left_top = target_centers - center_half_size
+        center_right_bottom = target_centers + center_half_size
+        in_centers = (
+            (query_centers[:, None, 0] > center_left_top[None, :, 0])
+            & (query_centers[:, None, 0] < center_right_bottom[None, :, 0])
+            & (query_centers[:, None, 1] > center_left_top[None, :, 1])
+            & (query_centers[:, None, 1] < center_right_bottom[None, :, 1])
+        )
+
+        in_any_candidate_region = (in_boxes | in_centers).any(dim=1)
+        penalties = (~(in_boxes & in_centers)).to(boxes.dtype)
+        penalties = penalties * _OTA_BOX_AND_CENTER_PENALTY
+        penalties[~in_any_candidate_region] += _OTA_OUTSIDE_CANDIDATE_PENALTY
+        return penalties
+
+    def _dynamic_k_assignment(
+        self,
+        cost: Tensor,
+        pairwise_iou: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        query_count = cost.shape[0]
+        candidate_count = min(self.candidate_topk, query_count)
+        top_ious = pairwise_iou.topk(candidate_count, dim=0).values
+        dynamic_counts = top_ious.sum(dim=0).to(torch.long).clamp_min(1)
+
+        matching = torch.zeros_like(cost, dtype=torch.bool)
+        for target_index, dynamic_count in enumerate(dynamic_counts.tolist()):
+            selected = cost[:, target_index].topk(
+                dynamic_count, largest=False,
+            ).indices
+            matching[selected, target_index] = True
+
+        conflicted = matching.sum(dim=1) > 1
+        if conflicted.any():
+            best_targets = cost[conflicted].argmin(dim=1)
+            matching[conflicted] = False
+            matching[conflicted, best_targets] = True
+
+        while (matching.sum(dim=0) == 0).any():
+            missing_target = (matching.sum(dim=0) == 0).nonzero(
+                as_tuple=False,
+            )[0, 0]
+            matched_queries = matching.any(dim=1)
+            movable_queries = ~matched_queries
+            if matched_queries.any():
+                assigned_targets = matching[matched_queries].to(torch.long).argmax(dim=1)
+                assigned_counts = matching.sum(dim=0)
+                movable_queries[matched_queries] = assigned_counts[assigned_targets] > 1
+            candidates = movable_queries.nonzero(as_tuple=False).flatten()
+            if candidates.numel() == 0:
+                raise RuntimeError("OTA could not preserve one assignment per target")
+            selected = candidates[cost[candidates, missing_target].argmin()]
+            matching[selected] = False
+            matching[selected, missing_target] = True
+
+        source_indices = matching.any(dim=1).nonzero(as_tuple=False).flatten()
+        target_indices = matching[source_indices].to(torch.long).argmax(dim=1)
+        return source_indices, target_indices
+
+    @torch.no_grad()
+    def forward(
+        self,
+        outputs: dict[str, Tensor],
+        targets: list[dict[str, Tensor]],
+    ) -> list[tuple[Tensor, Tensor]]:
+        matches: list[tuple[Tensor, Tensor]] = []
+        for logits, boxes, keypoints, target in zip(
+            outputs["pred_logits"],
+            outputs["pred_boxes"],
+            outputs["pred_keypoints"],
+            targets,
+        ):
+            target_count = target["labels"].numel()
+            if target_count == 0:
+                empty = torch.empty(0, dtype=torch.long, device=logits.device)
+                matches.append((empty, empty))
+                continue
+            if boxes.shape[0] < target_count:
+                raise ValueError(
+                    "OTA requires at least as many queries as targets; "
+                    f"got {boxes.shape[0]} queries and {target_count} targets"
+                )
+
+            cost = _diffusionregpose_pairwise_matching_cost(
+                logits,
+                boxes,
+                keypoints,
+                target,
+                num_body_points=self.num_body_points,
+                sigmas=self.sigmas,
+                weights=self.weights,
+            )
+            predicted_xyxy = box_cxcywh_to_xyxy(boxes)
+            target_xyxy = box_cxcywh_to_xyxy(target["boxes"])
+            pairwise_iou = _pairwise_box_iou(predicted_xyxy, target_xyxy)
+            penalized_cost = cost + self._candidate_penalties(
+                boxes, target["boxes"],
+            )
+            matches.append(self._dynamic_k_assignment(penalized_cost, pairwise_iou))
         return matches
 
 
@@ -415,6 +780,44 @@ class DiffusionRegPoseCriterion(nn.Module):
             num_body_points=num_body_points, weights=self.weights
         )
 
+    def _loss_normalizer(
+        self,
+        matches: list[tuple[Tensor, Tensor]],
+        targets: list[dict[str, Tensor]],
+        reference: Tensor,
+    ) -> Tensor:
+        count = self.matcher.normalization_count(matches, targets)
+        normalizer = reference.new_tensor(float(count))
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(normalizer)
+            normalizer = normalizer / torch.distributed.get_world_size()
+        return normalizer.clamp_min(1)
+
+    def _assignment_diagnostics(
+        self,
+        matches: list[tuple[Tensor, Tensor]],
+        targets: list[dict[str, Tensor]],
+        reference: Tensor,
+    ) -> dict[str, Tensor]:
+        per_target_counts = [
+            torch.bincount(target_indices, minlength=target["labels"].numel())
+            for (_, target_indices), target in zip(matches, targets)
+            if target["labels"].numel()
+        ]
+        if not per_target_counts:
+            zero = reference.new_zeros(())
+            return {
+                "matches_per_target_mean": zero,
+                "matches_per_target_min": zero,
+                "matches_per_target_max": zero,
+            }
+        counts = torch.cat(per_target_counts).to(reference)
+        return {
+            "matches_per_target_mean": counts.float().mean(),
+            "matches_per_target_min": counts.min(),
+            "matches_per_target_max": counts.max(),
+        }
+
     def _loss_for_outputs(
         self,
         outputs: dict[str, Tensor],
@@ -437,17 +840,16 @@ class DiffusionRegPoseCriterion(nn.Module):
         ce = F.binary_cross_entropy_with_logits(logits, target_classes, reduction="none")
         p_t = probabilities * target_classes + (1 - probabilities) * (1 - target_classes)
         alpha_t = self.weights.focal_alpha * target_classes + (1 - self.weights.focal_alpha) * (1 - target_classes)
-        num_boxes = max(sum(target["labels"].numel() for target in targets), 1)
+        normalizer = self._loss_normalizer(matches, targets, logits)
         focal_loss = alpha_t * ce * (1 - p_t).pow(2)
         # ``sigmoid_focal_loss`` in the reference already averages over the
         # class dimension, normalizes by the target count, and the reference
         # criterion multiplies that result by the query count once.
-        loss_ce = focal_loss.mean(1).sum() / num_boxes * logits.shape[1]
+        loss_ce = focal_loss.mean(1).sum() / normalizer * logits.shape[1]
         loss_bbox = logits.new_zeros(())
         loss_giou = logits.new_zeros(())
         loss_keypoints = logits.new_zeros(())
         loss_oks = logits.new_zeros(())
-        normalizer = num_boxes
         for batch_index, (source, target_indices) in enumerate(matches):
             if source.numel() == 0:
                 continue
@@ -488,11 +890,11 @@ class DiffusionRegPoseCriterion(nn.Module):
             zero = logits.new_zeros(())
             values.update({
                 "loss_ce_positive": (
-                    (focal_loss * target_classes).mean(1).sum() / num_boxes
+                    (focal_loss * target_classes).mean(1).sum() / normalizer
                     * logits.shape[1]
                 ).detach(),
                 "loss_ce_negative": (
-                    (focal_loss * (1 - target_classes)).mean(1).sum() / num_boxes
+                    (focal_loss * (1 - target_classes)).mean(1).sum() / normalizer
                     * logits.shape[1]
                 ).detach(),
                 "person_score_matched": (
@@ -504,6 +906,12 @@ class DiffusionRegPoseCriterion(nn.Module):
                     if (~matched_queries).any() else zero
                 ).detach(),
                 "matched_queries": matched_queries.sum().to(logits.dtype).detach(),
+            })
+            values.update({
+                name: value.detach()
+                for name, value in self._assignment_diagnostics(
+                    matches, targets, logits,
+                ).items()
             })
         return values
 
@@ -696,6 +1104,9 @@ class DiffusionRegPosePipeline(pl.LightningModule):
             "person_score_matched",
             "person_score_unmatched",
             "matched_queries",
+            "matches_per_target_mean",
+            "matches_per_target_min",
+            "matches_per_target_max",
         }
         self.log(
             f"{prefix}/loss",
@@ -840,9 +1251,15 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
     dn_bbox_coef: float = 0.5
     interm_loss_coef: float = 1.0
     no_interm_box_loss: bool = False
+    matching_strategy: Literal["hungarian", "ota"] = "hungarian"
+    ota_candidate_topk: int = 5
     freeze_backbone_stem_and_layer1: bool = True
+    freeze_backbone: bool = False
+    freeze_backbone_and_transformer: bool = False
     pretrained_checkpoint: str | None = None
     pretrained_minimum_critical_coverage: float | None = None
+    pretrained_keep_encoder_layers: tuple[int, ...] | None = None
+    pretrained_keep_decoder_layers: tuple[int, ...] | None = None
     lr: float = 2e-4
     lr_backbone: float | None = 1e-4
     weight_decay: float = 1e-4
@@ -875,12 +1292,30 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             )
         return value
 
+    @field_validator("ota_candidate_topk")
+    @classmethod
+    def _validate_ota_candidate_topk(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("ota_candidate_topk must be positive")
+        return value
+
     def build(
         self,
         *,
         max_epochs: int | None = None,
         val_ann_file: str | None = None,
     ) -> DiffusionRegPosePipeline:
+        keep_encoder_layers = self.pretrained_keep_encoder_layers
+        keep_decoder_layers = self.pretrained_keep_decoder_layers
+        if (keep_encoder_layers is None) != (keep_decoder_layers is None):
+            raise ValueError(
+                "pretrained_keep_encoder_layers and "
+                "pretrained_keep_decoder_layers must be provided together"
+            )
+        if (keep_encoder_layers or keep_decoder_layers) and not self.pretrained_checkpoint:
+            raise ValueError(
+                "selected pretrained layers require pretrained_checkpoint"
+            )
         model = DiffusionRegPoseModel(
             backbone_pretrained=self.backbone_pretrained,
             timesteps=self.timesteps,
@@ -901,6 +1336,9 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             dn_box_noise_scale=self.dn_box_noise_scale,
             dn_label_noise_ratio=self.dn_label_noise_ratio,
             freeze_backbone_stem_and_layer1=self.freeze_backbone_stem_and_layer1,
+            freeze_backbone=self.freeze_backbone,
+            freeze_backbone_and_transformer=self.freeze_backbone_and_transformer,
+            separate_expansion_pose_head=keep_decoder_layers is not None,
         )
         if self.pretrained_checkpoint:
             checkpoint_path = Path(self.pretrained_checkpoint).expanduser()
@@ -913,6 +1351,19 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                 for key, value in state.items()
                 if isinstance(value, Tensor)
             }
+            if keep_encoder_layers is not None and keep_decoder_layers is not None:
+                # Keep selected one-based EDPose layers so a reduced model is
+                # initialized from its intended depth, rather than from the
+                # first consecutive layers. This is transfer initialization,
+                # not exact six-layer checkpoint inference.
+                state = remap_diffusionregpose_checkpoint_layers(
+                    state,
+                    encoder_layer_indices=keep_encoder_layers,
+                    decoder_layer_indices=keep_decoder_layers,
+                    target_num_encoder_layers=self.num_encoder_layers,
+                    target_num_decoder_layers=self.num_decoder_layers,
+                    target_num_box_decoder_layers=self.num_box_decoder_layers,
+                )
             model_state = model.state_dict()
             coverage = diffusionregpose_checkpoint_component_coverage(
                 model_state, state
@@ -953,10 +1404,23 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                     stacklevel=2,
                 )
         weights = self.weights.to_dataclass()
+        matcher: DiffusionRegPoseMatcher
+        if self.matching_strategy == "ota":
+            matcher = DiffusionRegPoseOTAMatcher(
+                num_body_points=self.num_body_points,
+                weights=weights,
+                candidate_topk=self.ota_candidate_topk,
+            )
+        else:
+            matcher = DiffusionRegPoseMatcher(
+                num_body_points=self.num_body_points,
+                weights=weights,
+            )
         return DiffusionRegPosePipeline(
             model,
             DiffusionRegPoseCriterion(
                 num_classes=self.num_classes,
+                matcher=matcher,
                 num_body_points=self.num_body_points,
                 num_box_decoder_layers=self.num_box_decoder_layers,
                 dn_label_coef=self.dn_label_coef,

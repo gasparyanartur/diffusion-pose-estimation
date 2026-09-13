@@ -1,0 +1,7 @@
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# Freeze the complete ResNet while retaining the checkpoint-compatible
+# transformer, diffusion, heads, losses, and optimizer setup.
+freeze_backbone: true

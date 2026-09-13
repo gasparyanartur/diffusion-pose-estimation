@@ -13,6 +13,9 @@ from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     _load_native_msda,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
+    _select_im2col_step,
+)
+from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     DeformableTransformerEncoder,
     DeformableTransformerEncoderLayer,
     build_input_projections,
@@ -166,6 +169,14 @@ def test_deformable_attention_has_reference_parameter_shapes() -> None:
     assert attention.attention_weights.weight.shape == (128, 256)
     assert attention.value_proj.weight.shape == (256, 256)
     assert attention.output_proj.weight.shape == (256, 256)
+
+
+@pytest.mark.parametrize("batch_size", [1, 8, 10, 65])
+def test_native_im2col_step_always_divides_batch(batch_size: int) -> None:
+    step = _select_im2col_step(batch_size)
+
+    assert 1 <= step <= min(batch_size, 64)
+    assert batch_size % step == 0
 
 
 @pytest.mark.parametrize("reference_dimension", [2, 4])
@@ -325,6 +336,28 @@ def test_native_cuda_deformable_attention_backward_matches_grid_sample_reference
         torch.testing.assert_close(actual, expected, rtol=2e-4, atol=2e-4)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention boundary backward")
+def test_native_cuda_deformable_attention_boundary_has_zero_gradient() -> None:
+    native_msda = _load_native_msda()
+    if native_msda is None:
+        pytest.skip("the local CUDA extension is unavailable")
+    assert hasattr(native_msda, "backward"), "the local CUDA extension must expose backward"
+
+    device = torch.device("cuda")
+    shapes = torch.tensor([[1, 1]], device=device, dtype=torch.long)
+    starts = torch.zeros(1, device=device, dtype=torch.long)
+    value = torch.ones(1, 1, 1, 1, device=device)
+    locations = torch.tensor([[[[[[-0.5, 0.5]]]]]], device=device)
+    weights = torch.ones(1, 1, 1, 1, 1, device=device)
+    grad_output = torch.ones(1, 1, 1, device=device)
+
+    _, gradient_locations, _ = native_msda.backward(
+        value, shapes, starts, locations, weights, grad_output
+    )
+
+    torch.testing.assert_close(gradient_locations, torch.zeros_like(gradient_locations))
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for the native attention autograd bridge")
 def test_native_cuda_deformable_attention_training_path_backpropagates() -> None:
     native_msda = _load_native_msda()
@@ -358,8 +391,9 @@ def test_native_attention_promotes_bfloat16_inputs_to_one_kernel_dtype(monkeypat
 
     class FakeNativeAttention:
         @staticmethod
-        def forward(value, shapes, starts, locations, weights):
+        def forward(value, shapes, starts, locations, weights, im2col_step=64):
             del shapes, starts
+            assert im2col_step == 1
             seen_dtypes.extend([value.dtype, locations.dtype, weights.dtype])
             return torch.zeros(
                 value.shape[0], value.shape[1], value.shape[2] * value.shape[3],

@@ -1,0 +1,19 @@
+defaults:
+  - pipeline: diffusionregpose_development_compatible_head_only
+  - data: crowdpose_diffusionregpose_development_256
+  - hardware: auto
+  - training: diffusionregpose_development
+  - _self_
+
+run_name: diffusionregpose_development_compatible_256_head_only
+out_dir: results/diffusionregpose_development_compatible_256_head_only
+skip_training: false
+
+pipeline:
+  val_ap_every_n_epochs: 10
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

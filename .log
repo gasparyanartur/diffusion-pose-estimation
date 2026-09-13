@@ -2196,3 +2196,218 @@ Modified files:
 - Startup verified 49,304,924 trainable parameters, fixed-seed AP, full
   CrowdPose trainval data, 1,500 batches per epoch, finite decreasing loss, and
   the intended 200 initial / 50 proposal-group query layout.
+
+[2026-09-10] Added and launched compatible 128-pixel learning gate
+
+- Added dedicated 128/192-pixel data and benchmark presets while preserving the
+  successful compatible six-encoder/six-decoder, 200/50-query architecture.
+- Added configuration regression coverage and documentation. Focused tests pass:
+  67 tests; `git diff --check` passes.
+- Stopped `diffusionregpose-dev256-compatible` cleanly without deleting its
+  checkpoints, then launched `diffusionregpose-dev128-compatible` on CUDA.
+- Startup verified 49,304,924 trainable parameters, 1,500 batches per epoch,
+  batch size 8, no gradient accumulation, and finite initial loss.
+
+[2026-09-11] Completed compatible 128-pixel learning gate
+
+- The full-data 80-epoch run completed successfully in
+  `diffusionregpose-dev128-compatible`.
+- Final epoch-79 validation results: pose AP 0.54584, bbox AP 0.55083,
+  validation loss 19.9385.
+- Checkpoints are preserved at
+  `results/diffusionregpose_development_compatible_128/dev128-compatible-full/20260910_143028/checkpoints/`.
+
+[2026-09-11] Resumed compatible 256-pixel training
+
+- Resumed from
+  `results/diffusionregpose_development_compatible_256/dev256-compatible-full/20260910_075409/checkpoints/last.ckpt`.
+- The checkpoint contained epoch 20 and global step 31,500; Lightning restored
+  model, optimizer, and scheduler state and began epoch 21.
+- Active session: `diffusionregpose-dev256-compatible-resume`.
+- New persistent output directory:
+  `results/diffusionregpose_development_compatible_256_resume/dev256-compatible-resumed/20260911_100320`.
+
+[2026-09-11] Launched frozen-backbone 256-pixel comparison
+
+- Stopped `diffusionregpose-dev256-compatible-resume` cleanly at the user's
+  request; its artifacts remain preserved.
+- Launched a fresh EDPose-initialized run in tmux session
+  `diffusionregpose-dev256-freeze-backbone` using the full-depth 256-pixel
+  compatible architecture with every ResNet parameter frozen.
+- Startup verified 26,072,412 trainable parameters, 23.5M non-trainable
+  parameters, CUDA execution, and finite epoch-0 loss at batch 7.
+- Output directory:
+  `results/diffusionregpose_development_compatible_256_freeze_backbone/dev256-freeze-backbone/20260911_101100`.
+
+[2026-09-11] Added freeze-backbone comparison configuration
+
+- Added the explicit `freeze_backbone` flag, defaulting to false, and wired it
+  through the DiffusionRegPose model and pipeline config.
+- Added the 256-pixel compatible freeze-backbone benchmark preset. It preserves
+  the 49,527,324-parameter topology while reducing trainable parameters to
+  26,072,412 by freezing all ResNet layers.
+- Added configuration and gradient-flag tests; focused tests pass: 69 tests.
+- Updated README and architecture/project documentation. No training run was
+  launched and the active 256 resume was not modified.
+
+[2026-09-11] Added EDPose head-only DiffusionRegPose experiment
+
+- Added `freeze_backbone_and_transformer`, freezing the backbone, input
+  projections, label embedding, and transformer computation while retaining
+  prediction and encoder proposal heads.
+- Added the 256-pixel full-data head-only preset and optimizer/gradient tests.
+- Focused DiffusionRegPose/model/runtime tests pass: 74 tests.
+- Updated README, project, and architecture documentation.
+- Launched `diffusionregpose-dev256-head-only` on CUDA with EDPose
+  initialization. Startup verified 1,592,372 trainable and 47.9M frozen
+  parameters; epoch 0 reached batch 4 with finite loss.
+
+[2026-09-11] Replaced native deformable attention with pinned DINOv3 CUDA source
+
+- Vendored DINOv3 revision `6876159a11b4df116f30f667f8c9888617df0751` and
+  preserved its DINOv3 and Deformable DETR/SenseTime attribution and license.
+- Added a repository-local binding with safe `im2col_step` selection while
+  preserving the existing DiffusionRegPose Python API and BF16 normalization.
+- Removed the previous repository-owned CUDA kernel.
+- Native CUDA transformer suite: 17 passed; full focused suite: 91 passed.
+- The active head-only training process was not interrupted; this kernel applies
+  to subsequent processes because the current process already loaded its code.
+
+[2026-09-11] Launched DINOv3-backed head-only comparison run
+
+- Started `diffusionregpose-dev256-dinov3` alongside the existing head-only
+  process, using a distinct persistent output directory.
+- Startup verified CUDA execution, EDPose coverage above 99%, and finite epoch-0
+  training progress at batch 13.
+
+[2026-09-11] Launched 128-pixel frozen head-only comparison
+
+- Started `diffusionregpose-dev128-frozen` with the full-data 128/192-pixel
+  preset, batch size 8, no gradient accumulation, and the backbone/transformer
+  frozen.
+- Startup verified CUDA execution, 1,592,372 trainable parameters, EDPose
+  coverage above 99%, and finite epoch-0 progress at batch 4.
+
+[2026-09-11] Launched efficient 256-pixel full-data training
+
+- Started `diffusionregpose-dev256-b4a2` from
+  `benchmark_diffusionregpose_development_compatible_256`.
+- Uses full data, 256/427 resizing, efficient 200/50/50/50 query/proposal/
+  group/denoising counts, batch size 4, and gradient accumulation 2.
+- Preserves only the original EDPose-compatible stem/layer1 freeze; diagnostic
+  backbone and transformer freezing are disabled.
+- Startup verified CUDA execution, 49,304,924 trainable parameters, 222,000
+  non-trainable parameters, EDPose critical coverage of 99.97–100%, and finite
+  first-batch loss.
+
+[2026-09-11] Added the pose-aware OTA matcher core
+
+- Added native normalized-box Dynamic-K assignment for complete DiffusionRegPose
+  person groups, including spatial candidate penalties and conflict repair.
+- Shared the existing stage-aware matching costs with Hungarian and locked its
+  assignment and scalar losses to pre-refactor values.
+- Added eight focused matcher regressions; the full training test module passes
+  with 58 tests. Compilation and `git diff --check` also pass.
+- Verified CrowdPose has at most 13 retained people per image, below the
+  compatible model's 50 person groups. Criterion/config wiring and training are
+  deferred to the next reviewed iteration.
+
+[2026-09-11] Completed pose-aware OTA integration
+
+- Wired selectable Hungarian/OTA assignment into the DiffusionRegPose
+  criterion while preserving Hungarian as the default and keeping denoising
+  supervision outside matching.
+- Normalized every clean output by its matcher-specific cardinality, including
+  distributed reduction, and added positive-count diagnostics.
+- Added a matched 256-pixel OTA preset, configuration and criterion coverage,
+  a reduced finite-backward smoke test, and user-facing architecture/usage
+  documentation.
+- On a fixed real 256-pixel batch, OTA assigned 7 positives across 3 people
+  versus 3 for Hungarian; every differentiable output gradient was finite.
+- Verification passed: 140 focused DiffusionRegPose tests and 381 repository
+  tests. The long OTA run remains pending GPU availability so it does not
+  contend with the active 256-pixel Hungarian baseline.
+
+[2026-09-12] Launched selected-layer 256-pixel OTA comparison
+
+- Read the efficiency report and selected its completed 3E/3D, EDPose
+  layer-2/4/6, 256/427 run as the direct Hungarian control (0.6302 keypoint AP,
+  0.5964 bbox AP).
+- Added the matched
+  `benchmark_diffusionregpose_development_compatible_256_keep_layers_ota`
+  preset; the resolved parity test confirms that only clean-query assignment
+  changes to OTA.
+- Started tmux session `diffusionregpose-dev256-keep-layers-ota` with output
+  under `results/diffusionregpose_development_compatible_256_keep_layers_ota/`.
+- Startup resolved OTA, 3E/3D, EDPose layers `[2, 4, 6]`, 256/427 resizing,
+  batch 4/accumulation 2, 40,289,352 trainable parameters, and finite CUDA
+  loss at batch 71/3000. Focused suite passed: 141 tests.
+
+[2026-09-13] OTA selected-layer run status
+
+- The OTA run completed CSV epochs 0--43 and remains active in
+  `diffusionregpose-dev256-keep-layers-ota`; valid epoch-043 and last
+  checkpoints are present.
+- At common logged epoch 39, OTA is at 0.641916 keypoint AP / 0.588820 bbox
+  AP with validation loss 9.508775. The Hungarian control is at 0.565507 /
+  0.553700 with validation loss 11.036191.
+- OTA currently averages 3.6169 positives per validation person versus
+  Hungarian's one. No final-model conclusion is made before epoch 80.
+
+[2026-09-11] Added selected-layer EDPose transfer initialization
+
+- Added the opt-in `benchmark_diffusionregpose_development_compatible_256_keep_layers`
+  preset with three encoder layers, three decoder layers, one box stage, and
+  two pose-refinement stages.
+- Explicitly remaps one-based EDPose layers 2/4/6 into local layer indices and
+  loads the original expansion pose head separately from retained pose heads.
+- Verified real-checkpoint coverage at 100% for input projections, level
+  embeddings, encoder, and prediction heads, and 99.95% for the decoder.
+- Focused DiffusionRegPose verification passes: 110 tests.
+
+[2026-09-12] Launched selected-layer 256-pixel transfer training
+
+- Stopped the active 6E/6D efficient baseline at the user's request without
+  deleting its output directory.
+- Started `diffusionregpose-keep-layers-256` using the selected-layer preset
+  on the full dataset with 256/427 resizing, batch size 4, gradient
+  accumulation 2, CUDA, and 80 epochs.
+- Startup verified EDPose remapping, 40,289,352 trainable parameters, and
+  approximately 3.3 training iterations per second after kernel startup.
+- Run output is stored under
+  `results/diffusionregpose_development_compatible_256_keep_layers/`.
+
+[2026-09-12] Completed selected-layer 256-pixel transfer training
+
+- The 80-epoch full-data run completed successfully in CUDA and produced both
+  `epoch079.ckpt` and `last.ckpt`.
+- Validation pose AP increased from 0.2130 at epoch 10 to 0.6302 at epoch 80;
+  bbox AP reached 0.5964. Validation loss fell from 19.7023 to 9.5740.
+- Final test metrics are recorded in the run's `test_results.json`.
+
+[2026-09-12] Added DiffusionRegPose efficiency journey notebook
+
+- Added `reports/diffusionregpose-efficiency-journey.ipynb`, documenting the
+  external/reference checkpoint, external reproduction, native full-size
+  training, downscaled/fewer-query runs, the failed compact reduction, and the
+  successful selected-layer transfer model.
+- Included artifact provenance, separate keypoint/bbox AP tables, native AP
+  trajectories, architecture/runtime summaries, and rendered visualizations.
+
+[2026-09-13] Added endpoint-flow PoseFlow pipeline
+
+- Added the PoseFlow namespace, Hydra pipeline/root configs, and dedicated
+  training entry point. PoseFlow retains DiffusionRegPose architecture,
+  criterion, denoising, evaluator, and pose NMS while defaulting to
+  pose-aware Dynamic-K OTA.
+- Replaced the training state path with continuous per-image endpoint flow:
+  a Gaussian source and padded XY endpoint produce the decoder state by linear
+  interpolation. Source-prior padding is explicit and does not create targets.
+- Added fixed-source forward-Euler sampling. Velocity is predicted endpoint
+  minus the original source anchor, never endpoint minus current state.
+- Added focused tests for OTA configuration, flow targets, oracle integration,
+  Hydra identity, and validation. A compact real-model CPU forward/backward
+  had finite total loss 72.6745; focused verification passed 92 tests and
+  diff validation passed.
+- Headless notebook execution passed with all artifact and finite-metric
+  integrity checks; notebook validation and `git diff --check` also pass.

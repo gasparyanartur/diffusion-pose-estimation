@@ -15,6 +15,10 @@ from src.models.pipelines.pose_estimators.backbone_probe import (
     QueryBackboneProbeConfig,
     QueryProbe,
 )
+from src.models.pipelines.pose_estimators.poseflow import (
+    PoseFlowPipeline,
+    PoseFlowPipelineConfig,
+)
 
 __all__ = [
     "BackboneProbeConfig",
@@ -26,4 +30,6 @@ __all__ = [
     "GraphPosePipelineConfig",
     "QueryBackboneProbeConfig",
     "QueryProbe",
+    "PoseFlowPipeline",
+    "PoseFlowPipelineConfig",
 ]

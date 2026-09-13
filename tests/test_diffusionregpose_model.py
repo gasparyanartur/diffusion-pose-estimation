@@ -34,6 +34,103 @@ def _make_model() -> DiffusionRegPoseModel:
     )
 
 
+def test_freeze_backbone_freezes_all_resnet_parameters_only() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        num_queries=200,
+        num_proposals=50,
+        num_feature_levels=4,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        feedforward_dim=2048,
+        num_group=50,
+        dn_number=50,
+        freeze_backbone=True,
+    )
+
+    resnet_parameters = list(model.backbone[0].parameters())
+    assert resnet_parameters
+    assert all(not parameter.requires_grad for parameter in resnet_parameters)
+    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 26_072_412
+    assert any(parameter.requires_grad for parameter in model.transformer.parameters())
+    assert not any(
+        parameter.requires_grad
+        for name, parameter in model.backbone[0].named_parameters()
+        if name.startswith("body.layer2")
+    )
+
+
+def test_freeze_backbone_and_transformer_leaves_prediction_heads_trainable() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        num_queries=200,
+        num_proposals=50,
+        num_feature_levels=4,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        feedforward_dim=2048,
+        num_group=50,
+        dn_number=50,
+        freeze_backbone_and_transformer=True,
+    )
+
+    trainable_parameter_ids = {
+        id(parameter)
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    }
+    prediction_head_parameter_ids = {
+        id(parameter)
+        for module in (
+            model.bbox_embed,
+            model.class_embed,
+            model.pose_embed,
+            model.pose_hw_embed,
+            model.transformer.enc_out_bbox_embed,
+            model.transformer.enc_out_class_embed,
+        )
+        for parameter in module.parameters()
+    }
+    assert trainable_parameter_ids == prediction_head_parameter_ids
+    assert not any(parameter.requires_grad for parameter in model.backbone.parameters())
+    assert not any(parameter.requires_grad for parameter in model.input_proj.parameters())
+    assert not any(parameter.requires_grad for parameter in model.transformer.encoder.parameters())
+    assert not any(parameter.requires_grad for parameter in model.transformer.decoder.layers.parameters())
+    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 1_592_372
+
+
+def test_freeze_backbone_and_transformer_backward_reaches_prediction_heads() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        num_queries=32,
+        num_proposals=8,
+        num_group=8,
+        dn_number=8,
+        freeze_backbone_and_transformer=True,
+    )
+
+    output = model(
+        torch.rand(1, 3, 64, 64),
+        torch.rand(1, 8, 14 * 2),
+        torch.zeros(1, dtype=torch.long),
+    )
+    loss = output["pred_logits"].sum() + output["pred_boxes"].sum()
+    loss.backward()
+
+    assert any(
+        parameter.grad is not None
+        for parameter in model.bbox_embed.parameters()
+    )
+    assert all(
+        parameter.grad is None
+        for parameter in model.backbone.parameters()
+    )
+    assert all(
+        parameter.grad is None
+        for parameter in model.transformer.encoder.parameters()
+    )
+
+
 def test_transformer_uses_reference_xavier_reset_for_diffusion_attention() -> None:
     torch.manual_seed(17)
     heads = DiffusionRegPosePredictionHeads(

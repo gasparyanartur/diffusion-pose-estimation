@@ -1,0 +1,13 @@
+# OTA counterpart to the completed selected-layer Hungarian run.
+# The only optimization-objective change is the assignment strategy.
+
+defaults:
+  - benchmark_diffusionregpose_development_compatible_256_keep_layers
+  - _self_
+
+pipeline:
+  matching_strategy: ota
+  ota_candidate_topk: 5
+
+run_name: diffusionregpose_development_compatible_256_keep_layers_ota
+out_dir: results/diffusionregpose_development_compatible_256_keep_layers_ota

@@ -1,0 +1,26 @@
+# Reduced 256-pixel transfer model initialized from selected EDPose layers.
+#
+# Layer numbers are one-based checkpoint layer numbers. The model executes
+# EDPose encoder/decoder layers 2, 4, and 6 as a new 3E/3D network: one box
+# stage followed by two pose-refinement stages. This is not full-checkpoint
+# inference; skipped layers change the activations seen by retained layers.
+
+defaults:
+  - benchmark_diffusionregpose_development_compatible_256
+  - _self_
+
+run_name: diffusionregpose_development_compatible_256_keep_layers
+out_dir: results/diffusionregpose_development_compatible_256_keep_layers
+
+pipeline:
+  num_encoder_layers: 3
+  num_decoder_layers: 3
+  num_box_decoder_layers: 1
+  pretrained_keep_encoder_layers: [2, 4, 6]
+  pretrained_keep_decoder_layers: [2, 4, 6]
+
+data:
+  batch_size: 4
+
+training:
+  accumulate_grad_batches: 2

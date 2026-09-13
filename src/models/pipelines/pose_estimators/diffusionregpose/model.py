@@ -106,6 +106,7 @@ class DiffusionRegPoseTransformer(nn.Module):
         class_embed: nn.ModuleList | None = None,
         pose_embed: nn.ModuleList | None = None,
         pose_hw_embed: nn.ModuleList | None = None,
+        expansion_pose_embed: nn.Module | None = None,
     ) -> None:
         super().__init__()
         encoder_layer = DeformableTransformerEncoderLayer(
@@ -151,6 +152,7 @@ class DiffusionRegPoseTransformer(nn.Module):
                 class_embed=class_embed,
                 pose_embed=pose_embed,
                 pose_hw_embed=pose_hw_embed,
+                expansion_pose_embed=expansion_pose_embed,
             )
 
     def _reset_parameters(self) -> None:
@@ -169,10 +171,12 @@ class DiffusionRegPoseTransformer(nn.Module):
         class_embed: nn.ModuleList,
         pose_embed: nn.ModuleList,
         pose_hw_embed: nn.ModuleList,
+        expansion_pose_embed: nn.Module | None = None,
     ) -> None:
         self.decoder.bbox_embed = bbox_embed
         self.decoder.pose_embed = pose_embed
         self.decoder.pose_hw_embed = pose_hw_embed
+        self.decoder.expansion_pose_embed = expansion_pose_embed
         self.decoder.class_embed = class_embed
         self.enc_out_bbox_embed = copy.deepcopy(bbox_embed[0])
         self.enc_out_class_embed = copy.deepcopy(class_embed[0])
@@ -203,6 +207,9 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         dn_box_noise_scale: float = 0.4,
         dn_label_noise_ratio: float = 0.5,
         freeze_backbone_stem_and_layer1: bool = True,
+        freeze_backbone: bool = False,
+        freeze_backbone_and_transformer: bool = False,
+        separate_expansion_pose_head: bool = False,
     ) -> None:
         if num_classes <= 1:
             raise ValueError(
@@ -234,6 +241,9 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             ),
             PositionEmbeddingSineHW(hidden_dim // 2, temperature_h=20, temperature_w=20),
         )
+        if freeze_backbone:
+            for parameter in backbone[0].parameters():
+                parameter.requires_grad_(False)
         self.transformer = DiffusionRegPoseTransformer(
             num_encoder_layers=num_encoder_layers,
             num_decoder_layers=num_decoder_layers,
@@ -257,22 +267,47 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             num_decoder_layers=num_decoder_layers,
             num_box_decoder_layers=num_box_decoder_layers,
             num_body_points=num_body_points,
+            separate_expansion_pose_head=separate_expansion_pose_head,
         )
         self.bbox_embed = heads.bbox_embed
         self.class_embed = heads.class_embed
         self.pose_embed = heads.pose_embed
         self.pose_hw_embed = heads.pose_hw_embed
+        self.expansion_pose_embed = heads.expansion_pose_embed
         self.transformer.attach_prediction_heads(
             bbox_embed=self.bbox_embed,
             class_embed=self.class_embed,
             pose_embed=self.pose_embed,
             pose_hw_embed=self.pose_hw_embed,
+            expansion_pose_embed=self.expansion_pose_embed,
         )
         self._reset_input_projections()
         self.transformer.decoder.num_queries = num_queries
         self.transformer.decoder.num_dn = dn_number
         self.dn_box_noise_scale = dn_box_noise_scale
         self.dn_label_noise_ratio = dn_label_noise_ratio
+        if freeze_backbone_and_transformer:
+            self._freeze_backbone_and_transformer()
+
+    def _freeze_backbone_and_transformer(self) -> None:
+        """Freeze the fixed EDPose prefix while retaining prediction heads."""
+        for module in (self.backbone, self.input_proj, self.label_enc, self.transformer):
+            for parameter in module.parameters():
+                parameter.requires_grad_(False)
+
+        prediction_heads = (
+            self.bbox_embed,
+            self.class_embed,
+            self.pose_embed,
+            self.pose_hw_embed,
+            self.transformer.enc_out_bbox_embed,
+            self.transformer.enc_out_class_embed,
+        )
+        for module in prediction_heads:
+            if module is None:
+                continue
+            for parameter in module.parameters():
+                parameter.requires_grad_(True)
 
     def _reset_input_projections(self) -> None:
         for projection in self.input_proj:

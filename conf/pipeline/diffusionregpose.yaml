@@ -22,7 +22,11 @@ dn_label_coef: 0.3
 dn_bbox_coef: 0.5
 interm_loss_coef: 1.0
 no_interm_box_loss: false
+matching_strategy: hungarian
+ota_candidate_topk: 5
 freeze_backbone_stem_and_layer1: true
+freeze_backbone: false
+freeze_backbone_and_transformer: false
 # The paper initializes DiffusionRegPose from EDPose; the trained
 # DiffusionRegPose model-zoo checkpoint is reserved for evaluation/parity.
 pretrained_checkpoint: external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth

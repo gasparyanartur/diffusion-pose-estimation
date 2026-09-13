@@ -19,6 +19,19 @@ def _is_power_of_two(value: int) -> bool:
 
 _native_msda = None
 _native_msda_error: Exception | None = None
+_NATIVE_MSDA_MAX_IM2COL_STEP = 64
+
+
+def _select_im2col_step(batch_size: int, max_step: int = _NATIVE_MSDA_MAX_IM2COL_STEP) -> int:
+    """Select the largest upstream-compatible chunk that divides the batch."""
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_step <= 0:
+        raise ValueError("max_step must be positive")
+    for step in range(min(batch_size, max_step), 0, -1):
+        if batch_size % step == 0:
+            return step
+    raise RuntimeError("every positive batch size must have a divisor")
 
 
 def _load_native_msda():
@@ -28,9 +41,14 @@ def _load_native_msda():
     try:
         from torch.utils.cpp_extension import load
 
+        source_root = Path(__file__).with_name("third_party") / "dinov3_msda"
         _native_msda = load(
-            name="pose_graph_diffusionregpose_msda_v2",
-            sources=[str(Path(__file__).with_name("deformable_attention_cuda.cu"))],
+            name="pose_graph_diffusionregpose_msda_dinov3",
+            sources=[
+                str(source_root / "binding.cpp"),
+                str(source_root / "ms_deform_attn_cuda.cu"),
+            ],
+            extra_include_paths=[str(source_root)],
             extra_cuda_cflags=["-O3"],
             verbose=False,
         )
@@ -45,16 +63,17 @@ def _load_native_msda():
 
 
 class _NativeMSDAFunction(Function):
-    """Autograd bridge for the repository-owned CUDA attention operator."""
+    """Autograd bridge for the vendored DINOv3 attention operator."""
 
     @staticmethod
-    def forward(ctx, value, spatial_shapes, level_start_index, locations, weights):
+    def forward(ctx, value, spatial_shapes, level_start_index, locations, weights, im2col_step):
         native_msda = _load_native_msda()
         if native_msda is None or not hasattr(native_msda, "backward"):
             raise RuntimeError("the local CUDA attention operator lacks backward support")
+        ctx.im2col_step = im2col_step
         ctx.save_for_backward(value, spatial_shapes, level_start_index, locations, weights)
         return native_msda.forward(
-            value, spatial_shapes, level_start_index, locations, weights
+            value, spatial_shapes, level_start_index, locations, weights, im2col_step
         )
 
     @staticmethod
@@ -68,8 +87,9 @@ class _NativeMSDAFunction(Function):
             locations,
             weights,
             grad_output.contiguous(),
+            ctx.im2col_step,
         )
-        return gradients[0], None, None, gradients[1], gradients[2]
+        return gradients[0], None, None, gradients[1], gradients[2], None
 
 
 class MultiScaleDeformableAttention(nn.Module):
@@ -143,10 +163,11 @@ class MultiScaleDeformableAttention(nn.Module):
                     native_locations.contiguous(),
                     native_weights.contiguous(),
                 )
+                im2col_step = _select_im2col_step(batch_size)
                 if torch.is_grad_enabled():
-                    native_output = _NativeMSDAFunction.apply(*native_inputs)
+                    native_output = _NativeMSDAFunction.apply(*native_inputs, im2col_step)
                 else:
-                    native_output = native_msda.forward(*native_inputs)
+                    native_output = native_msda.forward(*native_inputs, im2col_step)
                 if native_output.dtype != value.dtype:
                     native_output = native_output.to(value.dtype)
                 return self.output_proj(native_output)
@@ -321,6 +342,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.query_dim, self.num_feature_levels = query_dim, num_feature_levels
         self.ref_point_head = MLP(query_dim // 2 * d_model, d_model, d_model, 2)
         self.query_scale = self.bbox_embed = self.class_embed = self.pose_embed = self.pose_hw_embed = None
+        self.expansion_pose_embed = None
         self.num_box_decoder_layers, self.d_model = num_box_decoder_layers, d_model
         self.num_heads = decoder_layer.self_attn.num_heads
         self.deformable_decoder, self.num_group, self.num_body_points, self.num_dn = True, num_group, num_body_points, 100
@@ -379,7 +401,8 @@ class DeformableTransformerDecoder(nn.Module):
         box_references = torch.gather(normal_references, 0, gather_references)
 
         point_features = box_features[:, None] + self.keypoint_embed.weight[: self.num_body_points, None, :]
-        point_delta = self.pose_embed[0](point_features)[..., :2]
+        expansion_pose_embed = self.expansion_pose_embed or self.pose_embed[0]
+        point_delta = expansion_pose_embed(point_features)[..., :2]
         point_xy = (inverse_sigmoid(box_references[:, None, :, :2]) + point_delta).sigmoid()
         point_wh = self.hw.weight[: self.num_body_points, None, :].sigmoid() * box_references[:, None, :, 2:]
         point_references = torch.cat((point_xy, point_wh), dim=-1)
@@ -449,7 +472,7 @@ class DeformableTransformerDecoder(nn.Module):
 
 
 class DiffusionRegPosePredictionHeads(nn.Module):
-    def __init__(self, *, hidden_dim, num_classes, num_decoder_layers, num_box_decoder_layers, num_body_points, share_class=False, share_boxes=False, share_pose=False, cls_no_bias=False):
+    def __init__(self, *, hidden_dim, num_classes, num_decoder_layers, num_box_decoder_layers, num_body_points, share_class=False, share_boxes=False, share_pose=False, cls_no_bias=False, separate_expansion_pose_head=False):
         super().__init__()
         class_head = nn.Linear(hidden_dim, num_classes, bias=not cls_no_bias)
         if not cls_no_bias:
@@ -463,3 +486,4 @@ class DiffusionRegPosePredictionHeads(nn.Module):
         pose_count = num_decoder_layers - num_box_decoder_layers + (1 if num_body_points == 17 else 0)
         self.pose_embed = nn.ModuleList([pose_head if share_pose else copy.deepcopy(pose_head) for _ in range(pose_count)])
         self.pose_hw_embed = nn.ModuleList(pose_hw_head for _ in range(pose_count))
+        self.expansion_pose_embed = copy.deepcopy(pose_head) if separate_expansion_pose_head else None

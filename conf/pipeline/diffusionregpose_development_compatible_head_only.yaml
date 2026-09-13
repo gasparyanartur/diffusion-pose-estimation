@@ -1,0 +1,6 @@
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# Keep EDPose's feature and transformer path fixed; train only prediction heads.
+freeze_backbone_and_transformer: true

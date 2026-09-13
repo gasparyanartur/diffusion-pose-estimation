@@ -183,7 +183,8 @@ checkpoint I/O policies.
 `DiffusionRegPosePipeline` wraps the checkpoint-compatible native model in the
 same Lightning boundary. Its target builder creates the reference xyxy-plus-
 visibility target layout (binary labeled-joint supervision) and timestep-zero
-cosine diffusion inputs, while its criterion owns Hungarian matching, final/auxiliary decoder losses, and the
+cosine diffusion inputs, while its criterion owns selectable assignment
+(reference Hungarian by default), final/auxiliary decoder losses, and the
 reference selected two-stage encoder classification, box, and GIoU losses
 (`interm_loss_coef=1`, with intermediate box loss enabled). The
 CrowdPose person target uses category label `1`, matching the annotation
@@ -193,6 +194,33 @@ training entry point is
 [`scripts/training/train_diffusionregpose.py`](../scripts/training/train_diffusionregpose.py)
 with the `pipeline=diffusionregpose` and
 `data=crowdpose_diffusionregpose` presets.
+
+Hungarian is the default assignment strategy and preserves external criterion
+parity. The optional `matching_strategy=ota` path assigns complete person
+groups with DiffusionDet-style Dynamic-K: normalized person-box centers define
+spatial candidates, box IoU determines the positive count, and each query can
+belong to at most one person. Box-only decoder stages and selected encoder
+proposals use class/L1/GIoU matching costs. Pose-capable stages use the existing
+class/keypoint/OKS costs while their person boxes still provide OTA candidates
+and IoU quality. Repeated target indices supervise the complete class, box,
+keypoint, visibility, and area record. Final, auxiliary, and intermediate
+outputs rematch independently; denoising outputs retain their constructed
+correspondence and bypass both matchers. OTA clean losses normalize by matched
+positives, whereas Hungarian retains GT-count normalization.
+
+PoseFlowPipeline is a separate endpoint-flow training path that reuses the
+same ED-Pose model, target semantics, task losses, matcher implementation,
+denoising correspondence, and CrowdPose post-processing. It defaults to OTA;
+the Hungarian override remains available for a matched control. Flow
+source-target construction is separate from task matching: each image samples
+a continuous float time in [0, 1], builds XY-only state as
+(1 - t) * source + t * endpoint, and keeps real people as the only semantic
+criterion targets. Source-prior endpoint padding is explicit and does not
+create positives. At inference PoseFlow uses flow_sampling_steps forward-Euler
+decoder calls; each update subtracts the fixed original source from the
+predicted endpoint. It deliberately does not reuse DDIM/noise reconstruction.
+The changed time semantics mean EDPose initialization is permitted, but a
+trained diffusion checkpoint is not flow-compatible.
 
 The DiffusionRegPose data preset follows the external training data and
 target semantics: it samples the reference resize/crop policy, normalizes
@@ -270,11 +298,51 @@ fixed seed so AP checkpoints are directly comparable. A controlled EDPose
 initialization evaluation showed that two encoder layers destroy pretrained
 bbox AP while the 200/50 query reduction with all six layers preserves it.
 
-Its evaluation path is independent of the external repository. CUDA training
-and inference use a lazily compiled, repository-owned forward/backward
-deformable-attention kernel whose scalar bilinear accumulation matches the
-checkpoint operator. CPU runs and environments where the extension cannot be
-built retain the differentiable PyTorch sampler. During training, validation
+The matching 128-pixel development gate uses the same model topology and
+training/evaluation lifecycle with 128/192-pixel train and validation resizing.
+It exists to measure the lower-resolution speed/AP tradeoff without conflating
+resolution changes with another architectural reduction.
+
+The optional `benchmark_diffusionregpose_development_compatible_256_keep_layers`
+preset is a reduced transfer model. Its three local encoder and decoder layers
+are initialized from one-based EDPose layers 2, 4, and 6 by explicit checkpoint
+key remapping. The selected decoder layers become one box stage followed by
+two pose-refinement stages; the EDPose pose head used during query expansion is
+loaded into a separate expansion head, while the selected pose heads supervise
+the two retained refinement layers. This preserves the intended source-layer
+initialization but is not exact full-checkpoint inference because the skipped
+layers alter intermediate activations.
+
+The matched
+`benchmark_diffusionregpose_development_compatible_256_keep_layers_ota` preset
+inherits that selected-layer model and changes only clean-query assignment to
+pose-aware Dynamic-K OTA. It therefore provides the fast 256/427 comparison
+against the completed 3E/3D Hungarian run without changing layer remapping,
+data, optimizer, schedule, denoising, or evaluation.
+
+The optional `freeze_backbone` comparison flag freezes all ResNet parameters,
+including `layer2`–`layer4`. It changes only gradient participation and
+optimizer parameter groups; tensor names, shapes, transformer depth, and
+checkpoint loading remain unchanged. The corresponding 256-pixel benchmark
+preset is intended to measure the speed and AP impact of using fixed EDPose
+image features.
+
+The optional `freeze_backbone_and_transformer` flag extends this comparison to
+the full EDPose prefix: the backbone, input projections, label embedding, and
+transformer computation are fixed, while the prediction/refinement heads and
+encoder proposal heads remain trainable. The heads are shared between the
+model and decoder, so the freeze policy is applied by module identity rather
+than parameter-name matching. This mode is a diagnostic transfer/runtime
+experiment and is not paper-equivalent training.
+
+Its evaluation path is independent of the external repository's runtime
+package. CUDA training and inference use a lazily compiled, vendored DINOv3
+forward/backward deformable-attention kernel whose scalar bilinear
+accumulation matches the checkpoint operator. The imported source is pinned
+to revision `6876159a11b4df116f30f667f8c9888617df0751`; its DINOv3 and
+Deformable DETR/SenseTime attribution and license are preserved beside the
+source. CPU runs and environments where the extension cannot be built retain
+the differentiable PyTorch sampler. During training, validation
 loss is calculated every epoch and validation AP is calculated every tenth
 epoch. `DiffusionRegPoseAPMetric` accumulates the pose-NMS keypoint records,
 while `DiffusionRegPoseBBoxAPMetric` accumulates boxes from that same
@@ -286,8 +354,9 @@ pipelines.
 The DiffusionRegPose criterion logs its optimized clean focal classification
 loss as `loss_ce`, together with diagnostic positive/negative focal
 contributions, matched/unmatched person scores, and matched-query count. Those
-diagnostics are logged under `debug/{train,val}/`, detached from the graph, and
-do not change matching or loss weights.
+diagnostics, plus matches-per-target mean/min/max, are logged under
+`debug/{train,val}/`, detached from the graph, and do not change matching or
+loss weights.
 
 ---
 

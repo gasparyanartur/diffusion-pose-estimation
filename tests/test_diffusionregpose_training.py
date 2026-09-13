@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import torch
 import pytest
 from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 from src.data import DataConfig
 from src.data.data_module import (
     CrowdPoseDataModule,
@@ -23,12 +24,14 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     CROWDPOSE_PERSON_LABEL,
     DiffusionRegPoseCriterion,
     DiffusionRegPoseMatcher,
+    DiffusionRegPoseOTAMatcher,
     DiffusionRegPosePipeline,
     DiffusionRegPosePipelineConfig,
     _generalized_box_iou,
     build_diffusionregpose_targets,
     diffusionregpose_checkpoint_component_coverage,
     diffusionregpose_ap_epoch_active,
+    remap_diffusionregpose_checkpoint_layers,
     update_diffusionregpose_ap_metric,
     update_diffusionregpose_bbox_ap_metric,
     validate_diffusionregpose_checkpoint_coverage,
@@ -167,6 +170,190 @@ def test_diffusionregpose_compatible_development_config_preserves_pretrained_sha
     assert config.data.batch_size == 8
     assert config.data.eval_resize_scale == 256
     assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_keep_layers_remaps_selected_edpose_layers() -> None:
+    source = {
+        "transformer.encoder.layers.0.weight": torch.tensor([0.0]),
+        "transformer.encoder.layers.1.weight": torch.tensor([1.0]),
+        "transformer.encoder.layers.3.weight": torch.tensor([3.0]),
+        "transformer.encoder.layers.5.weight": torch.tensor([5.0]),
+        "transformer.decoder.layers.1.weight": torch.tensor([11.0]),
+        "transformer.decoder.layers.3.weight": torch.tensor([13.0]),
+        "transformer.decoder.layers.5.weight": torch.tensor([15.0]),
+        "bbox_embed.1.weight": torch.tensor([21.0]),
+        "bbox_embed.3.weight": torch.tensor([23.0]),
+        "bbox_embed.5.weight": torch.tensor([25.0]),
+        "class_embed.1.weight": torch.tensor([31.0]),
+        "class_embed.3.weight": torch.tensor([33.0]),
+        "class_embed.5.weight": torch.tensor([35.0]),
+        "pose_embed.0.weight": torch.tensor([41.0]),
+        "pose_embed.1.weight": torch.tensor([43.0]),
+        "pose_embed.3.weight": torch.tensor([45.0]),
+        "pose_hw_embed.1.weight": torch.tensor([51.0]),
+        "pose_hw_embed.3.weight": torch.tensor([53.0]),
+        "transformer.decoder.pose_embed.0.weight": torch.tensor([61.0]),
+        "transformer.decoder.pose_embed.1.weight": torch.tensor([63.0]),
+        "transformer.decoder.pose_embed.3.weight": torch.tensor([65.0]),
+        "backbone.body.layer2.0.weight": torch.tensor([71.0]),
+    }
+
+    remapped = remap_diffusionregpose_checkpoint_layers(
+        source,
+        encoder_layer_indices=(2, 4, 6),
+        decoder_layer_indices=(2, 4, 6),
+        target_num_encoder_layers=3,
+        target_num_decoder_layers=3,
+        target_num_box_decoder_layers=1,
+    )
+
+    assert remapped["transformer.encoder.layers.0.weight"].item() == 1.0
+    assert remapped["transformer.encoder.layers.1.weight"].item() == 3.0
+    assert remapped["transformer.encoder.layers.2.weight"].item() == 5.0
+    assert remapped["transformer.decoder.layers.0.weight"].item() == 11.0
+    assert remapped["transformer.decoder.layers.1.weight"].item() == 13.0
+    assert remapped["transformer.decoder.layers.2.weight"].item() == 15.0
+    assert remapped["bbox_embed.0.weight"].item() == 21.0
+    assert remapped["bbox_embed.1.weight"].item() == 23.0
+    assert remapped["bbox_embed.2.weight"].item() == 25.0
+    assert remapped["class_embed.0.weight"].item() == 31.0
+    assert remapped["class_embed.1.weight"].item() == 33.0
+    assert remapped["class_embed.2.weight"].item() == 35.0
+    assert remapped["pose_embed.0.weight"].item() == 43.0
+    assert remapped["pose_embed.1.weight"].item() == 45.0
+    assert remapped["pose_hw_embed.0.weight"].item() == 51.0
+    assert remapped["pose_hw_embed.1.weight"].item() == 53.0
+    assert remapped["expansion_pose_embed.weight"].item() == 41.0
+    assert remapped["transformer.decoder.expansion_pose_embed.weight"].item() == 61.0
+    assert remapped["backbone.body.layer2.0.weight"].item() == 71.0
+    assert "transformer.encoder.layers.3.weight" not in remapped
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"encoder_layer_indices": (2, 2, 6)},
+        {"encoder_layer_indices": (2, 4, 7)},
+        {"decoder_layer_indices": (2, 4)},
+        {"decoder_layer_indices": (1, 3, 7)},
+    ],
+)
+def test_diffusionregpose_keep_layers_rejects_invalid_selection(kwargs) -> None:
+    with pytest.raises(ValueError):
+        remap_diffusionregpose_checkpoint_layers(
+            {},
+            encoder_layer_indices=kwargs.get("encoder_layer_indices", (2, 4, 6)),
+            decoder_layer_indices=kwargs.get("decoder_layer_indices", (2, 4, 6)),
+            target_num_encoder_layers=3,
+            target_num_decoder_layers=3,
+            target_num_box_decoder_layers=1,
+        )
+
+
+def test_diffusionregpose_keep_layers_config_selects_reduced_transfer_model() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256_keep_layers"
+        )
+
+    assert config.pipeline.num_encoder_layers == 3
+    assert config.pipeline.num_decoder_layers == 3
+    assert config.pipeline.num_box_decoder_layers == 1
+    assert config.pipeline.pretrained_keep_encoder_layers == [2, 4, 6]
+    assert config.pipeline.pretrained_keep_decoder_layers == [2, 4, 6]
+
+
+def test_diffusionregpose_compatible_128_config_keeps_architecture_and_reduces_resolution() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_128"
+        )
+
+    assert config.pipeline.num_queries == 200
+    assert config.pipeline.num_proposals == 50
+    assert config.pipeline.num_group == 50
+    assert config.pipeline.dn_number == 50
+    assert config.pipeline.num_feature_levels == 4
+    assert config.pipeline.num_encoder_layers == 6
+    assert config.pipeline.num_decoder_layers == 6
+    assert config.pipeline.num_box_decoder_layers == 2
+    assert config.pipeline.hidden_dim == 256
+    assert config.pipeline.feedforward_dim == 2048
+    assert config.pipeline.deterministic_seed == 42
+    assert config.data.subset_frac == 1.0
+    assert config.data.train_resize_scales == [128]
+    assert config.data.train_max_size == 192
+    assert config.data.train_crop_resize_scales == [128]
+    assert config.data.train_crop_size == [64, 128]
+    assert config.data.eval_resize_scale == 128
+    assert config.data.eval_max_size == 192
+    assert config.data.batch_size == 8
+    assert config.training.accumulate_grad_batches == 1
+    assert config.pipeline.val_ap_every_n_epochs == 10
+
+
+def test_diffusionregpose_freeze_backbone_config_keeps_256_compatible_setup() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256_freeze_backbone"
+        )
+
+    assert config.pipeline.freeze_backbone is True
+    assert config.pipeline.num_encoder_layers == 6
+    assert config.pipeline.num_decoder_layers == 6
+    assert config.pipeline.num_queries == 200
+    assert config.pipeline.num_group == 50
+    assert config.data.eval_resize_scale == 256
+    assert config.data.eval_max_size == 427
+    assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_head_only_config_keeps_256_compatible_setup() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256_head_only"
+        )
+
+    assert config.pipeline.freeze_backbone_and_transformer is True
+    assert config.pipeline.num_encoder_layers == 6
+    assert config.pipeline.num_decoder_layers == 6
+    assert config.pipeline.num_queries == 200
+    assert config.pipeline.num_group == 50
+    assert config.data.eval_resize_scale == 256
+    assert config.data.eval_max_size == 427
+    assert config.training.accumulate_grad_batches == 1
+
+
+def test_diffusionregpose_head_only_optimizer_excludes_frozen_prefix() -> None:
+    model = DiffusionRegPoseModel(
+        backbone_pretrained=False,
+        num_queries=32,
+        num_proposals=8,
+        num_group=8,
+        dn_number=8,
+        freeze_backbone_and_transformer=True,
+    )
+    pipeline = DiffusionRegPosePipeline(model, DiffusionRegPoseCriterion())
+    optimizer = pipeline.configure_optimizers()
+    if isinstance(optimizer, dict):
+        optimizer = optimizer["optimizer"]
+
+    optimized_parameter_ids = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    trainable_parameter_ids = {
+        id(parameter)
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    }
+    assert optimized_parameter_ids == trainable_parameter_ids
+
 
 
 def test_diffusionregpose_checkpoint_coverage_is_measured_per_critical_component() -> None:
@@ -797,6 +984,8 @@ def test_diffusionregpose_rejects_missing_person_class() -> None:
 def test_diffusionregpose_uses_paper_loss_and_schedule_defaults() -> None:
     config = DiffusionRegPosePipelineConfig()
 
+    assert config.matching_strategy == "hungarian"
+    assert config.ota_candidate_topk == 5
     assert config.weights.keypoints == 10.0
     assert config.lr == 2e-4
     assert config.lr_warmup_epochs == 0
@@ -855,6 +1044,372 @@ def test_diffusionregpose_criterion_scores_person_class_column() -> None:
     background_logit_high = classification_loss(torch.tensor([[[8.0, 0.0]]]))
 
     assert person_logit_high < background_logit_high
+
+
+def _matcher_outputs(
+    boxes: torch.Tensor,
+    *,
+    keypoints: torch.Tensor | None = None,
+) -> dict[str, torch.Tensor]:
+    query_count = boxes.shape[0]
+    if keypoints is None:
+        keypoints = torch.zeros(query_count, 6)
+    return {
+        "pred_logits": torch.zeros(1, query_count, 2),
+        "pred_boxes": boxes.unsqueeze(0),
+        "pred_keypoints": keypoints.unsqueeze(0),
+    }
+
+
+def _matcher_targets(
+    boxes: torch.Tensor,
+    *,
+    keypoints: torch.Tensor | None = None,
+) -> list[dict[str, torch.Tensor]]:
+    target_count = boxes.shape[0]
+    if keypoints is None:
+        keypoints = torch.zeros(target_count, 6)
+    return [{
+        "labels": torch.full(
+            (target_count,), CROWDPOSE_PERSON_LABEL, dtype=torch.long,
+        ),
+        "boxes": boxes,
+        "keypoints": keypoints,
+        "area": (boxes[:, 2] * boxes[:, 3]).clamp_min(1e-6),
+    }]
+
+
+def test_diffusionregpose_hungarian_assignment_and_losses_are_unchanged() -> None:
+    outputs = {
+        "pred_logits": torch.tensor([[[0.2, 1.5], [-0.3, -0.7], [0.1, 0.8]]]),
+        "pred_boxes": torch.tensor([[
+            [0.2, 0.3, 0.2, 0.4],
+            [0.7, 0.6, 0.2, 0.2],
+            [0.25, 0.35, 0.3, 0.3],
+        ]]),
+        "pred_keypoints": torch.tensor([[
+            [0.2, 0.3, 0.3, 0.4, 0.8, 0.7],
+            [0.7, 0.6, 0.8, 0.7, 0.5, 0.4],
+            [0.3, 0.4, 0.4, 0.5, 0.6, 0.9],
+        ]]),
+    }
+    targets = _matcher_targets(
+        torch.tensor([[0.22, 0.32, 0.24, 0.36]]),
+        keypoints=torch.tensor([[0.21, 0.31, 0.32, 0.41, 1.0, 1.0]]),
+    )
+
+    matches = DiffusionRegPoseMatcher(num_body_points=2)(outputs, targets)
+    losses = DiffusionRegPoseCriterion(
+        num_body_points=2, num_box_decoder_layers=1,
+    )(outputs, targets)
+
+    assert matches[0][0].tolist() == [0]
+    assert matches[0][1].tolist() == [0]
+    expected = {
+        "loss_ce": 0.8632403612136841,
+        "loss_bbox": 0.119999960064888,
+        "loss_giou": 0.25396257638931274,
+        "loss_keypoints": 0.04999995231628418,
+        "loss_oks": 0.07737386226654053,
+        "total": 3.1939008235931396,
+    }
+    for name, value in expected.items():
+        torch.testing.assert_close(losses[name], torch.tensor(value))
+
+
+def test_diffusionregpose_ota_assigns_dynamic_multiple_positives() -> None:
+    outputs = _matcher_outputs(torch.tensor([
+        [0.5, 0.5, 0.4, 0.4],
+        [0.5, 0.5, 0.36, 0.36],
+        [0.5, 0.5, 0.32, 0.32],
+    ]))
+    targets = _matcher_targets(torch.tensor([[0.5, 0.5, 0.4, 0.4]]))
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=3,
+    )(outputs, targets)[0]
+
+    assert source.tolist() == [0, 1]
+    assert target.tolist() == [0, 0]
+
+
+def test_diffusionregpose_ota_penalizes_queries_outside_candidate_regions() -> None:
+    outputs = _matcher_outputs(torch.tensor([
+        [0.5, 0.5, 0.01, 0.01],
+        [0.9, 0.9, 0.2, 0.2],
+    ]))
+    targets = _matcher_targets(torch.tensor([[0.5, 0.5, 0.2, 0.2]]))
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=1,
+    )(outputs, targets)[0]
+
+    assert source.tolist() == [0]
+    assert target.tolist() == [0]
+
+
+def test_diffusionregpose_ota_resolves_conflicts_and_repairs_orphan_target() -> None:
+    outputs = _matcher_outputs(torch.tensor([
+        [0.5, 0.5, 0.4, 0.4],
+        [0.5, 0.5, 0.2, 0.2],
+    ]))
+    targets = _matcher_targets(torch.tensor([
+        [0.5, 0.5, 0.4, 0.4],
+        [0.5, 0.5, 0.4, 0.4],
+    ]))
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=2,
+    )(outputs, targets)[0]
+
+    assert source.tolist() == [0, 1]
+    assert sorted(target.tolist()) == [0, 1]
+
+
+def test_diffusionregpose_ota_uses_pose_costs_for_pose_outputs() -> None:
+    boxes = torch.tensor([[0.5, 0.5, 0.4, 0.4]] * 2)
+    outputs = _matcher_outputs(
+        boxes,
+        keypoints=torch.tensor([
+            [0.8, 0.8, 0.9, 0.9, 1.0, 1.0],
+            [0.2, 0.3, 0.4, 0.5, 1.0, 1.0],
+        ]),
+    )
+    targets = _matcher_targets(
+        boxes[:1],
+        keypoints=torch.tensor([[0.2, 0.3, 0.4, 0.5, 1.0, 1.0]]),
+    )
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=1,
+    )(outputs, targets)[0]
+
+    assert source.tolist() == [1]
+    assert target.tolist() == [0]
+
+
+def test_diffusionregpose_ota_pose_cost_ignores_unlabeled_keypoints() -> None:
+    boxes = torch.tensor([[0.5, 0.5, 0.4, 0.4]] * 2)
+    outputs = _matcher_outputs(
+        boxes,
+        keypoints=torch.tensor([
+            [0.2, 0.3, 0.0, 0.0, 1.0, 1.0],
+            [0.5, 0.6, 0.9, 0.9, 1.0, 1.0],
+        ]),
+    )
+    targets = _matcher_targets(
+        boxes[:1],
+        keypoints=torch.tensor([[0.2, 0.3, 0.9, 0.9, 1.0, 0.0]]),
+    )
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=1,
+    )(outputs, targets)[0]
+
+    assert source.tolist() == [0]
+    assert target.tolist() == [0]
+
+
+def test_diffusionregpose_ota_handles_empty_targets() -> None:
+    outputs = _matcher_outputs(torch.full((3, 4), 0.5))
+    targets = _matcher_targets(torch.empty(0, 4))
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2,
+    )(outputs, targets)[0]
+
+    assert source.dtype == torch.long
+    assert target.dtype == torch.long
+    assert source.numel() == target.numel() == 0
+
+
+def test_diffusionregpose_ota_clamps_candidate_topk_to_query_count() -> None:
+    outputs = _matcher_outputs(torch.tensor([
+        [0.5, 0.5, 0.4, 0.4],
+        [0.5, 0.5, 0.2, 0.2],
+    ]))
+    targets = _matcher_targets(torch.tensor([[0.5, 0.5, 0.4, 0.4]]))
+
+    source, target = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=5,
+    )(outputs, targets)[0]
+
+    assert source.numel() == target.numel()
+    assert source.numel() >= 1
+
+
+def test_diffusionregpose_ota_rejects_more_targets_than_queries() -> None:
+    outputs = _matcher_outputs(torch.tensor([[0.5, 0.5, 0.4, 0.4]]))
+    targets = _matcher_targets(torch.tensor([
+        [0.4, 0.4, 0.2, 0.2],
+        [0.6, 0.6, 0.2, 0.2],
+    ]))
+
+    with pytest.raises(ValueError, match="at least as many queries as targets"):
+        DiffusionRegPoseOTAMatcher(num_body_points=2)(outputs, targets)
+
+
+def test_diffusionregpose_ota_normalizes_joint_losses_by_positive_count() -> None:
+    boxes = torch.tensor([
+        [0.5, 0.5, 0.4, 0.4],
+        [0.5, 0.5, 0.36, 0.36],
+        [0.5, 0.5, 0.32, 0.32],
+    ])
+    keypoints = torch.tensor([
+        [0.2, 0.3, 0.4, 0.5, 1.0, 1.0],
+        [0.3, 0.4, 0.5, 0.6, 1.0, 1.0],
+        [0.6, 0.7, 0.8, 0.9, 1.0, 1.0],
+    ])
+    outputs = _matcher_outputs(boxes, keypoints=keypoints)
+    targets = _matcher_targets(
+        boxes[:1], keypoints=keypoints[:1],
+    )
+    matcher = DiffusionRegPoseOTAMatcher(
+        num_body_points=2, candidate_topk=3,
+    )
+
+    losses = DiffusionRegPoseCriterion(
+        matcher=matcher, num_body_points=2, num_box_decoder_layers=1,
+    )(outputs, targets)
+
+    expected_bbox = (boxes[:2] - boxes[0]).abs().sum() / 2
+    expected_keypoints = (
+        (keypoints[:2, :4] - keypoints[0, :4]).abs().sum() / 2
+    )
+    torch.testing.assert_close(losses["loss_bbox"], expected_bbox)
+    torch.testing.assert_close(losses["loss_keypoints"], expected_keypoints)
+    assert losses["matched_queries"].item() == 2
+    assert losses["matches_per_target_mean"].item() == 2
+    assert losses["matches_per_target_min"].item() == 2
+    assert losses["matches_per_target_max"].item() == 2
+
+
+def test_diffusionregpose_matches_each_output_but_not_denoising_outputs() -> None:
+    class CountingMatcher(DiffusionRegPoseMatcher):
+        def __init__(self) -> None:
+            super().__init__(num_body_points=2)
+            self.call_count = 0
+
+        def forward(self, outputs, targets):
+            del outputs
+            self.call_count += 1
+            return [(
+                torch.tensor([0]), torch.tensor([0]),
+            ) for _ in targets]
+
+    matcher = CountingMatcher()
+    output = _matcher_outputs(torch.tensor([[0.5, 0.5, 0.4, 0.4]]))
+    output["aux_outputs"] = [
+        _matcher_outputs(torch.tensor([[0.45, 0.5, 0.4, 0.4]])),
+    ]
+    output["interm_outputs"] = _matcher_outputs(
+        torch.tensor([[0.55, 0.5, 0.4, 0.4]]),
+    )
+    output["dn_class_pred"] = torch.zeros(1, 1, 2)
+    output["dn_bbox_pred"] = torch.tensor([[[0.5, 0.5, 0.4, 0.4]]])
+    output["dn_class_input"] = torch.tensor([[CROWDPOSE_PERSON_LABEL]])
+    output["dn_bbox_input"] = torch.tensor([[[0.5, 0.5, 0.4, 0.4]]])
+    targets = _matcher_targets(torch.tensor([[0.5, 0.5, 0.4, 0.4]]))
+
+    DiffusionRegPoseCriterion(
+        matcher=matcher, num_body_points=2, num_box_decoder_layers=1,
+    )(output, targets)
+
+    assert matcher.call_count == 3
+
+
+def test_diffusionregpose_ota_config_builds_ota_matcher() -> None:
+    pipeline = DiffusionRegPosePipelineConfig(
+        backbone_pretrained=False,
+        matching_strategy="ota",
+        ota_candidate_topk=3,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+    ).build(max_epochs=1)
+
+    assert isinstance(pipeline.criterion.matcher, DiffusionRegPoseOTAMatcher)
+    assert pipeline.criterion.matcher.candidate_topk == 3
+
+
+def test_diffusionregpose_ota_config_rejects_nonpositive_candidate_topk() -> None:
+    with pytest.raises(ValueError, match="ota_candidate_topk"):
+        DiffusionRegPosePipelineConfig(ota_candidate_topk=0)
+
+
+def test_diffusionregpose_compatible_256_ota_config_is_matched_control() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        ota = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256_ota"
+        )
+        hungarian = compose(
+            config_name="benchmark_diffusionregpose_development_compatible_256"
+        )
+
+    assert ota.pipeline.matching_strategy == "ota"
+    assert ota.data.eval_resize_scale == 256
+    assert ota.run_name.endswith("_ota")
+    for field in (
+        "num_queries", "num_proposals", "num_group", "dn_number",
+        "num_feature_levels", "num_encoder_layers", "num_decoder_layers",
+        "num_box_decoder_layers", "hidden_dim", "feedforward_dim",
+        "pretrained_checkpoint", "deterministic_seed",
+    ):
+        assert ota.pipeline[field] == hungarian.pipeline[field]
+    for field in (
+        "train_resize_scales", "train_max_size", "train_crop_resize_scales",
+        "train_crop_size", "eval_resize_scale", "eval_max_size", "batch_size",
+    ):
+        assert ota.data[field] == hungarian.data[field]
+
+
+def test_diffusionregpose_keep_layers_ota_config_changes_only_assignment() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        ota = OmegaConf.to_container(
+            compose(
+                config_name=(
+                    "benchmark_diffusionregpose_development_compatible_256_keep_layers_ota"
+                )
+            ),
+            resolve=True,
+        )
+        hungarian = OmegaConf.to_container(
+            compose(
+                config_name=(
+                    "benchmark_diffusionregpose_development_compatible_256_keep_layers"
+                )
+            ),
+            resolve=True,
+        )
+
+    assert ota["run_name"].endswith("_ota")
+    assert ota["out_dir"].endswith("_ota")
+    assert ota["pipeline"]["matching_strategy"] == "ota"
+    assert ota["pipeline"]["num_encoder_layers"] == 3
+    assert ota["pipeline"]["num_decoder_layers"] == 3
+    assert ota["pipeline"]["num_box_decoder_layers"] == 1
+    assert ota["pipeline"]["pretrained_keep_encoder_layers"] == [2, 4, 6]
+    assert ota["pipeline"]["pretrained_keep_decoder_layers"] == [2, 4, 6]
+    assert ota["data"]["eval_resize_scale"] == 256
+    assert ota["data"]["eval_max_size"] == 427
+    assert ota["data"]["batch_size"] == 4
+    assert ota["training"]["accumulate_grad_batches"] == 2
+
+    ota_without_identity = dict(ota)
+    hungarian_without_identity = dict(hungarian)
+    ota_without_identity.pop("run_name")
+    ota_without_identity.pop("out_dir")
+    hungarian_without_identity.pop("run_name")
+    hungarian_without_identity.pop("out_dir")
+    ota_without_identity["pipeline"] = dict(ota["pipeline"])
+    ota_without_identity["pipeline"].pop("matching_strategy")
+    hungarian_without_identity["pipeline"] = dict(hungarian["pipeline"])
+    hungarian_without_identity["pipeline"].pop("matching_strategy")
+    assert ota_without_identity == hungarian_without_identity
 
 
 def test_diffusionregpose_classification_loss_has_one_query_scaling() -> None:
@@ -1203,4 +1758,32 @@ def test_reduced_pipeline_builds_finite_training_loss() -> None:
     losses = pipeline._losses_for_batch(batch)
 
     assert torch.isfinite(losses["total"])
+    losses["total"].backward()
+
+
+def test_reduced_ota_pipeline_builds_finite_training_loss() -> None:
+    pipeline = DiffusionRegPosePipelineConfig(
+        backbone_pretrained=False,
+        matching_strategy="ota",
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+    ).build(max_epochs=1)
+    batch = {
+        "image": torch.rand(1, 3, 128, 128),
+        "gt_keypoints": torch.zeros(1, 1, 14, 2),
+        "gt_labeled": torch.ones(1, 1, 14),
+        "gt_visible": torch.ones(1, 1, 14),
+        "gt_boxes_canon": torch.tensor([[[0.5, 0.5, 0.4, 0.6]]]),
+        "gt_boxes_pixel": torch.tensor([[[38.0, 26.0, 51.0, 77.0]]]),
+        "gt_box_labeled": torch.ones(1, 1),
+        "img_hw": torch.tensor([[128.0, 128.0]]),
+    }
+
+    losses = pipeline._losses_for_batch(batch)
+
+    assert torch.isfinite(losses["total"])
+    assert losses["matched_queries"] >= 1
     losses["total"].backward()

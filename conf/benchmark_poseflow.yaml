@@ -1,0 +1,16 @@
+defaults:
+  - pipeline: poseflow
+  - data: crowdpose_diffusionregpose
+  - hardware: auto
+  - training: diffusionregpose
+  - _self_
+
+run_name: poseflow_training
+out_dir: results/poseflow_training
+skip_training: false
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

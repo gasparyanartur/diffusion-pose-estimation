@@ -173,6 +173,12 @@ python scripts/training/train_box_diffusion.py pipeline=box_diffusion
 # Train the native DiffusionRegPose implementation
 python scripts/training/train_diffusionregpose.py
 
+# Train PoseFlow. It retains the ED-Pose/DiffusionRegPose architecture and
+# task losses, uses pose-aware OTA by default, and transports only keypoint XY
+# with continuous endpoint flow. It is a new training path: do not evaluate a
+# DiffusionRegPose checkpoint as though it were a trained PoseFlow model.
+python scripts/training/train_poseflow.py
+
 # The preset uses the external-compatible variable-size multi-scale training
 # transforms, batch size 1 with gradient accumulation 8 (effective batch size
 # 8), and reference trainable parameter set (49,304,924 parameters).
@@ -219,6 +225,45 @@ python scripts/training/train_diffusionregpose.py \
 # 50 proposal groups, batch 8, and deterministic AP every 10 epochs.
 python scripts/training/train_diffusionregpose.py \
     --config-name benchmark_diffusionregpose_development_compatible_256
+
+# Assignment-only OTA comparison at the same compatible 256-pixel resolution.
+# This keeps model tensors, EDPose initialization, data, optimizer, schedule,
+# denoising queries, sampling, and evaluation identical to the Hungarian gate.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_256_ota
+
+# Same checkpoint-compatible development architecture at 128/192-pixel
+# resolution. This is a full-data learning gate with batch size 8, no
+# gradient accumulation, validation loss every epoch, and AP every 10 epochs.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_128 \
+    run_name=dev128-compatible-full \
+    out_dir=results/diffusionregpose_development_compatible_128
+
+# Controlled 256-pixel comparison with every ResNet parameter frozen. This
+# preserves the 49.5M-parameter architecture but leaves approximately 26.1M
+# trainable parameters.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_256_freeze_backbone
+
+# Diagnostic head-only comparison: initialize from EDPose and freeze the
+# backbone, input projections, label embedding, and transformer computation.
+# Only prediction/refinement heads train (approximately 1.6M parameters), so
+# this is a runtime/transfer experiment rather than a paper-scale recipe.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_256_head_only
+
+# Reduced three-layer transfer model. It explicitly initializes local encoder
+# and decoder layers from EDPose checkpoint layers 2, 4, and 6. This is useful
+# for architecture iteration, but is not an exact full-checkpoint evaluator.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_256_keep_layers
+
+# OTA counterpart to the selected-layer fast run. It keeps the 3E/3D,
+# EDPose-layer-2/4/6, 256/427, batch-4/accumulation-2 setup and changes only
+# the clean-query assignment strategy.
+python scripts/training/train_diffusionregpose.py \
+    --config-name benchmark_diffusionregpose_development_compatible_256_keep_layers_ota
 
 # Reproduce the CPU/static and CUDA profiling artifacts described in
 # reports/diffusionregpose-runtime-audit.md. Runtime profiling exits before CUDA
@@ -289,9 +334,11 @@ python scripts/training/train_pose_refinement.py --cfg job
 
 ### Losses and metrics
 
-The canonical pose pipelines use Hungarian matching with model-family-specific
-pose, box, visibility, and diffusion losses. Evaluation reports CrowdPose AP
-and AR metrics through `src.eval.metrics`; box diffusion reports COCO bbox AP.
+The canonical pose pipelines use model-family-specific pose, box, visibility,
+and diffusion losses. DiffusionRegPose defaults to reference-compatible
+Hungarian matching and supports opt-in Dynamic-K OTA through
+`pipeline.matching_strategy=ota`. Evaluation reports CrowdPose AP and AR
+metrics through `src.eval.metrics`; box diffusion reports COCO bbox AP.
 
 ---
 
@@ -317,11 +364,15 @@ Use `--limit` for a smoke run and `--sampling-timesteps` to select the DDIM
 schedule. The default seed and one-step schedule match the reference
 evaluation path used for checkpoint parity.
 
-On CUDA, the evaluator and trainer lazily build the repository-owned native
-forward/backward deformable-attention kernel in PyTorch's extension cache. It
-does not import the external repository's compiled operator. If the local
-kernel cannot be built, the differentiable PyTorch sampler remains available
-as a functional fallback.
+On CUDA, the evaluator and trainer lazily build the vendored DINOv3
+multi-scale deformable-attention CUDA operator in PyTorch's extension cache.
+The imported source is pinned to DINOv3 revision
+`6876159a11b4df116f30f667f8c9888617df0751` and retains its DINOv3 and
+Deformable DETR/SenseTime attribution. The applicable license and source
+provenance are recorded in
+`src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/`.
+If the native kernel cannot be built, the differentiable PyTorch sampler
+remains available as a functional fallback.
 
 ```bash
 # List available configurations

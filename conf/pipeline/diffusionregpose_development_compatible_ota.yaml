@@ -1,0 +1,6 @@
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+matching_strategy: ota
+ota_candidate_topk: 5

@@ -1,0 +1,452 @@
+{
+  "config": "benchmark_diffusionregpose_development_compatible_256",
+  "checkpoint": "external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth",
+  "batch_size": 8,
+  "image_shape": [
+    8,
+    3,
+    383,
+    385
+  ],
+  "data": {
+    "loading_and_collate": {
+      "count": 10,
+      "mean_ms": 8.780151046812534,
+      "median_ms": 0.32831006683409214,
+      "p10_ms": 0.252980156801641,
+      "p90_ms": 9.518188866786629,
+      "min_ms": 0.2333340235054493,
+      "max_ms": 83.83005298674107
+    },
+    "host_to_device": {
+      "count": 10,
+      "mean_ms": 1.0111579904332757,
+      "median_ms": 1.0014399886131287,
+      "p10_ms": 0.8990191388875246,
+      "p90_ms": 1.1269711423665285,
+      "min_ms": 0.8342559449374676,
+      "max_ms": 1.2083409819751978
+    },
+    "gpu_augmentation": {
+      "count": 10,
+      "mean_ms": 32.757472922094166,
+      "median_ms": 14.92516661528498,
+      "p10_ms": 11.418660054914653,
+      "p90_ms": 42.188848298974285,
+      "min_ms": 10.966886999085546,
+      "max_ms": 171.2214178405702
+    }
+  },
+  "variants": [
+    {
+      "name": "backbone_frozen_transformer_trainable",
+      "parameters": {
+        "parameter_tensors": 415,
+        "parameters": 49527324,
+        "trainable_parameters": 20407388,
+        "frozen_parameters": 29119936,
+        "parameter_bytes": 198109296
+      },
+      "parameter_partition": {
+        "label_embedding": {
+          "parameter_tensors": 1,
+          "parameters": 25856,
+          "trainable_parameters": 0,
+          "frozen_parameters": 25856
+        },
+        "backbone": {
+          "parameter_tensors": 53,
+          "parameters": 23454912,
+          "trainable_parameters": 0,
+          "frozen_parameters": 23454912
+        },
+        "input_projections": {
+          "parameter_tensors": 16,
+          "parameters": 5639168,
+          "trainable_parameters": 0,
+          "frozen_parameters": 5639168
+        },
+        "box_heads": {
+          "parameter_tensors": 36,
+          "parameters": 795672,
+          "trainable_parameters": 795672,
+          "frozen_parameters": 0
+        },
+        "class_heads": {
+          "parameter_tensors": 12,
+          "parameters": 3084,
+          "trainable_parameters": 3084,
+          "frozen_parameters": 0
+        },
+        "pose_heads": {
+          "parameter_tensors": 24,
+          "parameters": 528392,
+          "trainable_parameters": 528392,
+          "frozen_parameters": 0
+        },
+        "pose_size_head": {
+          "parameter_tensors": 6,
+          "parameters": 132098,
+          "trainable_parameters": 132098,
+          "frozen_parameters": 0
+        },
+        "transformer_exclusive": {
+          "parameter_tensors": 267,
+          "parameters": 18948142,
+          "trainable_parameters": 18948142,
+          "frozen_parameters": 0
+        }
+      },
+      "training_stages": {
+        "target_preparation": {
+          "count": 10,
+          "mean_ms": 5.003612325526774,
+          "median_ms": 4.659272963181138,
+          "p10_ms": 4.47707490529865,
+          "p90_ms": 6.2248722184449425,
+          "min_ms": 4.447590094059706,
+          "max_ms": 6.706570973619819
+        },
+        "forward": {
+          "count": 10,
+          "mean_ms": 159.82001598458737,
+          "median_ms": 159.65473756659776,
+          "p10_ms": 157.13202198967338,
+          "p90_ms": 162.27072896435857,
+          "min_ms": 155.11828986927867,
+          "max_ms": 162.90630982257426
+        },
+        "criterion_and_matching": {
+          "count": 10,
+          "mean_ms": 146.92702488973737,
+          "median_ms": 146.93721034564078,
+          "p10_ms": 145.40514620020986,
+          "p90_ms": 148.73798990156502,
+          "min_ms": 144.85332905314863,
+          "max_ms": 149.27473198622465
+        },
+        "backward": {
+          "count": 10,
+          "mean_ms": 300.7483673049137,
+          "median_ms": 300.6597430212423,
+          "p10_ms": 298.1462809955701,
+          "p90_ms": 303.27727559488267,
+          "min_ms": 296.33942409418523,
+          "max_ms": 306.23992695473135
+        },
+        "optimizer": {
+          "count": 10,
+          "mean_ms": 5.696663516573608,
+          "median_ms": 5.501662963069975,
+          "p10_ms": 5.402804492041469,
+          "p90_ms": 6.0270330868661395,
+          "min_ms": 5.400305846706033,
+          "max_ms": 7.075688801705837
+        },
+        "full_update": {
+          "count": 10,
+          "mean_ms": 618.1956840213388,
+          "median_ms": 619.047631858848,
+          "p10_ms": 611.689749895595,
+          "p90_ms": 621.086611947976,
+          "min_ms": 610.5747097171843,
+          "max_ms": 623.0065189301968
+        }
+      },
+      "forward_modules_cuda_events": {
+        "backbone_and_position": {
+          "count": 10,
+          "mean_ms": 23.52729911804199,
+          "median_ms": 23.59603214263916,
+          "p10_ms": 22.4735258102417,
+          "p90_ms": 24.72222785949707,
+          "min_ms": 22.43484878540039,
+          "max_ms": 24.803327560424805
+        },
+        "encoder": {
+          "count": 10,
+          "mean_ms": 45.94493446350098,
+          "median_ms": 46.21004676818848,
+          "p10_ms": 44.700056838989255,
+          "p90_ms": 46.92561950683594,
+          "min_ms": 43.37664031982422,
+          "max_ms": 47.098880767822266
+        },
+        "decoder": {
+          "count": 10,
+          "mean_ms": 39.507036209106445,
+          "median_ms": 39.78839874267578,
+          "p10_ms": 38.342341613769534,
+          "p90_ms": 40.45352783203125,
+          "min_ms": 37.915584564208984,
+          "max_ms": 41.28665542602539
+        },
+        "input_projection_0": {
+          "count": 10,
+          "mean_ms": 0.3247103989124298,
+          "median_ms": 0.32307200133800507,
+          "p10_ms": 0.32051199674606323,
+          "p90_ms": 0.3302400052547455,
+          "min_ms": 0.32051199674606323,
+          "max_ms": 0.33484798669815063
+        },
+        "input_projection_1": {
+          "count": 10,
+          "mean_ms": 0.13928639739751816,
+          "median_ms": 0.13926400244235992,
+          "p10_ms": 0.13619199395179749,
+          "p90_ms": 0.14254079610109327,
+          "min_ms": 0.13619199395179749,
+          "max_ms": 0.1443839967250824
+        },
+        "input_projection_2": {
+          "count": 10,
+          "mean_ms": 0.11499520167708396,
+          "median_ms": 0.11366400122642517,
+          "p10_ms": 0.11264000087976456,
+          "p90_ms": 0.1180672027170658,
+          "min_ms": 0.11264000087976456,
+          "max_ms": 0.12083200365304947
+        },
+        "input_projection_3": {
+          "count": 10,
+          "mean_ms": 0.9425055921077728,
+          "median_ms": 0.8652800023555756,
+          "p10_ms": 0.8574975788593292,
+          "p90_ms": 1.1634079575538634,
+          "min_ms": 0.851967990398407,
+          "max_ms": 1.3752319812774658
+        }
+      },
+      "peak_memory": {
+        "allocated": {
+          "count": 10,
+          "mean_gib": 5.0120463371276855,
+          "median_gib": 5.0120463371276855,
+          "p10_gib": 5.0120463371276855,
+          "p90_gib": 5.0120463371276855,
+          "min_gib": 5.0120463371276855,
+          "max_gib": 5.0120463371276855
+        },
+        "reserved": {
+          "count": 10,
+          "mean_gib": 14.41015625,
+          "median_gib": 14.41015625,
+          "p10_gib": 14.41015625,
+          "p90_gib": 14.41015625,
+          "min_gib": 14.41015625,
+          "max_gib": 14.41015625
+        }
+      },
+      "loss_range": [
+        178.28057861328125,
+        355.6237487792969
+      ]
+    },
+    {
+      "name": "backbone_and_transformer_frozen_heads_trainable",
+      "parameters": {
+        "parameter_tensors": 415,
+        "parameters": 49527324,
+        "trainable_parameters": 1592372,
+        "frozen_parameters": 47934952,
+        "parameter_bytes": 198109296
+      },
+      "parameter_partition": {
+        "label_embedding": {
+          "parameter_tensors": 1,
+          "parameters": 25856,
+          "trainable_parameters": 0,
+          "frozen_parameters": 25856
+        },
+        "backbone": {
+          "parameter_tensors": 53,
+          "parameters": 23454912,
+          "trainable_parameters": 0,
+          "frozen_parameters": 23454912
+        },
+        "input_projections": {
+          "parameter_tensors": 16,
+          "parameters": 5639168,
+          "trainable_parameters": 0,
+          "frozen_parameters": 5639168
+        },
+        "box_heads": {
+          "parameter_tensors": 36,
+          "parameters": 795672,
+          "trainable_parameters": 795672,
+          "frozen_parameters": 0
+        },
+        "class_heads": {
+          "parameter_tensors": 12,
+          "parameters": 3084,
+          "trainable_parameters": 3084,
+          "frozen_parameters": 0
+        },
+        "pose_heads": {
+          "parameter_tensors": 24,
+          "parameters": 528392,
+          "trainable_parameters": 528392,
+          "frozen_parameters": 0
+        },
+        "pose_size_head": {
+          "parameter_tensors": 6,
+          "parameters": 132098,
+          "trainable_parameters": 132098,
+          "frozen_parameters": 0
+        },
+        "transformer_exclusive": {
+          "parameter_tensors": 267,
+          "parameters": 18948142,
+          "trainable_parameters": 133126,
+          "frozen_parameters": 18815016
+        }
+      },
+      "training_stages": {
+        "target_preparation": {
+          "count": 10,
+          "mean_ms": 4.7486846800893545,
+          "median_ms": 4.592327983118594,
+          "p10_ms": 4.53393729403615,
+          "p90_ms": 4.891028138808906,
+          "min_ms": 4.5228321105241776,
+          "max_ms": 5.790904862806201
+        },
+        "forward": {
+          "count": 10,
+          "mean_ms": 157.0952916983515,
+          "median_ms": 157.9107108991593,
+          "p10_ms": 154.2988886591047,
+          "p90_ms": 159.352684346959,
+          "min_ms": 152.99443318508565,
+          "max_ms": 159.59948487579823
+        },
+        "criterion_and_matching": {
+          "count": 10,
+          "mean_ms": 151.45694429520518,
+          "median_ms": 151.0665190871805,
+          "p10_ms": 148.84039957541972,
+          "p90_ms": 154.30570864118636,
+          "min_ms": 147.8729508817196,
+          "max_ms": 157.76245202869177
+        },
+        "backward": {
+          "count": 10,
+          "mean_ms": 137.71661948412657,
+          "median_ms": 137.2233519796282,
+          "p10_ms": 136.68602257966995,
+          "p90_ms": 139.29813464637846,
+          "min_ms": 135.7362938579172,
+          "max_ms": 140.40355617180467
+        },
+        "optimizer": {
+          "count": 10,
+          "mean_ms": 1.804368570446968,
+          "median_ms": 1.722583081573248,
+          "p10_ms": 1.6719974111765623,
+          "p90_ms": 1.8603936536237595,
+          "min_ms": 1.6644771676510572,
+          "max_ms": 2.6108839083462954
+        },
+        "full_update": {
+          "count": 10,
+          "mean_ms": 452.82190872821957,
+          "median_ms": 452.6977197965607,
+          "p10_ms": 446.28095279913396,
+          "p90_ms": 456.82056145742536,
+          "min_ms": 445.5740840639919,
+          "max_ms": 461.7300487589091
+        }
+      },
+      "forward_modules_cuda_events": {
+        "backbone_and_position": {
+          "count": 10,
+          "mean_ms": 20.50897274017334,
+          "median_ms": 19.88041591644287,
+          "p10_ms": 19.29154567718506,
+          "p90_ms": 22.181407928466797,
+          "min_ms": 19.2860164642334,
+          "max_ms": 22.840639114379883
+        },
+        "encoder": {
+          "count": 10,
+          "mean_ms": 46.561357498168945,
+          "median_ms": 46.98675346374512,
+          "p10_ms": 42.55293312072754,
+          "p90_ms": 48.92928047180176,
+          "min_ms": 42.199039459228516,
+          "max_ms": 50.20569610595703
+        },
+        "decoder": {
+          "count": 10,
+          "mean_ms": 38.83609275817871,
+          "median_ms": 38.75271987915039,
+          "p10_ms": 37.738188934326175,
+          "p90_ms": 39.78668937683105,
+          "min_ms": 37.68012619018555,
+          "max_ms": 40.18473434448242
+        },
+        "input_projection_0": {
+          "count": 10,
+          "mean_ms": 0.2921791970729828,
+          "median_ms": 0.29235199093818665,
+          "p10_ms": 0.2845695942640305,
+          "p90_ms": 0.29736959040164945,
+          "min_ms": 0.2836480140686035,
+          "max_ms": 0.3102720081806183
+        },
+        "input_projection_1": {
+          "count": 10,
+          "mean_ms": 0.12260159999132156,
+          "median_ms": 0.12185599654912949,
+          "p10_ms": 0.11765760257840156,
+          "p90_ms": 0.130150406062603,
+          "min_ms": 0.11673600226640701,
+          "max_ms": 0.131071999669075
+        },
+        "input_projection_2": {
+          "count": 10,
+          "mean_ms": 0.09976319968700409,
+          "median_ms": 0.09983999654650688,
+          "p10_ms": 0.09512960240244867,
+          "p90_ms": 0.10762239918112755,
+          "min_ms": 0.0942080020904541,
+          "max_ms": 0.1085439994931221
+        },
+        "input_projection_3": {
+          "count": 10,
+          "mean_ms": 0.7790912091732025,
+          "median_ms": 0.7758400142192841,
+          "p10_ms": 0.7514111995697021,
+          "p90_ms": 0.8197119772434235,
+          "min_ms": 0.749567985534668,
+          "max_ms": 0.8335360288619995
+        }
+      },
+      "peak_memory": {
+        "allocated": {
+          "count": 10,
+          "mean_gib": 1.0969767570495605,
+          "median_gib": 1.0969767570495605,
+          "p10_gib": 1.0969767570495605,
+          "p90_gib": 1.0969767570495605,
+          "min_gib": 1.0969767570495605,
+          "max_gib": 1.0969767570495605
+        },
+        "reserved": {
+          "count": 10,
+          "mean_gib": 14.41015625,
+          "median_gib": 14.41015625,
+          "p10_gib": 14.41015625,
+          "p90_gib": 14.41015625,
+          "min_gib": 14.41015625,
+          "max_gib": 14.41015625
+        }
+      },
+      "loss_range": [
+        125.00750732421875,
+        137.14291381835938
+      ]
+    }
+  ]
+}

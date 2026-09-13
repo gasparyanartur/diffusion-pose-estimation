@@ -1,0 +1,10 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowPipelineConfig
+
+defaults:
+  - diffusionregpose
+  - _self_
+
+matching_strategy: ota
+ota_candidate_topk: 5
+flow_padding_policy: source_prior
+flow_sampling_steps: 1

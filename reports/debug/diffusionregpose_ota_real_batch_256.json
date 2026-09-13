@@ -1,0 +1,42 @@
+{
+  "config": "benchmark_diffusionregpose_development_compatible_256",
+  "checkpoint": "external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth",
+  "seed": 42,
+  "image_id": 100018,
+  "image_hw": [
+    256,
+    383
+  ],
+  "target_count": 3,
+  "query_count": 50,
+  "hungarian_positive_count": 3,
+  "ota_positive_count": 7,
+  "ota_matches_per_target": [
+    3,
+    3,
+    1
+  ],
+  "hungarian_losses": {
+    "loss_ce": 0.5490530133247375,
+    "loss_bbox": 0.40522775053977966,
+    "loss_giou": 0.6402701139450073,
+    "loss_keypoints": 8.645378112792969,
+    "loss_oks": 0.9999997615814209,
+    "total": 383.6639099121094
+  },
+  "ota_losses": {
+    "loss_ce": 0.5667311549186707,
+    "loss_bbox": 0.17250612378120422,
+    "loss_giou": 0.3174076974391937,
+    "loss_keypoints": 8.119959831237793,
+    "loss_oks": 0.9999997019767761,
+    "total": 362.5511474609375
+  },
+  "ota_gradient_leaf_count": 31,
+  "ota_gradients_finite": true,
+  "notes": [
+    "Model forward used the same fixed output tensors for both matchers.",
+    "Gradient finiteness was checked on detached differentiable output leaves, not as a model update.",
+    "This is a wiring and loss-scale check, not an AP or training-quality result."
+  ]
+}
