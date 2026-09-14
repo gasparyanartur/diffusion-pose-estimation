@@ -66,6 +66,22 @@ def extract_model_state_dict(checkpoint: dict) -> dict[str, torch.Tensor]:
     raise KeyError("checkpoint contains neither an external 'model' nor Lightning 'state_dict' model weights")
 
 
+def build_evaluation_model(
+    pipeline_config: DiffusionRegPosePipelineConfig,
+    *,
+    sampling_timesteps: int,
+) -> DiffusionRegPoseModel:
+    """Build the configured architecture without loading its training initializer."""
+    evaluation_config = pipeline_config.model_copy(update={
+        "backbone_pretrained": False,
+        "sampling_timesteps": sampling_timesteps,
+    })
+    return evaluation_config.build(
+        max_epochs=1,
+        load_pretrained_checkpoint=False,
+    ).model
+
+
 def main() -> None:
     torch.backends.cuda.matmul.allow_tf32 = False
     # Keep the external evaluator's cuDNN setting; it only disables TF32 for
@@ -95,15 +111,14 @@ def main() -> None:
         pipeline_config = DiffusionRegPosePipelineConfig.from_hydra_config(
             resolved_config.pipeline
         )
-        pipeline_config = pipeline_config.model_copy(update={
-            # The checkpoint below supplies the complete learned model.  Do
-            # not load the training-time EDPose initialization as an
-            # intermediate state during evaluation.
-            "backbone_pretrained": False,
-            "pretrained_checkpoint": None,
-            "sampling_timesteps": args.sampling_timesteps,
-        })
-        model = pipeline_config.build(max_epochs=1).model
+        # The checkpoint below supplies the learned model. Do not load the
+        # training-time initializer as an intermediate state. Keeping the
+        # selected-layer fields allows build() to construct the separate
+        # expansion pose head required by that architecture.
+        model = build_evaluation_model(
+            pipeline_config,
+            sampling_timesteps=args.sampling_timesteps,
+        )
     state_dict = extract_model_state_dict(checkpoint)
     model_state = model.state_dict()
     compatible_state = {

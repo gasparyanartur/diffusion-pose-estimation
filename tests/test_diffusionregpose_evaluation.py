@@ -7,7 +7,10 @@ import numpy as np
 import pytest
 import torch
 
-from scripts.evaluation.evaluate_diffusionregpose import extract_model_state_dict
+from scripts.evaluation.evaluate_diffusionregpose import (
+    build_evaluation_model,
+    extract_model_state_dict,
+)
 
 from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
     DiffusionRegPoseAPMetric,
@@ -72,6 +75,7 @@ def test_crowdpose_preprocessing_and_result_records_preserve_contract() -> None:
 
     assert records[0]["image_id"] == 42
     assert records[0]["category_id"] == 1
+    assert records[0]["bbox"] == [0.0] * 4
     assert records[0]["keypoints"] == [0.0] * 42
     assert records[0]["score"] == torch.tensor(0.9).item()
 
@@ -130,6 +134,7 @@ def test_diffusionregpose_metric_matches_reference_evaluator(tmp_path: Path) -> 
             {
                 "image_id": image_id,
                 "category_id": 1,
+                "bbox": annotation["bbox"],
                 "keypoints": annotation["keypoints"],
                 "score": 1.0,
             }
@@ -149,6 +154,7 @@ def test_diffusionregpose_metric_matches_reference_evaluator(tmp_path: Path) -> 
     assert actual["crowdpose/AP(E)"] == pytest.approx(expected["AP_E"], abs=1e-12)
     assert actual["crowdpose/AP(M)"] == pytest.approx(expected["AP_M"], abs=1e-12)
     assert actual["crowdpose/AP(H)"] == pytest.approx(expected["AP_H"], abs=1e-12)
+    assert expected["bbox/AP"] == pytest.approx(1.0, abs=1e-12)
 
 
 def test_diffusionregpose_bbox_metric_filters_labels_and_matches_perfect_boxes() -> None:
@@ -180,6 +186,26 @@ def test_evaluation_accepts_external_and_lightning_checkpoint_layouts() -> None:
 
     assert set(extract_model_state_dict(external)) == {"weight"}
     assert set(extract_model_state_dict(lightning)) == {"weight"}
+
+
+def test_selected_layer_evaluation_build_preserves_expansion_head_without_initializer() -> None:
+    config = DiffusionRegPosePipelineConfig(
+        backbone_pretrained=False,
+        pretrained_checkpoint="unused-edpose-initializer.pth",
+        pretrained_keep_encoder_layers=(2, 4, 6),
+        pretrained_keep_decoder_layers=(2, 4, 6),
+        num_queries=8,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=3,
+        num_decoder_layers=3,
+        num_box_decoder_layers=1,
+    )
+
+    model = build_evaluation_model(config, sampling_timesteps=1)
+
+    assert model.expansion_pose_embed is not None
+    assert model.pose_embed[0] is not model.expansion_pose_embed
 
 
 def test_debug_pipeline_can_reconstruct_its_small_model() -> None:

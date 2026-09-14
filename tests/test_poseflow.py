@@ -11,6 +11,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     DiffusionRegPoseOTAMatcher,
 )
 from src.models.pipelines.pose_estimators.poseflow import (
+    PoseFlowModel,
     PoseFlowPipelineConfig,
     build_poseflow_targets,
     flow_sample_keypoints,
@@ -52,6 +53,7 @@ def test_poseflow_config_builds_ota_matcher() -> None:
     ).build(max_epochs=1)
 
     assert isinstance(pipeline.criterion.matcher, DiffusionRegPoseOTAMatcher)
+    assert isinstance(pipeline.model, PoseFlowModel)
     assert pipeline.flow_sampling_steps == 1
 
 
@@ -104,11 +106,24 @@ def test_poseflow_hydra_config_has_distinct_identity_and_ota_default() -> None:
     config_dir = str((__file__.replace("/tests/test_poseflow.py", "/conf")))
     with initialize_config_dir(version_base="1.3", config_dir=config_dir):
         poseflow = OmegaConf.to_container(compose(config_name="benchmark_poseflow"), resolve=True)
-        diffusion = OmegaConf.to_container(compose(config_name="benchmark_diffusionregpose"), resolve=True)
+        control = OmegaConf.to_container(
+            compose(
+                config_name=(
+                    "benchmark_diffusionregpose_development_compatible_256_keep_layers_ota"
+                )
+            ),
+            resolve=True,
+        )
 
     assert poseflow["pipeline"]["matching_strategy"] == "ota"
     assert poseflow["run_name"] == "poseflow_training"
-    assert poseflow["pipeline"]["num_decoder_layers"] == diffusion["pipeline"]["num_decoder_layers"]
+    assert poseflow["pipeline"]["num_encoder_layers"] == 3
+    assert poseflow["pipeline"]["num_decoder_layers"] == 3
+    assert poseflow["pipeline"]["num_box_decoder_layers"] == 1
+    assert poseflow["pipeline"]["pretrained_keep_encoder_layers"] == [2, 4, 6]
+    assert poseflow["pipeline"]["pretrained_keep_decoder_layers"] == [2, 4, 6]
+    for section in ("data", "training", "hardware"):
+        assert poseflow[section] == control[section]
 
 
 def test_poseflow_rejects_zero_sampling_steps() -> None:

@@ -348,8 +348,8 @@ metrics through `src.eval.metrics`; box diffusion reports COCO bbox AP.
 
 The native evaluator loads the original DiffusionRegPose checkpoint format,
 performs deterministic DDIM keypoint sampling, writes CrowdPose-compatible
-predictions, and can calculate AP/AP-E/AP-M/AP-H when `crowdposetools` is
-installed:
+pose-and-box predictions, and can calculate keypoint AP/AP-E/AP-M/AP-H plus
+COCO bbox AP when `crowdposetools` is installed:
 
 ```bash
 python scripts/evaluation/evaluate_diffusionregpose.py \

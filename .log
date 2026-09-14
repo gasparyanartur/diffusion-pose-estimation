@@ -2354,6 +2354,19 @@ Modified files:
 - OTA currently averages 3.6169 positives per validation person versus
   Hungarian's one. No final-model conclusion is made before epoch 80.
 
+[2026-09-13] Completed selected-layer 256-pixel OTA comparison
+
+- The 80-epoch OTA run completed cleanly with valid epoch-079 and last
+  checkpoints.
+- Final validation AP: 0.703043 keypoint / 0.632079 bbox, versus the matched
+  Hungarian control's 0.630153 / 0.596394.
+- Final validation loss: 8.082775 OTA versus 9.574024 Hungarian. OTA retained
+  approximately 3.677 positives per person on validation; Hungarian retained
+  one.
+- Added `reports/diffusionregpose-ota-comparison.md` with the full AP/loss
+  trajectories, fairness audit, assignment diagnostics, artifact paths, and
+  checkpoint hashes.
+
 [2026-09-11] Added selected-layer EDPose transfer initialization
 
 - Added the opt-in `benchmark_diffusionregpose_development_compatible_256_keep_layers`
@@ -2409,5 +2422,72 @@ Modified files:
   Hydra identity, and validation. A compact real-model CPU forward/backward
   had finite total loss 72.6745; focused verification passed 92 tests and
   diff validation passed.
+
+[2026-09-13] Launched full PoseFlow training
+
+- Started visible tmux session poseflow-full-20260913_192742 with persistent
+  log results/poseflow_training/launch_20260913_192742.log and resolved output
+  results/poseflow_training/poseflow_training/20260913_192748.
+- The run uses the six encoder/six decoder full model, EDPose initialization,
+  source-prior endpoint padding, one Euler step, pose-aware OTA, batch 1 with
+  accumulation 8, and the 80-epoch reference schedule.
+- Startup verified CUDA, 49.3M trainable parameters, critical checkpoint
+  coverage at least 99.97%, and finite epoch-0 loss 245.0 at batch 34/12000.
+- The existing selected-layer OTA training process was left running.
+
+[2026-09-13] Corrected PoseFlow launch to match 256 OTA control
+
+- Stopped the initial full 6E/6D PoseFlow run after identifying that it was
+  not analogous to the active selected-layer 256 OTA control. Its short logs
+  remain under results/poseflow_training; no checkpoint was produced.
+- Removed the exact temporary resolved-config inspection files from /tmp.
+- PoseFlow now inherits the 3E/3D EDPose-layer-2/4/6 gate and has a resolved
+  config regression against benchmark_diffusionregpose_development_compatible_256_keep_layers_ota.
+  The regression found and corrected batch size to 4 and accumulation to 2.
+- Relaunched tmux session poseflow-keep-layers-ota-20260913_193133, with
+  output results/poseflow_training/poseflow_training/20260913_193139. Startup
+  confirmed CUDA, 40.3M trainable parameters, critical coverage at least
+  99.95%, and finite loss 85.40 at batch 27/3000.
+
+[2026-09-13] Corrected PoseFlow model identity
+
+- Stopped the short corrected-config run when its Lightning summary exposed
+  DiffusionRegPoseModel rather than a PoseFlow model identity.
+- Added PoseFlowModel, made its direct sampling API use fixed-source Euler
+  flow, and changed PoseFlow configuration to construct it explicitly before
+  strictly loading the checkpoint-shaped shared architecture state.
+- Verified PoseFlowPipelineConfig constructs PoseFlowModel and relaunched
+  tmux session poseflow-keep-layers-ota-20260913_193644. The resolved output
+  is results/poseflow_training/poseflow_training/20260913_193650; startup
+  reports PoseFlowModel and finite loss 115.0 at batch 15/3000.
 - Headless notebook execution passed with all artifact and finite-metric
   integrity checks; notebook validation and `git diff --check` also pass.
+[2026-09-13] Completed matched test AP evaluation for selected-layer OTA/Hungarian
+
+- Fixed standalone evaluator construction for selected-layer checkpoints by
+  preserving the expansion pose-head topology while disabling the EDPose
+  initializer load; added a regression test.
+- Extended CrowdPose result records/evaluation to include person boxes and
+  bbox AP alongside keypoint AP. Updated README, project/architecture docs,
+  and evaluator tests.
+- Evaluated both epoch-79 checkpoints on all 8,000 CrowdPose test images with
+  identical seed 42, one-step sampling, and 256/427 resize. OTA: keypoint AP
+  0.548950, bbox AP 0.518699. Hungarian: keypoint AP 0.515739, bbox AP
+  0.508753. OTA deltas: +0.033211 and +0.009947.
+- Persistent artifacts: `results/diffusionregpose_development_compatible_256_keep_layers_ota/test_eval_256_v3/`
+  and `results/diffusionregpose_development_compatible_256_keep_layers/test_eval_256_v3/`.
+- Verification: `venv/bin/python -m pytest -q tests/test_diffusionregpose_evaluation.py`
+  (10 passed); `git diff --check` passed.
+- Final regression check: evaluator plus DiffusionRegPose training tests passed
+  82 tests with one unrelated dependency deprecation warning.
+[2026-09-13] Updated OTA report with full-scale follow-up hypothesis
+
+- Added a report section noting that OTA leads on both validation and held-out
+  test AP in the selected-layer 256/427 experiment, motivating a full-scale
+  OTA/Hungarian comparison.
+- Specified the fair full-scale design: assignment strategy as the sole
+  intended training difference, with architecture, initialization, data,
+  optimizer, schedule, seed, precision, sampling, and evaluator fixed.
+- Explicitly recorded that full-scale transfer remains untested and that a
+  second seed is needed before making a general claim. No code or configs were
+  changed; `git diff --check` passed.

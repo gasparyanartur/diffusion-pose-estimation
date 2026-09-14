@@ -450,13 +450,23 @@ def crowdpose_result_records(
         iou_threshold=1.0,
     )
     records = []
-    for label, score, keypoints in zip(
-        result["labels"][keep], result["scores"][keep], result["keypoints"][keep]
+    for label, score, box, keypoints in zip(
+        result["labels"][keep],
+        result["scores"][keep],
+        result["boxes"][keep],
+        result["keypoints"][keep],
     ):
+        xmin, ymin, xmax, ymax = box.detach().cpu().tolist()
         records.append(
             {
                 "image_id": int(image_id),
                 "category_id": int(label.item()),
+                "bbox": [
+                    float(xmin),
+                    float(ymin),
+                    float(xmax - xmin),
+                    float(ymax - ymin),
+                ],
                 "keypoints": keypoints.detach().cpu().tolist(),
                 "score": float(score.item()),
             }
@@ -511,12 +521,26 @@ def evaluate_crowdpose_results(
         evaluator.accumulate()
         evaluator.summarize()
         difficulty = evaluator.get_type_result(first=0.2, second=0.8)
-        metrics = {
+        metrics: dict[str, float] = {
             "AP": float(evaluator.stats[0]),
             "AP_E": float(difficulty[0]),
             "AP_M": float(difficulty[1]),
             "AP_H": float(difficulty[2]),
         }
+        if detections and all("bbox" in detection for detection in detections):
+            bbox_detected = COCO.loadRes(ground_truth, detections)
+            bbox_evaluator = COCOeval(ground_truth, bbox_detected, "bbox")
+            bbox_evaluator.evaluate()
+            bbox_evaluator.accumulate()
+            bbox_evaluator.summarize()
+            metrics.update(
+                {
+                    "bbox/AP": float(bbox_evaluator.stats[0]),
+                    "bbox/AP50": float(bbox_evaluator.stats[1]),
+                    "bbox/AP75": float(bbox_evaluator.stats[2]),
+                    "bbox/AR": float(bbox_evaluator.stats[8]),
+                }
+            )
     finally:
         if not had_unicode:
             del builtins.unicode  # type: ignore[attr-defined]

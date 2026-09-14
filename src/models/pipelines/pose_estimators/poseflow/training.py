@@ -19,6 +19,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     update_diffusionregpose_ap_metric,
     update_diffusionregpose_bbox_ap_metric,
 )
+from .model import PoseFlowModel
 
 
 def _flow_generator(
@@ -211,12 +212,10 @@ class PoseFlowPipeline(DiffusionRegPosePipeline):
         generator: torch.Generator | None = None,
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
         """Sample endpoint-flow pose predictions with the configured solver."""
-        return flow_sample_keypoints(
-            self.model,
+        return self.model.sample_keypoints(
             images,
             padding_mask=padding_mask,
             num_proposals=num_proposals,
-            sampling_steps=self.flow_sampling_steps,
             generator=generator,
         )
 
@@ -264,10 +263,39 @@ class PoseFlowPipelineConfig(DiffusionRegPosePipelineConfig):
             raise ValueError("flow_sampling_steps must be positive")
         return value
 
+    def _build_poseflow_model(self) -> PoseFlowModel:
+        return PoseFlowModel(
+            backbone_pretrained=self.backbone_pretrained,
+            timesteps=self.timesteps,
+            sampling_timesteps=self.sampling_timesteps,
+            num_queries=self.num_queries,
+            num_proposals=self.num_proposals,
+            num_classes=self.num_classes,
+            num_feature_levels=self.num_feature_levels,
+            num_encoder_layers=self.num_encoder_layers,
+            num_decoder_layers=self.num_decoder_layers,
+            hidden_dim=self.hidden_dim,
+            feedforward_dim=self.feedforward_dim,
+            num_heads=self.num_heads,
+            num_body_points=self.num_body_points,
+            num_box_decoder_layers=self.num_box_decoder_layers,
+            num_group=self.num_group,
+            dn_number=self.dn_number,
+            dn_box_noise_scale=self.dn_box_noise_scale,
+            dn_label_noise_ratio=self.dn_label_noise_ratio,
+            freeze_backbone_stem_and_layer1=self.freeze_backbone_stem_and_layer1,
+            freeze_backbone=self.freeze_backbone,
+            freeze_backbone_and_transformer=self.freeze_backbone_and_transformer,
+            separate_expansion_pose_head=self.pretrained_keep_decoder_layers is not None,
+            flow_sampling_steps=self.flow_sampling_steps,
+        )
+
     def build(self, **kwargs) -> PoseFlowPipeline:
         diffusion_pipeline = super().build(**kwargs)
+        model = self._build_poseflow_model()
+        model.load_state_dict(diffusion_pipeline.model.state_dict(), strict=True)
         return PoseFlowPipeline(
-            diffusion_pipeline.model,
+            model,
             diffusion_pipeline.criterion,
             lr=diffusion_pipeline.lr,
             lr_backbone=diffusion_pipeline.lr_backbone,

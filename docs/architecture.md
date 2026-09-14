@@ -245,7 +245,11 @@ construction follows the external same-seed initialization/reset order, and
 validation fences CPU/CUDA RNG use while the runner skips Lightning sanity
 validation by default. The
 published DiffusionRegPose checkpoint is an evaluation/parity target, not the
-training initialization.
+training initialization. DiffusionRegPose `test_step` currently records test
+losses only; full test-split keypoint and bbox AP is produced by
+[`scripts/evaluation/evaluate_diffusionregpose.py`](../scripts/evaluation/evaluate_diffusionregpose.py)
+so it uses the same sampled pose-NMS output and explicit evaluation resize as
+the validation metrics.
 
 The training entry point has passed one-image CPU and CUDA Lightning smoke
 runs, including checkpoint creation and restore. The reduced smoke

@@ -1304,6 +1304,7 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
         *,
         max_epochs: int | None = None,
         val_ann_file: str | None = None,
+        load_pretrained_checkpoint: bool = True,
     ) -> DiffusionRegPosePipeline:
         keep_encoder_layers = self.pretrained_keep_encoder_layers
         keep_decoder_layers = self.pretrained_keep_decoder_layers
@@ -1340,7 +1341,7 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
             freeze_backbone_and_transformer=self.freeze_backbone_and_transformer,
             separate_expansion_pose_head=keep_decoder_layers is not None,
         )
-        if self.pretrained_checkpoint:
+        if self.pretrained_checkpoint and load_pretrained_checkpoint:
             checkpoint_path = Path(self.pretrained_checkpoint).expanduser()
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
             state = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))

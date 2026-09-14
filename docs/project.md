@@ -88,7 +88,9 @@ Visible-mask: `visible = visibility == 2`.
   pose-NMS outputs. The bbox metric uses
   `crowdposetools.COCOeval(iou_type="bbox")`; the keypoint metric retains its
   CrowdPose keypoint contract. Standard keypoint metrics are `AP`, `AP .5`,
-  `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`.
+  `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`. The Lightning test step records
+  losses only; the standalone DiffusionRegPose evaluator is the canonical
+  full-test AP path and emits both pose and bbox metrics.
 
 ## Model families
 
