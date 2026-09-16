@@ -2491,3 +2491,226 @@ Modified files:
 - Explicitly recorded that full-scale transfer remains untested and that a
   second seed is needed before making a general claim. No code or configs were
   changed; `git diff --check` passed.
+
+[2026-09-14] Evaluated final PoseFlow checkpoint on CrowdPose test
+
+- Added the PoseFlow-specific evaluator so resolved PoseFlowModel construction
+  and fixed-source Euler sampling are used rather than the diffusion evaluator.
+- Evaluated epoch079.ckpt from the completed selected-layer 256/427 run over
+  all 8,000 CrowdPose test images. Prediction JSON and metrics are stored in
+  results/poseflow_training/poseflow_training/20260914_020329/evaluation_epoch079.
+- Test keypoint AP is 0.5501265; bbox AP is 0.5196890. Subset keypoint AP:
+  easy 0.6221, medium 0.5529, hard 0.4808.
+
+[2026-09-14] Added ablatable PoseFlow pose-hypothesis codebook
+
+- Added an optional shared learned codebook read by post-image-attention pose
+  decoder queries through a zero-gated residual. The default disabled setting
+  introduces no tensors and preserves the existing path exactly.
+- Added strict initialization protection, configuration validation, matched
+  C=16 Hydra preset, and focused codebook/configuration contracts.
+- Corrected the new preset's batch size and gradient accumulation after its
+  resolved-control regression caught a mismatch. Verification: 46 focused
+  tests passed; `git diff --check` passed.
+
+[2026-09-14] Launched C=16 PoseFlow codebook experiment
+
+- Started the matched 256/427 selected-layer PoseFlow codebook run in visible
+  tmux session `poseflow-codebook-c16-20260914`. Persistent log:
+  `results/poseflow_codebook_training/launch_20260914_181000.log`; resolved
+  output: `results/poseflow_codebook_training/poseflow_codebook_training/20260914_183611`.
+- Startup confirms 3E/3D EDPose layer remapping 2/4/6, 50 groups/proposals,
+  OTA, source-prior flow, one Euler step, batch 4/accumulation 2, C=16 at pose
+  layer 1, and finite epoch-0 loss 70.50 at batch 71/3000.
+
+[2026-09-14] Launched bare PoseFlow multi-step evaluation sweep
+
+- Added an evaluation-only `--flow-sampling-steps` override with positive-value
+  validation and metric metadata for checkpoint, step count, renewal=false,
+  and ensemble=false.
+- Focused evaluator/PoseFlow tests passed: 8 passed.
+- Launched full CrowdPose S=1/S=2/S=3 evaluation sequentially in tmux session
+  `poseflow_steps_20260914`; persistent outputs are under the completed run's
+  `evaluation_steps/` directory. The sweep was still running at this entry.
+
+[2026-09-14] Completed PoseFlow bare S=1 to S=3 evaluation
+
+- Full CrowdPose keypoint AP was 0.5501151 (S=1), 0.5500688 (S=2), and
+  0.5500492 (S=3), with no renewal or ensemble. The observed decline is tiny.
+- Queued S=4/S=6/S=8 evaluations were stopped safely during S=4 after a
+  separate PoseFlow codebook-training process was found on the GPU. Partial
+  S=4 logs were retained; no incomplete metric was reported.
+- The user subsequently authorized concurrent GPU evaluation; the extended
+  sweep will be resumed under separate tmux/log artifacts.
+
+[2026-09-14] Completed extended bare PoseFlow step sweep
+
+- Full CrowdPose keypoint AP: S=4 0.5500518, S=6 0.5500440, S=8 0.5500420.
+  Together with S=1..3, the range is only 0.0000731 AP; bbox AP is likewise
+  effectively flat.
+- The S=4/S=6/S=8 evaluator ran concurrently with the user-approved codebook
+  training process and completed without memory failure. Outputs reside in
+  `results/poseflow_training/poseflow_training/20260914_020329/evaluation_steps/`.
+
+[2026-09-14] Stopped invalid C=16 PoseFlow codebook run
+
+- Audit found that the zero-gate fast path bypassed autograd, leaving the saved
+  gate exactly zero and all codebook tensors without gradients. The CUDA
+  `.item()` scalar read was the only active codebook operation and likely
+  explains the severe synchronization-related slowdown.
+- Also found that active codebook attention would have conditioned denoising
+  queries, contrary to the clean-pose-only ablation contract. Stopped at epoch
+  10/batch 1236; retained artifacts for diagnosis only, not result reporting.
+
+[2026-09-14] Repaired PoseFlow codebook gating and DN isolation
+
+- Removed the zero-gate autograd bypass. A zero gate now preserves exact output
+  while receiving a finite nonzero gradient; codebook attention can learn.
+- DN queries are now split out and passed through unchanged. Only clean
+  expanded person/joint queries read the shared codebook during training.
+- Focused PoseFlow tests: 21 passed. A CUDA batch-4 256x256 forward/backward
+  timing measured 146.5 ms for C=0 and 154.9 ms for C=16, a 5.7% increase.
+
+[2026-09-14] Relaunched corrected C=16 PoseFlow codebook experiment
+
+- Started tmux session `poseflow-codebook-c16-fixed-20260914`; persistent log
+  `results/poseflow_codebook_training/launch_fixed_20260914.log`, resolved run
+  `results/poseflow_codebook_training/poseflow_codebook_training/20260914_224522`.
+- Startup verified the matched 256/427 3E/3D OTA setup and finite loss 70.70
+  at epoch-0 batch 86. A full synthetic loss/backward timing found no material
+  C=16 overhead versus C=0 (471.7 ms versus 476.8 ms median); monitor live
+  data-path throughput separately.
+
+[2026-09-15] Corrected PoseFlow cross-step candidate aggregation
+
+- Replaced raw query concatenation for `flow_ensemble` with ordered per-step
+  prediction retention. The evaluator now performs each step's normal top-N
+  candidate selection, aggregates candidate records, and runs one cross-step
+  pose NMS; bare and renewal-only evaluation are unchanged.
+- Added sampler and evaluator regression coverage. Focused tests passed
+  (35 tests), `git diff --check` passed, and a one-image CUDA smoke verified
+  150 S=3 candidates before NMS and 20 survivors. Full renewal-0.1 plus
+  corrected-ensemble evaluation completed with keypoint/bbox AP
+  `0.5507748/0.5199050`, 1,200,000 candidates before NMS, and 118,199 after.
+  The +0.00073 AP change over bare S=3 is below the 0.005 gate and is not
+  causal evidence because the current standalone evaluator has no fixed-source
+  generator across separate runs.
+
+[2026-09-15] Added active shared C=128 PoseFlow codebook preset
+
+- Added one C=128 pose-hypothesis codebook reused after image attention at
+  decoder layers 0, 1, and 2. The shared token bank, attention projections,
+  and residual gate add 295,937 parameters total.
+- Added `pose_codebook_initial_gate`; the new matched 256/427 OTA preset uses
+  0.1 so embeddings and attention projections receive first-step gradients.
+  DN prefixes remain unchanged at every selected decoder layer.
+- Focused PoseFlow tests passed (25 tests), and a CUDA 128x128 inference smoke
+  produced finite `[1,50,*]` predictions with the full C=128 configuration.
+
+[2026-09-16] Added PoseFlow codebook diagnostics for future runs
+
+- Added detached clean-query gate, query/attention/residual RMS, and
+  residual-to-query RMS metrics for enabled codebooks. DN prefixes remain
+  excluded.
+- Added normalized attention entropy and effective-slot count on validation
+  batch zero only, keeping training attention on its no-weight path.
+- Focused PoseFlow tests passed (28 tests), `git diff --check` passed, and a
+  full C=128 CUDA smoke reported finite scale and slot-use diagnostics.
+
+[2026-09-16] Implemented PoseFlow V3 joint-state pipeline
+
+- Added a separate PoseFlow V3 model/config/checkpoint family: signed two-corner
+  boxes plus keypoint XY are transported together, with a 200-slot pool that
+  carries 50 selected source-paired slots and refills 150 fresh slots.
+- The first box decoder blends image/state geometry by `g(t)=0.5t`, preserving
+  image evidence from 1.0 at t=0 to 0.5 at t=1. V3 includes a matched
+  state-gate-off preset and rejects the incompatible score-renewal override.
+- Verified 50 focused tests, clean diff whitespace, CPU forward/backward with
+  nonzero state-embedding gradients, and two-step recurrent sampling. Existing
+  GPU jobs were left uninterrupted; no training result is claimed.
+- The real 256/427 V3 config also constructed from the selected EDPose
+  initialization with its intended 200/50 pool and 74,240 new state-embedding
+  parameters. The expected transfer-initialization coverage warning remained
+  confined to the existing selected-layer checkpoint mapping.
+
+[2026-09-16] Replaced active codebook run and launched PoseFlow V3
+
+- Per user request, stopped the active C=128 codebook process at epoch 61 and
+  preserved its checkpoints and log. The unrelated DiffusionRegPose process
+  was not touched.
+- The first V3 launch failed before its first optimizer update because the
+  state-to-joint gate used `[1, B, 1, 1]` against `[group, joint, B, xy]`.
+  Corrected it to `[1, 1, B, 1]`, added a multi-image regression, and reran
+  the focused suite successfully (51 tests).
+- Relaunched the 256/427 OTA gate-on V3 run in tmux `poseflow-v3-20260916`.
+  Persistent log: `results/poseflow_v3_training/launch_20260916_132333.log`;
+  resolved output: `results/poseflow_v3_training/poseflow_v3_training/20260916_132338`.
+  It passed 120+ finite batch-4 optimizer steps at about 3.14 it/s.
+
+[2026-09-16] Started PoseFlow V4 hypothesis-stage implementation
+
+- Added fixed Fourier coordinate encoding and a standalone V4 hypothesis stage:
+  learned slot identity plus timestep and gated current coordinate state form
+  each query before position-aware cross-attention over image tokens.
+- The stage recomputes its hypothesis on every flow call; no latent is carried.
+  Focused PoseFlow tests passed (40 tests).
+
+[2026-09-16] Completed PoseFlow V4 coordinate-hypothesis pipeline
+
+- Added the separate V4 checkpoint family and matched control. It uses all
+  encoded image locations with spatial/level position as cross-attention tokens;
+  learned slot identity, timestep, and fixed-gated Fourier state form an
+  independent hypothesis on every Euler call. No latent is carried between
+  calls.
+- The hypothesis emits two box corners plus 14 joints, selects 50 people, and
+  all three decoder layers refine both box and pose. Hypothesis and refiners
+  receive independent complete OTA losses; DN retains explicit correspondence.
+  Added V4 pipeline and benchmark Hydra presets plus project/architecture/usage
+  documentation.
+- Verified 58 focused tests, CPU forward/backward, OTA/DN loss routing,
+  coordinate-prior control equality, S=3 sampling, resolved 256/427 selected
+  EDPose construction, Python compilation, and clean diff whitespace. No V4
+  training or AP result is claimed. A one-image CUDA OTA/DN forward-backward
+  smoke also completed with finite loss 69.979462 without interrupting V3.
+
+[2026-09-16] Launched PoseFlow V4 learning run
+
+- Started gate-on V4 in tmux `poseflow-v4-20260916`; persistent log
+  `results/poseflow_v4_training/launch_20260916.log` and resolved outputs under
+  `results/poseflow_v4_training/poseflow_v4_training/`.
+- The first attempt also started the V4 control by mistake. Per user
+  clarification, stopped only tmux `poseflow-v4-control-20260916`; its partial
+  log is retained for diagnosis and must not be interpreted as an experiment.
+  Existing V3 training remains active.
+
+[2026-09-16] Added PoseFlow V4 activity diagnostics
+
+- Added detached train/validation metrics for time/gate, coordinate context,
+  image-token attention update, hypothesis scale, selected initial score, and
+  selected hypothesis-to-final box/pose movement. Added named loss aliases for
+  the hypothesis and each refiner, without changing optimized losses, matching,
+  predictions, or sampling.
+- Added endpoint, output-equality, finite/detached, movement, and logging-name
+  regressions. Focused tests passed (61), Python compilation passed, and
+  `git diff --check` passed. The pre-diagnostic V4 run must be restarted into a
+  separate results directory before these metrics can be observed.
+
+[2026-09-16] Restarted V4 with diagnostics
+
+- Stopped only `poseflow-v4-20260916` and preserved its pre-diagnostic log and
+  artifacts as non-comparable. V3 was left running.
+- Started `poseflow-v4-diagnostics-20260916` with the same 256/427 OTA V4
+  benchmark, batch 4 and accumulation 2. New persistent log:
+  `results/poseflow_v4_diagnostics_training/launch_20260916_2208.log`.
+  The process initialized its 43.0M-parameter V4 model and reached finite
+  optimizer steps. Do not combine this run's metrics with the earlier V4 run.
+
+[2026-09-16] Corrected V4 diagnostics launch to resume the original run
+
+- Diagnostics are strictly observational, so the original V4 checkpoint was
+  compatible. Stopped the short fresh diagnostic run and resumed from original
+  `epoch001.ckpt`, restoring model, optimizer, scheduler, and trainer state.
+- Active tmux: `poseflow-v4-resumed-diagnostics-20260916`; persistent log:
+  `results/poseflow_v4_resumed_diagnostics_training/launch_20260916_2213.log`.
+  Restore completed and training resumed at epoch 2. Only the old, partial
+  epoch 2 after the epoch-1 checkpoint was lost; V3 was not interrupted.

@@ -314,6 +314,10 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             nn.init.xavier_uniform_(projection[0].weight)
             nn.init.constant_(projection[0].bias, 0.0)
 
+    def post_image_attention_by_layer(self) -> dict[int, nn.Module] | None:
+        """Return optional decoder conditioning inserted after image attention."""
+        return None
+
     def prepare_transformer_inputs(self, images: Tensor, padding_mask: Tensor) -> TransformerInputs:
         features, masks, positions = self.backbone(images, padding_mask)
         projected = [projection(feature) for projection, feature in zip(self.input_proj, features)]
@@ -494,6 +498,8 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         timesteps: Tensor,
         targets: list[dict[str, Tensor]] | None = None,
         padding_mask: Tensor | None = None,
+        collect_post_image_attention_diagnostics: bool = False,
+        collect_post_image_attention_weights: bool = False,
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
         if padding_mask is None:
             padding_mask = torch.zeros(
@@ -517,6 +523,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             )
             query_features = torch.cat((dn_features, query_features), dim=1)
             reference_boxes = torch.cat((dn_references, reference_boxes), dim=1)
+        denoising_query_count = self.transformer.decoder.num_dn if denoising else 0
         decoder_features, decoder_references = self.transformer.decoder(
             query_features.transpose(0, 1),
             memory,
@@ -538,10 +545,14 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
                 if denoising else self.inference_attention_mask(images.shape[0], images.device)
             ),
             diffusion_keypoints=((diffusion_keypoints / self.scale) + 1.0) / 2.0,
+            post_image_attention_by_layer=self.post_image_attention_by_layer(),
+            denoising_query_count=denoising_query_count,
+            collect_post_image_attention_diagnostics=collect_post_image_attention_diagnostics,
+            collect_post_image_attention_weights=collect_post_image_attention_weights,
         )
         decoder_outputs = []
         denoising_outputs = []
-        dn_count = self.transformer.decoder.num_dn if denoising else 0
+        dn_count = denoising_query_count
         for features, references, box_head, class_head in zip(
             decoder_features,
             decoder_references[:-1],

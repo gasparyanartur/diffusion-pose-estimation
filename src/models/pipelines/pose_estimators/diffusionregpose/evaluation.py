@@ -271,16 +271,14 @@ def _crowdpose_pose_nms_keep(keypoints: Tensor, scores: Tensor, num_body_points:
     return torch.tensor(keep, dtype=torch.long, device=keypoints.device)
 
 
-@torch.no_grad()
-def postprocess_crowdpose(
+def _select_crowdpose_candidates(
     outputs: dict[str, Tensor],
     target_sizes: Tensor,
     *,
-    num_body_points: int = 14,
-    pose_nms: bool = True,
-    nms_target_sizes: Tensor | None = None,
-) -> list[dict[str, Tensor]]:
-    """Convert normalized model predictions into CrowdPose result records."""
+    num_body_points: int,
+    nms_target_sizes: Tensor | None,
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Select one class-expanded candidate per query before pose suppression."""
     logits = outputs["pred_logits"]
     boxes = outputs["pred_boxes"]
     keypoints = outputs["pred_keypoints"]
@@ -295,15 +293,10 @@ def postprocess_crowdpose(
     if keypoints.shape[-1] != num_body_points * 3:
         raise ValueError("keypoint channel count does not match num_body_points")
 
-    batch_size, query_count, class_count = logits.shape
-    select_count = query_count
-    probabilities = logits.sigmoid()
-    # The reference performs this top-k independently on each flattened
-    # image tensor.  Keeping the one-dimensional operation preserves its
-    # candidate order, which the subsequent pose NMS intentionally uses.
+    _, query_count, class_count = logits.shape
     selected = [
-        image_probabilities.flatten(0, 1).topk(select_count, sorted=False)
-        for image_probabilities in probabilities
+        image_probabilities.flatten(0, 1).topk(query_count, sorted=False)
+        for image_probabilities in logits.sigmoid()
     ]
     scores = torch.stack([item.values for item in selected])
     flattened_indices = torch.stack([item.indices for item in selected])
@@ -311,12 +304,11 @@ def postprocess_crowdpose(
     labels = flattened_indices % class_count
 
     raw_boxes = box_cxcywh_to_xyxy(boxes)
-    boxes = torch.gather(raw_boxes, 1, query_indices[..., None].expand(-1, -1, 4))
+    selected_boxes = torch.gather(raw_boxes, 1, query_indices[..., None].expand(-1, -1, 4))
     height, width = target_sizes.unbind(1)
     box_scale = torch.stack((width, height, width, height), dim=1)
-    boxes = boxes * box_scale[:, None]
+    selected_boxes = selected_boxes * box_scale[:, None]
 
-    raw_keypoints = keypoints
     selected_keypoints = torch.gather(
         keypoints,
         1,
@@ -334,9 +326,6 @@ def postprocess_crowdpose(
     if nms_target_sizes is None:
         nms_target_sizes = target_sizes
     nms_height, nms_width = nms_target_sizes.unbind(1)
-    # The evaluator passes the raw xy...y channels to its legacy NMS helper.
-    # That helper expects all x channels followed by all y channels, so it
-    # scales the first half by width and the second half by height.
     nms_coordinate_scale = torch.cat(
         (
             nms_width[:, None].expand(-1, num_body_points),
@@ -345,8 +334,29 @@ def postprocess_crowdpose(
         dim=1,
     )
     nms_coordinates = selected_keypoints[..., : num_body_points * 2] * nms_coordinate_scale[:, None]
+    nms_keypoints = torch.cat((nms_coordinates, visibility), dim=-1)
+    return scores, labels, selected_boxes, serialized_keypoints, nms_keypoints
+
+
+@torch.no_grad()
+def postprocess_crowdpose(
+    outputs: dict[str, Tensor],
+    target_sizes: Tensor,
+    *,
+    num_body_points: int = 14,
+    pose_nms: bool = True,
+    nms_target_sizes: Tensor | None = None,
+) -> list[dict[str, Tensor]]:
+    """Convert normalized model predictions into CrowdPose result records."""
+    logits = outputs["pred_logits"]
+    scores, labels, boxes, serialized_keypoints, nms_keypoints = _select_crowdpose_candidates(
+        outputs,
+        target_sizes,
+        num_body_points=num_body_points,
+        nms_target_sizes=nms_target_sizes,
+    )
+    class_count = logits.shape[-1]
     if pose_nms:
-        nms_keypoints = torch.cat((nms_coordinates, visibility), dim=-1)
         results = []
         for batch_index, (image_scores, image_labels, image_boxes, image_keypoints, nms_image_keypoints) in enumerate(
             zip(scores, labels, boxes, serialized_keypoints, nms_keypoints)
@@ -390,6 +400,54 @@ def postprocess_crowdpose(
             scores, labels, boxes, serialized_keypoints
         )
     ]
+
+
+@torch.no_grad()
+def postprocess_crowdpose_step_ensemble(
+    step_outputs: list[dict[str, Tensor]],
+    target_sizes: Tensor,
+    *,
+    num_body_points: int = 14,
+    pose_nms: bool = True,
+    nms_target_sizes: Tensor | None = None,
+) -> list[dict[str, Tensor]]:
+    """Select candidates per flow step, then suppress once across all steps."""
+    if not step_outputs:
+        raise ValueError("step_outputs must contain at least one flow prediction")
+    per_step = [
+        _select_crowdpose_candidates(
+            outputs,
+            target_sizes,
+            num_body_points=num_body_points,
+            nms_target_sizes=nms_target_sizes,
+        )
+        for outputs in step_outputs
+    ]
+    batch_size = target_sizes.shape[0]
+    if any(candidates[0].shape[0] != batch_size for candidates in per_step):
+        raise ValueError("step prediction batch sizes must match target_sizes")
+
+    results = []
+    for batch_index in range(batch_size):
+        scores, labels, boxes, keypoints, nms_keypoints = (
+            torch.cat([candidates[field][batch_index] for candidates in per_step], dim=0)
+            for field in range(5)
+        )
+        keep = (
+            _crowdpose_pose_nms_keep(nms_keypoints, scores, num_body_points)
+            if pose_nms
+            else torch.arange(scores.shape[0], device=scores.device)
+        )
+        kept_scores = scores.index_select(0, keep)
+        order = kept_scores.argsort(descending=True)
+        keep = keep.index_select(0, order)
+        results.append({
+            "scores": scores.index_select(0, keep),
+            "labels": labels.index_select(0, keep),
+            "boxes": boxes.index_select(0, keep),
+            "keypoints": keypoints.index_select(0, keep),
+        })
+    return results
 
 
 def resize_crowdpose_eval_image(

@@ -302,11 +302,18 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.linear1, self.dropout3 = nn.Linear(d_model, d_ffn), nn.Dropout(dropout)
         self.linear2, self.dropout4, self.norm3 = nn.Linear(d_ffn, d_model), nn.Dropout(dropout), nn.LayerNorm(d_model)
 
-    def forward(self, tgt, *, tgt_query_pos, tgt_reference_points, memory, memory_level_start_index, memory_spatial_shapes, memory_key_padding_mask=None, self_attn_mask=None):
+    def forward(self, tgt, *, tgt_query_pos, tgt_reference_points, memory, memory_level_start_index, memory_spatial_shapes, memory_key_padding_mask=None, self_attn_mask=None, post_image_attention=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
         attended = self.self_attn(tgt + tgt_query_pos, tgt + tgt_query_pos, tgt, attn_mask=self_attn_mask)[0]
         tgt = self.norm2(tgt + self.dropout2(attended))
         crossed = self.cross_attn((tgt + tgt_query_pos).transpose(0, 1), tgt_reference_points.transpose(0, 1).contiguous(), memory, memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1)
         tgt = self.norm1(tgt + self.dropout1(crossed))
+        if post_image_attention is not None:
+            tgt = post_image_attention(
+                tgt,
+                denoising_query_count=denoising_query_count,
+                collect_diagnostics=collect_post_image_attention_diagnostics,
+                collect_attention=collect_post_image_attention_weights,
+            )
         return self.norm3(tgt + self.dropout4(self.dropout3(self.linear2(F.relu(self.linear1(tgt))))))
 
 
@@ -351,9 +358,17 @@ class DeformableTransformerDecoder(nn.Module):
         self.hw, self.keypoint_embed = nn.Embedding(num_body_points, 2), nn.Embedding(num_body_points, d_model)
         self.kpt_index = [i for i in range(num_group * (num_body_points + 1)) if i % (num_body_points + 1) != 0]
 
-    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, tgt_mask2=None, diffusion_keypoints=None):
-        output, reference_points = tgt, refpoints_unsigmoid.sigmoid()
+    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, tgt_mask2=None, diffusion_keypoints=None, initial_reference_points=None, state_keypoint_gate=None, return_selection_metadata=False, post_image_attention_by_layer=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
+        if initial_reference_points is not None and initial_reference_points.shape != refpoints_unsigmoid.shape:
+            raise ValueError("initial_reference_points must match refpoints_unsigmoid")
+        output = tgt
+        reference_points = (
+            refpoints_unsigmoid.sigmoid()
+            if initial_reference_points is None
+            else initial_reference_points
+        )
         intermediate, references = [], [reference_points]
+        selection_metadata: dict[str, Tensor] | None = None
         for layer_id, layer in enumerate(self.layers):
             reference_points_input = reference_points[:, :, None] * torch.cat((valid_ratios, valid_ratios), -1)[None]
             query_pos = self.ref_point_head(sine_embedding_for_position(
@@ -361,7 +376,10 @@ class DeformableTransformerDecoder(nn.Module):
                 num_pos_feats=self.d_model // 2,
             ))
             layer_mask = tgt_mask if layer_id < self.num_box_decoder_layers else tgt_mask2
-            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask)
+            post_image_attention = None
+            if post_image_attention_by_layer is not None:
+                post_image_attention = post_image_attention_by_layer.get(layer_id)
+            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask, post_image_attention=post_image_attention, denoising_query_count=denoising_query_count, collect_post_image_attention_diagnostics=collect_post_image_attention_diagnostics, collect_post_image_attention_weights=collect_post_image_attention_weights)
             intermediate.append(self.norm(output))
 
             if self.bbox_embed is not None and layer_id < self.num_box_decoder_layers:
@@ -370,8 +388,11 @@ class DeformableTransformerDecoder(nn.Module):
                 ).sigmoid()
 
             if layer_id == self.num_box_decoder_layers - 1 and diffusion_keypoints is not None:
-                output, reference_points = self._expand_keypoint_queries(
-                    output, reference_points, diffusion_keypoints
+                output, reference_points, selection_metadata = self._expand_keypoint_queries(
+                    output,
+                    reference_points,
+                    diffusion_keypoints,
+                    state_keypoint_gate=state_keypoint_gate,
                 )
             elif layer_id >= self.num_box_decoder_layers and self.bbox_embed is not None:
                 output, reference_points = self._update_expanded_queries(
@@ -380,11 +401,22 @@ class DeformableTransformerDecoder(nn.Module):
             references.append(reference_points)
             reference_points = reference_points.detach()
 
-        return [item.transpose(0, 1) for item in intermediate], [item.transpose(0, 1) for item in references]
+        decoder_outputs = [item.transpose(0, 1) for item in intermediate]
+        decoder_references = [item.transpose(0, 1) for item in references]
+        if return_selection_metadata:
+            if selection_metadata is None:
+                raise RuntimeError("decoder did not expand person queries")
+            return decoder_outputs, decoder_references, selection_metadata
+        return decoder_outputs, decoder_references
 
     def _expand_keypoint_queries(
-        self, output: Tensor, reference_points: Tensor, diffusion_keypoints: Tensor
-    ) -> tuple[Tensor, Tensor]:
+        self,
+        output: Tensor,
+        reference_points: Tensor,
+        diffusion_keypoints: Tensor,
+        *,
+        state_keypoint_gate: Tensor | None,
+    ) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         if self.class_embed is None or self.pose_embed is None:
             raise RuntimeError("prediction heads must be attached before query expansion")
         batch_size = output.shape[1]
@@ -407,18 +439,45 @@ class DeformableTransformerDecoder(nn.Module):
         point_wh = self.hw.weight[: self.num_body_points, None, :].sigmoid() * box_references[:, None, :, 2:]
         point_references = torch.cat((point_xy, point_wh), dim=-1)
 
-        diffusion_xy = diffusion_keypoints[:, :group_count].reshape(batch_size, group_count, self.num_body_points, 2)
-        diffusion_xy = diffusion_xy.permute(1, 0, 2, 3).reshape(group_count, batch_size, self.num_body_points, 2)
-        point_reference_xy = self._refine_diffusion_keypoints(diffusion_xy, point_references[..., :2])
+        if state_keypoint_gate is None:
+            diffusion_xy = diffusion_keypoints[:, :group_count].reshape(batch_size, group_count, self.num_body_points, 2)
+            diffusion_xy = diffusion_xy.permute(1, 0, 2, 3).reshape(group_count, batch_size, self.num_body_points, 2)
+            point_reference_xy = self._refine_diffusion_keypoints(
+                diffusion_xy, point_references[..., :2]
+            )
+        else:
+            if state_keypoint_gate.shape != (batch_size,):
+                raise ValueError("state_keypoint_gate must contain one value per batch item")
+            state_indices = selected.transpose(0, 1)
+            state_index = state_indices[..., None].expand(
+                batch_size, group_count, diffusion_keypoints.shape[-1]
+            )
+            selected_state = torch.gather(diffusion_keypoints, 1, state_index)
+            selected_xy = selected_state.reshape(
+                batch_size, group_count, self.num_body_points, 2
+            ).permute(1, 2, 0, 3)
+            gate = state_keypoint_gate[None, None, :, None]
+            point_reference_xy = (
+                (1.0 - gate) * point_references[..., :2] + gate * selected_xy
+            )
         point_references = torch.cat((point_reference_xy, point_references[..., 2:]), dim=-1)
 
         expanded_output = torch.cat((box_features[:, None], point_features), dim=1)
         expanded_references = torch.cat((box_references[:, None], point_references), dim=1)
         expanded_output = expanded_output.flatten(0, 1)
         expanded_references = expanded_references.flatten(0, 1)
+        metadata = {
+            "selected_person_indices": selected.transpose(0, 1),
+            "selected_person_features": box_features.transpose(0, 1),
+            "selected_person_references": box_references.transpose(0, 1),
+        }
         if dn_count:
-            return torch.cat((dn_output, expanded_output)), torch.cat((dn_references, expanded_references))
-        return expanded_output, expanded_references
+            return (
+                torch.cat((dn_output, expanded_output)),
+                torch.cat((dn_references, expanded_references)),
+                metadata,
+            )
+        return expanded_output, expanded_references, metadata
 
     def _refine_diffusion_keypoints(self, diffusion_xy: Tensor, reference_xy: Tensor) -> Tensor:
         group_count, batch_size, point_count, _ = diffusion_xy.shape

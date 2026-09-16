@@ -219,8 +219,66 @@ criterion targets. Source-prior endpoint padding is explicit and does not
 create positives. At inference PoseFlow uses flow_sampling_steps forward-Euler
 decoder calls; each update subtracts the fixed original source from the
 predicted endpoint. It deliberately does not reuse DDIM/noise reconstruction.
+Optional renewal restarts weak slots with a paired fresh source/state, while
+optional ensemble selects candidates independently within each call, aggregates
+those candidates, and applies one cross-step pose NMS.
 The changed time semantics mean EDPose initialization is permitted, but a
 trained diffusion checkpoint is not flow-compatible.
+
+PoseFlow V3 is a distinct checkpoint family. Its person state is two signed
+corner points followed by keypoint XY, in the same fixed-source endpoint-flow
+coordinates. A 200-slot decoder pool is fully fresh at the first call. Later
+calls carry the 50 selected state/source/query-feature/reference tuples and
+append 150 fresh source-prior tuples. The first box-attention call uses the
+raw state-derived `cxcywh` geometry without sorting or projecting corners;
+its spatial reference is `(1 - 0.5t) * image + 0.5t * state`. Image-derived
+query content remains present at every time. The selected box references seed
+joint references, blended by the same gate. Score-threshold renewal is not a
+V3 option because the 50+150 refill is the explicit renewal mechanism. The
+matched control retains this complete pool and refill but disables both state
+geometry and state-feature conditioning.
+
+PoseFlow V4 retains V3's two-corner-plus-keypoint coordinate state and 50+150
+source-paired pool, but changes the proposal stage. Flattened multi-scale
+encoder locations become image tokens after explicit spatial/level positional
+projection. At each flow call, a learned slot identity, projected timestep, and
+fixed-gated (`0.5t`) Fourier encoding of the current coordinate state form 200
+queries; ordinary multi-head cross-attention reads the image tokens and an MLP
+forms an ephemeral 256-D pose hypothesis. A 32-coordinate head emits two box
+corners and 14 joint XY points, then top-50 selection expands each person to a
+box token plus 14 joint tokens. Every subsequent decoder layer refines both
+box and pose and is supervised, as is the hypothesis prediction, by a separate
+pose-aware OTA match. Hypotheses do not persist between Euler calls: only state
+and fixed source persist. The V4 control retains tokens, timestep, pool, and
+losses while zeroing the coordinate-prior path.
+
+When the V4 training wrapper requests diagnostics, the hypothesis stage records
+detached scalar RMS summaries for coordinate context, gated coordinate context,
+image tokens, image attention update, pre-attention query, and final hypothesis.
+The wrapper also records flow time/gate means, selected initial confidence, and
+selected initial-to-final box/pose movement, plus aliases for the already
+optimized hypothesis/refiner losses. Collection performs no additional forward,
+matching, or sampling pass; these metrics show activity, not causal use.
+
+PoseFlow can optionally add one shared pose-hypothesis codebook after deformable
+image cross-attention in selected decoder layers. Each image-conditioned query
+reads from the same learned `C × hidden_dim` token bank, and the same attention
+projections and residual gate are reused at every selected depth before that
+layer's FFN. `pose_codebook_size=0` omits the module entirely.
+`pose_codebook_initial_gate=0` preserves the image-conditioned output exactly,
+whereas a finite nonzero initialization activates gradients in the token bank
+and attention projections on the first backward pass. Denoising queries remain
+an unchanged leading prefix at every selected layer. The initial C=16
+experiment conditions only the first pose layer; the separate active C=128
+all-layer preset conditions layers 0, 1, and 2 with one shared codebook, so it
+also intentionally conditions the box-oriented stage.
+
+For enabled codebooks, PoseFlow records debug-only statistics over clean
+queries, excluding the denoising prefix: residual gate, query/attended/residual
+RMS, and residual-to-query RMS. It obtains averaged codebook attention weights
+only on the first validation batch each epoch, recording normalized entropy and
+effective-slot count. These metrics are detached observational summaries and do
+not change predictions, losses, matching, or optimizer state.
 
 The DiffusionRegPose data preset follows the external training data and
 target semantics: it samples the reference resize/crop policy, normalizes

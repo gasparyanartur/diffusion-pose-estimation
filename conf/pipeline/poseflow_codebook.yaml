@@ -1,0 +1,10 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowPipelineConfig
+
+defaults:
+  - poseflow
+  - _self_
+
+# The only architecture difference from poseflow.yaml: one shared pose prior
+# read after image cross-attention in the first pose decoder layer.
+pose_codebook_size: 16
+pose_codebook_layers: [1]

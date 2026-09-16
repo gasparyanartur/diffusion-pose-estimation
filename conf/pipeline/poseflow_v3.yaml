@@ -1,0 +1,19 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV3PipelineConfig
+
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# The matched 256 OTA control has a 200-slot box-decoder pool and selects
+# 50 person hypotheses. V3 carries those 50 and refills 150 every Euler step.
+matching_strategy: ota
+ota_candidate_topk: 5
+flow_padding_policy: source_prior
+flow_sampling_steps: 3
+flow_state_conditioning: true
+
+num_encoder_layers: 3
+num_decoder_layers: 3
+num_box_decoder_layers: 1
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]

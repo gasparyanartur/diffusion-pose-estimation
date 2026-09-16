@@ -18,6 +18,10 @@ from src.models.pipelines.pose_estimators.backbone_probe import (
 from src.models.pipelines.pose_estimators.poseflow import (
     PoseFlowPipeline,
     PoseFlowPipelineConfig,
+    PoseFlowV3Pipeline,
+    PoseFlowV3PipelineConfig,
+    PoseFlowV4Pipeline,
+    PoseFlowV4PipelineConfig,
 )
 
 __all__ = [
@@ -32,4 +36,8 @@ __all__ = [
     "QueryProbe",
     "PoseFlowPipeline",
     "PoseFlowPipelineConfig",
+    "PoseFlowV3Pipeline",
+    "PoseFlowV3PipelineConfig",
+    "PoseFlowV4Pipeline",
+    "PoseFlowV4PipelineConfig",
 ]

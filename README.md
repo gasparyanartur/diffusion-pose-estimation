@@ -179,6 +179,30 @@ python scripts/training/train_diffusionregpose.py
 # DiffusionRegPose checkpoint as though it were a trained PoseFlow model.
 python scripts/training/train_poseflow.py
 
+# Train PoseFlow V3: each state carries two signed box corners plus pose XY.
+# It runs a 200-slot pool, carries 50 selected slots, and refills 150 fresh
+# slots at each later Euler call. Its fixed gate is image/state = 1/0 at t=0
+# and 0.5/0.5 at t=1. Checkpoints are incompatible with V1.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v3
+
+# Matched V3 control: identical pool/refill/loss setup with state conditioning off.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v3_control
+
+# Train PoseFlow V4: all encoder locations are position-aware image tokens;
+# every call independently constructs 200 timestep-conditioned hypotheses from
+# image evidence and the Fourier-encoded coordinate flow state, selects 50,
+# and refines box and pose at every decoder layer.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4
+
+# Matched V4 control: same tokens, pool, losses, and timestep path with only
+# the Fourier coordinate-prior path disabled.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4_control
+
+# V4 additionally logs detached activity diagnostics under
+# debug/poseflow_v4/{train,val}/: coordinate/image/hypothesis RMS, initial
+# score, initial-to-final movement, and named stage losses. These are not AP
+# metrics or proof of a causal state effect.
+
 # The preset uses the external-compatible variable-size multi-scale training
 # transforms, batch size 1 with gradient accumulation 8 (effective batch size
 # 8), and reference trainable parameter set (49,304,924 parameters).

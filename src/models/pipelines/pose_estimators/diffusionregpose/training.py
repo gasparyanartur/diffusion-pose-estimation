@@ -990,7 +990,11 @@ class DiffusionRegPoseCriterion(nn.Module):
                 losses["total"] = losses["total"] + coefficient * intermediate_losses[name]
         for index, auxiliary in enumerate(outputs.get("aux_outputs", [])):
             auxiliary_losses = self._loss_for_outputs(
-                auxiliary, targets, include_keypoints=index >= self.num_box_decoder_layers
+                auxiliary,
+                targets,
+                include_keypoints=bool(
+                    auxiliary.get("poseflow_full_pose_loss", index >= self.num_box_decoder_layers)
+                ),
             )
             for name, value in auxiliary_losses.items():
                 if name != "total":
@@ -1003,10 +1007,15 @@ class DiffusionRegPoseCriterion(nn.Module):
                         "loss_oks": self.weights.oks,
                     }[name]
                     losses["total"] = losses["total"] + coefficient * value
-            if "dn_aux_outputs" in outputs:
+            dn_aux_outputs = outputs.get("dn_aux_outputs")
+            if (
+                isinstance(dn_aux_outputs, list)
+                and index < len(dn_aux_outputs)
+                and isinstance(dn_aux_outputs[index], dict)
+            ):
                 auxiliary_dn = self._denoising_losses({
-                    "dn_class_pred": outputs["dn_aux_outputs"][index]["pred_logits"],
-                    "dn_bbox_pred": outputs["dn_aux_outputs"][index]["pred_boxes"],
+                    "dn_class_pred": dn_aux_outputs[index]["pred_logits"],
+                    "dn_bbox_pred": dn_aux_outputs[index]["pred_boxes"],
                     "dn_class_input": outputs["dn_class_input"],
                     "dn_bbox_input": outputs["dn_bbox_input"],
                 })

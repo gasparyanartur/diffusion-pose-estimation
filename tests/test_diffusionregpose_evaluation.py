@@ -18,6 +18,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
     crowdpose_result_records,
     evaluate_crowdpose_results,
     postprocess_crowdpose,
+    postprocess_crowdpose_step_ensemble,
     resize_crowdpose_eval_image,
 )
 from src.models.pipelines.pose_estimators.diffusionregpose import DiffusionRegPosePipelineConfig
@@ -56,6 +57,35 @@ def test_postprocess_crowdpose_rejects_inconsistent_shapes() -> None:
         assert "agree" in str(error)
     else:
         raise AssertionError("inconsistent output shapes should raise ValueError")
+
+
+def test_cross_step_ensemble_selects_candidates_per_step_before_pose_nms() -> None:
+    def step(logits: list[list[float]], offset: float) -> dict[str, torch.Tensor]:
+        coordinates = torch.tensor(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.2, 0.3, 0.4, 0.5, 0.6,
+             0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.1, 0.3, 0.4, 0.5, 0.6, 0.7],
+            dtype=torch.float32,
+        )
+        keypoints = torch.stack((coordinates + offset, coordinates + offset)).clamp(0.0, 1.0)
+        keypoints = torch.cat((keypoints, torch.ones(2, 14)), dim=-1)[None]
+        return {
+            "pred_logits": torch.tensor([logits]),
+            "pred_boxes": torch.tensor(
+                [[[0.2, 0.2, 0.1, 0.1], [0.8, 0.8, 0.1, 0.1]]]
+            ),
+            "pred_keypoints": keypoints,
+        }
+
+    # A global top-4 over the concatenated raw logits would retain only step 1.
+    # Per-step top-2 must preserve both candidates from step 2 before final NMS.
+    results = postprocess_crowdpose_step_ensemble(
+        [step([[8.0, 7.0], [6.0, 5.0]], 0.0), step([[1.0, 0.5], [0.0, -0.5]], 0.45)],
+        torch.tensor([[100.0, 100.0]]),
+        pose_nms=True,
+    )
+
+    assert results[0]["scores"].shape == (2,)
+    assert (results[0]["scores"] < 0.8).any()
 
 
 def test_crowdpose_preprocessing_and_result_records_preserve_contract() -> None:

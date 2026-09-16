@@ -1,0 +1,23 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV4PipelineConfig
+
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# V4 uses all encoded image locations as position-aware tokens and constructs
+# 200 independent hypotheses before selecting 50 joint refiners.
+matching_strategy: ota
+ota_candidate_topk: 5
+flow_padding_policy: source_prior
+flow_sampling_steps: 3
+flow_state_conditioning: true
+flow_renewal: false
+
+num_encoder_layers: 3
+num_decoder_layers: 3
+num_box_decoder_layers: 1
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]
+
+fourier_bands: 8
+corner_order_loss_weight: 1.0

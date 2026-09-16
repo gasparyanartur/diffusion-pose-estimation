@@ -98,6 +98,18 @@ Visible-mask: `visible = visibility == 2`.
   its CNN feature extractor, spatial-attention pooling, Hungarian matching loss, AP
   lifecycle, and optimizer setup.
 - `GraphPosePipeline` is the direct image-to-box-and-pose diffusion set model.
+- `PoseFlowPipeline` is the endpoint-flow variant of DiffusionRegPose. Its
+  optional pose-hypothesis codebook is one shared learned token bank read by
+  image-conditioned decoder queries after image attention. `pose_codebook_size=0`
+  disables the branch. `pose_codebook_initial_gate` controls the learnable
+  residual scale at initialization: zero preserves the image-conditioned
+  baseline, while a nonzero value activates codebook gradients from the first
+  backward pass. Denoising-query prefixes never use the codebook. A configured
+  codebook can be reused at one or more decoder layers, including box-oriented
+  layers when an experiment explicitly requests all-layer conditioning. Enabled
+  PoseFlow runs also record detached clean-query codebook diagnostics: gate and
+  query/attention/residual scales every epoch, plus attention entropy and
+  effective slot count from the first validation batch only.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
   pose model. Its training criterion defaults to the reference Hungarian
   assignment and supports opt-in DiffusionDet-style Dynamic-K OTA while
@@ -135,8 +147,35 @@ Visible-mask: `visible = visibility == 2`.
   source-prior padding is the default and is not a semantic ground-truth
   target. Sampling uses forward Euler with a fixed original source anchor:
   velocity is predicted endpoint minus source, not endpoint minus current
-  state. DiffusionRegPose remains the checkpoint/external-parity reference; a
+  state. Optional inference-only renewal replaces weak proposal slots and their
+  fixed source anchors together. Optional ensemble selects candidates inside
+  each flow step, aggregates those candidate records, then applies one
+  cross-step pose NMS; it does not globally top-k concatenated raw queries.
+  Both default off and renewal uses an explicit score threshold.
+  DiffusionRegPose remains the checkpoint/external-parity reference; a
   trained PoseFlow model requires its own retraining provenance.
+- PoseFlowV3Pipeline is a separate retraining-only checkpoint family. It
+  transports normalized two-corner boxes and keypoint XY together, retains 50
+  selected person states and their fixed sources between Euler calls, and
+  refills the 200-slot box-decoder pool with 150 source-prior states. Its fixed
+  state gate is zero at `t=0` and 0.5 at `t=1`, so image query content and at
+  least half of image reference geometry remain at every time. The V3 control
+  uses the identical pool, endpoint targets, optimizer, losses, OTA, and
+  evaluator while disabling only state conditioning. V3 has no score-based
+  renewal switch; refilling is its renewal contract.
+- PoseFlowV4Pipeline is a separate retraining-only coordinate-flow family.
+  Each Euler call independently builds 200 pose hypotheses from learned slot
+  identities, the timestep embedding, Fourier features of the current joint
+  box-and-pose state, and cross-attention over all position-aware encoder image
+  tokens. It selects 50 complete initial two-corner-box-plus-14-joint states,
+  refills 150 fresh coordinate/source pairs at later calls, and never carries a
+  latent hypothesis between calls. The initial hypothesis and every later joint
+  refiner receive complete independently OTA-matched class, box, keypoint, and
+  OKS losses. A matched control zeros only the coordinate-prior path.
+  Its `debug/poseflow_v4/{train,val}/` metrics are detached observations only:
+  gate/context/image-update/hypothesis RMS, selected initial confidence,
+  initial-to-final box/pose movement, and named per-stage losses. They do not
+  alter optimization, matching, sampling, or prove a causal state effect.
 - The native training wrapper has passed one-image CPU and CUDA smoke runs,
   including checkpoint restore. The external-compatible preset freezes the
   ResNet stem and `layer1`, shares the decoder pose-size head, and applies the

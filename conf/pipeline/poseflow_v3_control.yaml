@@ -1,0 +1,9 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV3PipelineConfig
+
+defaults:
+  - poseflow_v3
+  - _self_
+
+# Matched V3 control: same state width, 200-slot pool, refill, and losses.
+# Only the fixed state-to-image conditioning gate is disabled.
+flow_state_conditioning: false
