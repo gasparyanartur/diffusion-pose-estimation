@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flow-renewal", action="store_true")
     parser.add_argument("--flow-renewal-score-threshold", type=float, default=None)
     parser.add_argument("--flow-ensemble", action="store_true")
+    parser.add_argument(
+        "--flow-seed",
+        type=int,
+        default=None,
+        help="Optional per-image flow-source seed; use one common value for step comparisons.",
+    )
     return parser.parse_args()
 
 
@@ -91,6 +97,12 @@ def apply_flow_sampler_overrides(model, args: argparse.Namespace) -> None:
         model.flow_ensemble = True
 
 
+def seed_flow_sampling(*, flow_seed: int | None, image_id: int) -> None:
+    """Reset flow sampling RNG per image so Euler-step runs share their start."""
+    if flow_seed is not None:
+        torch.manual_seed(flow_seed + image_id)
+
+
 def main() -> None:
     args = parse_args()
     if not args.checkpoint.is_file():
@@ -125,6 +137,7 @@ def main() -> None:
                 shortest_side=int(data_config.eval_resize_scale),
                 max_size=int(data_config.eval_max_size),
             ).to(args.device)
+            seed_flow_sampling(flow_seed=args.flow_seed, image_id=sample["image_id"])
             output = model.sample_keypoints(image[None])
             renewed_slots = output["flow_renewed_slots"]
             if isinstance(renewed_slots, torch.Tensor):
@@ -158,6 +171,7 @@ def main() -> None:
     result = {
         "checkpoint": str(args.checkpoint),
         "flow_sampling_steps": sampling_steps,
+        "flow_seed": args.flow_seed,
         "renewal": model.flow_renewal,
         "renewal_score_threshold": model.flow_renewal_score_threshold,
         "ensemble": model.flow_ensemble,

@@ -20,6 +20,7 @@ from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
 from .state import (
     blend_box_references,
     corners_to_cxcywh,
+    cxcywh_to_corners,
     fourier_encode_coordinates,
     state_reference_gate,
     unpack_person_state,
@@ -963,6 +964,119 @@ class PoseFlowV4Model(PoseFlowModel):
         from .training import flow_sample_poseflow_v4_states
 
         return flow_sample_poseflow_v4_states(
+            self,
+            images,
+            padding_mask=padding_mask,
+            num_proposals=num_proposals,
+            sampling_steps=self.flow_sampling_steps,
+            ensemble=self.flow_ensemble,
+            generator=generator,
+        )
+
+
+class PoseFlowV5Model(PoseFlowV4Model):
+    """V4 hypotheses with augmented sources and explicit center supervision."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        hidden_dim = self.transformer.decoder.d_model
+        state_width = 4 + 2 * self.transformer.decoder.num_body_points
+        self.initial_coordinate_head = MLP(hidden_dim, hidden_dim, state_width + 2, 3)
+        del self.v4_box_heads
+        self.v5_box_heads = nn.ModuleList(
+            MLP(hidden_dim, hidden_dim, 6, 3)
+            for _ in range(self.transformer.decoder.num_layers)
+        )
+
+    def _initial_prediction(self, hypothesis: Tensor) -> tuple[dict[str, Tensor], Tensor, Tensor]:
+        point_count = self.transformer.decoder.num_body_points
+        coordinates = self.initial_coordinate_head(hypothesis).sigmoid()
+        corners = coordinates[..., :4]
+        center = coordinates[..., 4:6]
+        keypoint_xy = coordinates[..., 6:].view(
+            hypothesis.shape[0], self.num_queries, point_count, 2
+        )
+        boxes, order_penalty = self._corners_to_valid_boxes(corners)
+        return (
+            {
+                "pred_logits": self.initial_class_head(hypothesis),
+                "pred_boxes": boxes,
+                "pred_keypoints": self._keypoints_from_xy(keypoint_xy),
+                "pred_box_points": torch.cat((corners, center), dim=-1),
+                "poseflow_full_pose_loss": torch.ones((), dtype=torch.bool, device=hypothesis.device),
+                "corner_order_penalty": order_penalty.mean(),
+            },
+            corners,
+            keypoint_xy,
+        )
+
+    def _predict_expanded(
+        self, layer_index: int, features: Tensor, references: Tensor, *, dn_count: int
+    ) -> tuple[dict[str, Tensor], Tensor, dict[str, Tensor] | None]:
+        point_count = self.transformer.decoder.num_body_points
+        stride = point_count + 1
+        dn_features, normal_features = features[:, :dn_count], features[:, dn_count:]
+        dn_references, normal_references = references[:, :dn_count], references[:, dn_count:]
+        box_features = normal_features[:, ::stride]
+        box_references = normal_references[:, ::stride]
+        point_features = normal_features.reshape(
+            normal_features.shape[0], -1, stride, normal_features.shape[-1]
+        )[:, :, 1:]
+        point_references = normal_references.reshape(
+            normal_references.shape[0], -1, stride, 4
+        )[:, :, 1:]
+        reference_corners = cxcywh_to_corners(box_references)
+        reference_points = torch.cat((reference_corners, box_references[..., :2]), dim=-1)
+        box_points = (
+            self.v5_box_heads[layer_index](box_features) + inverse_sigmoid(reference_points)
+        ).sigmoid()
+        corners, center = box_points[..., :4], box_points[..., 4:]
+        boxes, _ = self._corners_to_valid_boxes(corners)
+        keypoint_xy = (
+            self.v4_pose_heads[layer_index](point_features)
+            + inverse_sigmoid(point_references[..., :2])
+        ).sigmoid()
+        point_wh = (
+            self.v4_pose_hw_heads[layer_index](point_features)
+            + inverse_sigmoid(point_references[..., 2:])
+        ).sigmoid()
+        normal_updated_references = torch.cat(
+            (boxes[:, :, None], torch.cat((keypoint_xy, point_wh), dim=-1)), dim=2
+        ).flatten(1, 2)
+        dn_prediction = None
+        if dn_count:
+            dn_reference_corners = cxcywh_to_corners(dn_references)
+            dn_reference_points = torch.cat((dn_reference_corners, dn_references[..., :2]), dim=-1)
+            dn_points = (
+                self.v5_box_heads[layer_index](dn_features) + inverse_sigmoid(dn_reference_points)
+            ).sigmoid()
+            dn_boxes, _ = self._corners_to_valid_boxes(dn_points[..., :4])
+            dn_prediction = {
+                "pred_logits": self.v4_class_heads[layer_index](dn_features),
+                "pred_boxes": dn_boxes,
+            }
+            updated_references = torch.cat((dn_boxes, normal_updated_references), dim=1)
+        else:
+            updated_references = normal_updated_references
+        return {
+            "pred_logits": self.v4_class_heads[layer_index](box_features),
+            "pred_boxes": boxes,
+            "pred_keypoints": self._keypoints_from_xy(keypoint_xy),
+            "pred_box_points": torch.cat((corners, center), dim=-1),
+            "poseflow_full_pose_loss": torch.ones((), dtype=torch.bool, device=features.device),
+        }, updated_references, dn_prediction
+
+    def sample_keypoints(
+        self,
+        images: Tensor,
+        *,
+        padding_mask: Tensor | None = None,
+        num_proposals: int | None = None,
+        generator: torch.Generator | None = None,
+    ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
+        from .training import flow_sample_poseflow_v5_states
+
+        return flow_sample_poseflow_v5_states(
             self,
             images,
             padding_mask=padding_mask,

@@ -222,6 +222,9 @@ predicted endpoint. It deliberately does not reuse DDIM/noise reconstruction.
 Optional renewal restarts weak slots with a paired fresh source/state, while
 optional ensemble selects candidates independently within each call, aggregates
 those candidates, and applies one cross-step pose NMS.
+The standalone evaluator's optional `--flow-seed` resets the flow RNG from
+`seed + image_id` before each sample, allowing step-count runs to share their
+initial source without changing the stochastic default.
 The changed time semantics mean EDPose initialization is permitted, but a
 trained diffusion checkpoint is not flow-compatible.
 
@@ -257,8 +260,23 @@ detached scalar RMS summaries for coordinate context, gated coordinate context,
 image tokens, image attention update, pre-attention query, and final hypothesis.
 The wrapper also records flow time/gate means, selected initial confidence, and
 selected initial-to-final box/pose movement, plus aliases for the already
-optimized hypothesis/refiner losses. Collection performs no additional forward,
-matching, or sampling pass; these metrics show activity, not causal use.
+optimized hypothesis/refiner losses. V4 and V5 publish equivalent quantities
+under common `debug/{train,val}/...` tags; the TensorBoard run label identifies
+the model version. Collection performs no additional forward, matching, or
+sampling pass; these metrics show activity, not causal use.
+
+PoseFlow V5 preserves V4's hypothesis, two-corner transport state, 50+150
+source-paired sampler, and OTA contract, but is a distinct checkpoint family.
+Its training source slots are full normalized person states: half are GT-person
+resamples transformed by zero-mean center translation with standard deviation
+one quarter of image extent and independent `exp(N(0, 0.25))` width/height
+scales; the other half interpolate distinct GT person states. The transform is
+applied coherently to corners and joints. Inference has no GT pool, so starts
+and refills from uniform-center, empirical-mean-size boxes and random joints.
+V5's initial and refiner box heads emit corner A, corner B, and center. Only
+the corners are converted to the detector's `cxcywh` box/reference; two small
+auxiliary losses supervise the direct center and the corner midpoint against
+the GT center. They are excluded from matching and inference output.
 
 PoseFlow can optionally add one shared pose-hypothesis codebook after deformable
 image cross-attention in selected decoder layers. Each image-conditioned query

@@ -151,6 +151,9 @@ Visible-mask: `visible = visibility == 2`.
   fixed source anchors together. Optional ensemble selects candidates inside
   each flow step, aggregates those candidate records, then applies one
   cross-step pose NMS; it does not globally top-k concatenated raw queries.
+  The standalone evaluator accepts optional `--flow-seed`; it reseeds each
+  image from `seed + image_id` so step-count runs share an identical initial
+  source for every image without changing the stochastic default.
   Both default off and renewal uses an explicit score threshold.
   DiffusionRegPose remains the checkpoint/external-parity reference; a
   trained PoseFlow model requires its own retraining provenance.
@@ -172,10 +175,22 @@ Visible-mask: `visible = visibility == 2`.
   latent hypothesis between calls. The initial hypothesis and every later joint
   refiner receive complete independently OTA-matched class, box, keypoint, and
   OKS losses. A matched control zeros only the coordinate-prior path.
-  Its `debug/poseflow_v4/{train,val}/` metrics are detached observations only:
+  Its `debug/{train,val}/` metrics are detached observations only; the
+  TensorBoard run label identifies the PoseFlow version:
   gate/context/image-update/hypothesis RMS, selected initial confidence,
   initial-to-final box/pose movement, and named per-stage losses. They do not
   alter optimization, matching, sampling, or prove a causal state effect.
+- PoseFlowV5Pipeline is a separate V4-derived checkpoint family for a changed
+  optimization/source treatment. It uses two 40-epoch cosine cycles: main and
+  backbone rates decay from `1e-4`/`5e-5` to `1e-5`, restart at `3e-5`, then
+  decay to `2e-6`. During training, its 200 source states are split between
+  same-image GT-person resamples with zero-mean `0.25` center jitter and
+  log-scale jitter, and same-image interpolations of two distinct GT states.
+  One-person images use resamples; empty images and inference/refill use
+  uniform-center, empirical-mean-size sources. V5 predicts two corners plus
+  an auxiliary center point at its hypothesis and refiner stages. Decoded
+  boxes remain corner-derived; direct-center and corner-midpoint-to-GT-center
+  losses each use `0.1 * GIoU-weight` and do not alter OTA or inference.
 - The native training wrapper has passed one-image CPU and CUDA smoke runs,
   including checkpoint restore. The external-compatible preset freezes the
   ResNet stem and `layer1`, shares the decoder pose-size head, and applies the

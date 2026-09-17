@@ -199,9 +199,14 @@ python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4
 python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4_control
 
 # V4 additionally logs detached activity diagnostics under
-# debug/poseflow_v4/{train,val}/: coordinate/image/hypothesis RMS, initial
+# debug/{train,val}/ (the TensorBoard run label identifies the model): coordinate/image/hypothesis RMS, initial
 # score, initial-to-final movement, and named stage losses. These are not AP
 # metrics or proof of a causal state effect.
+
+# Train PoseFlow V5: V4 hypotheses with a two-cycle cosine schedule,
+# augmented/interpolated GT-state training sources, and auxiliary box-center
+# supervision. It is a distinct checkpoint family; do not resume V4 weights.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v5
 
 # The preset uses the external-compatible variable-size multi-scale training
 # transforms, batch size 1 with gradient accumulation 8 (effective batch size

@@ -1019,6 +1019,37 @@ def test_multistep_scheduler_decays_at_paper_milestone() -> None:
     assert optimizer.param_groups[0]["lr"] == pytest.approx(2e-6)
 
 
+def test_two_cycle_cosine_scheduler_uses_v5_absolute_group_targets() -> None:
+    module = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Linear(2, 2))
+    schedule = build_adamw_with_schedule(
+        module,
+        lr=1e-4,
+        lr_backbone=5e-5,
+        weight_decay=1e-4,
+        lr_T_max=80,
+        scheduler_type="two_cycle_cosine",
+        lr_cycle_restart_epoch=40,
+        lr_cycle_first_min=1e-5,
+        lr_cycle_restart_peak=3e-5,
+        lr_cycle_final_min=2e-6,
+    )
+    optimizer = schedule["optimizer"]
+    scheduler = schedule["lr_scheduler"]["scheduler"]
+
+    assert [group["lr"] for group in optimizer.param_groups] == [1e-4, 1e-4]
+    for _ in range(39):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-5)
+    optimizer.step()
+    scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(3e-5)
+    for _ in range(39):
+        optimizer.step()
+        scheduler.step()
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(2e-6)
+
+
 def test_diffusionregpose_criterion_scores_person_class_column() -> None:
     criterion = DiffusionRegPoseCriterion(
         num_classes=2,

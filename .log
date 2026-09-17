@@ -2714,3 +2714,55 @@ Modified files:
   `results/poseflow_v4_resumed_diagnostics_training/launch_20260916_2213.log`.
   Restore completed and training resumed at epoch 2. Only the old, partial
   epoch 2 after the epoch-1 checkpoint was lost; V3 was not interrupted.
+
+[2026-09-17] Implemented PoseFlow V5 and prepared its isolated launch
+
+- Added V5 as a distinct V4-derived checkpoint family. It preserves the
+  corner-derived detector geometry, OTA, fixed-source Euler, and 50+150
+  sampler, while adding a six-coordinate corner/corner/center box head.
+- Added two small auxiliary losses at every clean hypothesis/refiner output:
+  direct predicted center to GT center and corner midpoint to GT center, each
+  weighted by `0.1 * GIoU` (0.2 with the current weights). They do not affect
+  matching, decoder references, NMS, or exported detections.
+- V5 training sources mix same-image GT-state affine resamples and distinct
+  GT-state interpolations. Inference/refill sources are uniform-center boxes
+  with empirical mean size and log-scale jitter; carried slots are not re-noised.
+- Added the two-cycle V5 cosine schedule: 1e-4/5e-5 to 1e-5, restart both at
+  3e-5 after epoch 40, then decay to 2e-6. Existing schedules are unchanged.
+- Added V5 configs/docs/tests. Compilation, diff whitespace, and 139 focused
+  PoseFlow/DiffusionRegPose/evaluator tests passed, including CUDA
+  forward/backward and three-step sampling. The full Hydra config loaded the
+  selected EDPose checkpoint with only expected V5-only missing keys.
+
+[2026-09-17] Launched PoseFlow V5
+
+- Started the fresh 80-epoch `benchmark_poseflow_v5` run in tmux
+  `poseflow-v5-20260917`. Persistent log:
+  `results/poseflow_v5_training/launch_20260917_1220.log`; resolved output:
+  `results/poseflow_v5_training/poseflow_v5_training/20260917_121833/`.
+- The run reached batch 124/3000 at approximately 0.93 it/s with a finite loss
+  while V3 and V4 continued running. Added its TensorBoard label `v5` to the
+  existing externally reachable dashboard on port 6006.
+
+[2026-09-17] Normalized PoseFlow diagnostic TensorBoard tags
+
+- Replaced V4/V5-only `debug/poseflow_v{4,5}/{split}/...` paths with shared
+  `debug/{split}/...` paths. TensorBoard's run label now supplies the model
+  identity, permitting direct overlays of same-named diagnostics.
+- Added mocked V4/V5 tag-contract regressions. The focused suite passed 140
+  tests, including V5 CUDA forward/backward and three-step sampling; compilation
+  and diff whitespace checks passed.
+- Per user direction, did not restart V3, V4, or V5 and did not rewrite old
+  event files. The normalized tags apply to future process starts/resumes.
+
+[2026-09-17] Launched seeded PoseFlow V3 step sweep
+
+- Added optional evaluator `--flow-seed`; it resets the source RNG per image
+  as `seed + image_id` and records the seed in `metrics.json`. Omission retains
+  the previous stochastic behavior. The evaluator regression tests passed.
+- Smoke-tested immutable V3 `epoch079.ckpt` on one CrowdPose test image with
+  S=1 and seed 1729, then launched S=1, 2, 4, 8, 16 serially in tmux
+  `poseflow-v3-steps-20260917`. Results/logs are isolated under
+  `results/poseflow_v3_evaluation/`; no temporary filesystem paths are used.
+- V3's fixed 50-carried + 150-fresh refill is held in every condition. It does
+  not support score-threshold renewal, so no invalid renewal sweep was started.

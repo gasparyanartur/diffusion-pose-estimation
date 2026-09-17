@@ -6,10 +6,60 @@ and cosine annealing.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable
 
 import torch
 from torch import nn
+
+
+class TwoCycleCosineAnnealingLR(torch.optim.lr_scheduler.LRScheduler):
+    """Run one cosine decay, restart at a fixed absolute peak, then decay again."""
+
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        total_epochs: int,
+        restart_epoch: int,
+        first_minimum: float,
+        restart_peak: float,
+        final_minimum: float,
+    ) -> None:
+        if total_epochs < 2:
+            raise ValueError("two-cycle cosine scheduling requires at least two epochs")
+        if not 1 <= restart_epoch < total_epochs:
+            raise ValueError("restart_epoch must be in [1, total_epochs)")
+        if min(first_minimum, restart_peak, final_minimum) < 0.0:
+            raise ValueError("two-cycle cosine learning rates must be non-negative")
+        self.total_epochs = total_epochs
+        self.restart_epoch = restart_epoch
+        self.first_minimum = first_minimum
+        self.restart_peak = restart_peak
+        self.final_minimum = final_minimum
+        super().__init__(optimizer)
+        if any(base_lr < first_minimum for base_lr in self.base_lrs):
+            raise ValueError("first_minimum cannot exceed an initial learning rate")
+        if restart_peak < final_minimum:
+            raise ValueError("restart_peak cannot be smaller than final_minimum")
+
+    @staticmethod
+    def _cosine_value(start: float, end: float, progress: float) -> float:
+        return end + (start - end) * (1.0 + math.cos(math.pi * progress)) / 2.0
+
+    def get_lr(self) -> list[float]:
+        epoch = self.last_epoch
+        if epoch < self.restart_epoch:
+            denominator = max(self.restart_epoch - 1, 1)
+            progress = epoch / denominator
+            return [
+                self._cosine_value(base_lr, self.first_minimum, progress)
+                for base_lr in self.base_lrs
+            ]
+        denominator = max(self.total_epochs - self.restart_epoch - 1, 1)
+        progress = min((epoch - self.restart_epoch) / denominator, 1.0)
+        value = self._cosine_value(self.restart_peak, self.final_minimum, progress)
+        return [value for _ in self.base_lrs]
 
 
 def build_adamw_with_schedule(
@@ -23,6 +73,10 @@ def build_adamw_with_schedule(
     lr_min_frac: float = 1e-2,
     scheduler_type: str = "cosine",
     lr_decay_milestones: tuple[int, ...] = (),
+    lr_cycle_restart_epoch: int | None = None,
+    lr_cycle_first_min: float | None = None,
+    lr_cycle_restart_peak: float | None = None,
+    lr_cycle_final_min: float | None = None,
     split_weight_decay: bool = True,
 ) -> dict | torch.optim.Optimizer:
     """Build AdamW with optional decay splitting and a learning-rate schedule.
@@ -62,7 +116,7 @@ def build_adamw_with_schedule(
             })
     optimizer = torch.optim.AdamW(param_groups)
 
-    if scheduler_type not in {"cosine", "multistep"}:
+    if scheduler_type not in {"cosine", "multistep", "two_cycle_cosine"}:
         raise ValueError(f"Unsupported scheduler_type: {scheduler_type}")
     if scheduler_type == "multistep" and not lr_decay_milestones:
         raise ValueError("multistep scheduling requires lr_decay_milestones")
@@ -84,12 +138,31 @@ def build_adamw_with_schedule(
             optimizer, milestones=list(lr_decay_milestones), gamma=0.1,
         ))
     elif lr_T_max is not None:
-        cosine_epochs = max(1, lr_T_max - lr_warmup_epochs)
-        schedulers.append(
-            torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cosine_epochs, eta_min=lr * lr_min_frac,
+        if scheduler_type == "two_cycle_cosine":
+            if any(value is None for value in (
+                lr_cycle_restart_epoch,
+                lr_cycle_first_min,
+                lr_cycle_restart_peak,
+                lr_cycle_final_min,
+            )):
+                raise ValueError("two_cycle_cosine requires all cycle parameters")
+            schedulers.append(
+                TwoCycleCosineAnnealingLR(
+                    optimizer,
+                    total_epochs=lr_T_max,
+                    restart_epoch=lr_cycle_restart_epoch,
+                    first_minimum=lr_cycle_first_min,
+                    restart_peak=lr_cycle_restart_peak,
+                    final_minimum=lr_cycle_final_min,
+                )
             )
-        )
+        else:
+            cosine_epochs = max(1, lr_T_max - lr_warmup_epochs)
+            schedulers.append(
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=cosine_epochs, eta_min=lr * lr_min_frac,
+                )
+            )
     if not schedulers:
         return optimizer
     if len(schedulers) == 1:

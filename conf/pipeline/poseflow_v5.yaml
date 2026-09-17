@@ -1,0 +1,32 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV5PipelineConfig
+
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# V5 preserves V4's image-token hypotheses while changing only optimization,
+# source-state augmentation, and auxiliary center supervision.
+matching_strategy: ota
+ota_candidate_topk: 5
+flow_padding_policy: source_prior
+flow_sampling_steps: 3
+flow_state_conditioning: true
+flow_renewal: false
+
+num_encoder_layers: 3
+num_decoder_layers: 3
+num_box_decoder_layers: 1
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]
+
+fourier_bands: 8
+corner_order_loss_weight: 1.0
+center_loss_factor: 0.1
+
+lr: 1.0e-4
+lr_backbone: 5.0e-5
+scheduler_type: two_cycle_cosine
+lr_cycle_restart_epoch: 40
+lr_cycle_first_min: 1.0e-5
+lr_cycle_restart_peak: 3.0e-5
+lr_cycle_final_min: 2.0e-6

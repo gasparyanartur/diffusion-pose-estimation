@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,12 +15,15 @@ from src.models.pipelines.pose_estimators.poseflow import (
     PoseFlowModel,
     PoseFlowV3Model,
     PoseFlowV4Model,
+    PoseFlowV5Model,
     PoseFlowPipelineConfig,
     PoseFlowV3PipelineConfig,
     PoseFlowV4PipelineConfig,
+    PoseFlowV5PipelineConfig,
     PoseHypothesisCodebook,
     build_poseflow_targets,
     build_poseflow_v3_targets,
+    build_poseflow_v5_targets,
     flow_sample_keypoints,
     flow_sample_person_states,
 )
@@ -523,11 +527,53 @@ def test_v4_pipeline_logs_activity_and_named_stage_diagnostics() -> None:
         batch_size=1,
     )
 
-    assert "debug/poseflow_v4/train/coordinate_gated_rms" in logged_names
-    assert "debug/poseflow_v4/train/hypothesis/loss_ce" in logged_names
-    assert "debug/poseflow_v4/train/refiner_0/loss_keypoints" in logged_names
-    assert "debug/poseflow_v4/train/refiner_1/loss_oks" in logged_names
-    assert "debug/poseflow_v4/train/final_refiner/loss_bbox" in logged_names
+    assert "debug/train/coordinate_gated_rms" in logged_names
+    assert "debug/train/hypothesis/loss_ce" in logged_names
+    assert "debug/train/refiner_0/loss_keypoints" in logged_names
+    assert "debug/train/refiner_1/loss_oks" in logged_names
+    assert "debug/train/final_refiner/loss_bbox" in logged_names
+    assert not any("poseflow_v" in name for name in logged_names if name.startswith("debug/"))
+
+
+def test_v5_pipeline_uses_common_diagnostic_tags() -> None:
+    pipeline = PoseFlowV5PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+    ).build(max_epochs=1)
+    logged_names: list[str] = []
+
+    def record(name: str, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        logged_names.append(name)
+
+    pipeline.log = record  # type: ignore[method-assign]
+    pipeline._latest_v4_diagnostics = {"coordinate_gated_rms": torch.tensor(0.25)}
+    pipeline._log_codebook_diagnostics("val", batch_size=1)
+    pipeline._log_losses(
+        "val",
+        {
+            "total": torch.tensor(1.0),
+            "loss_center_direct_0": torch.tensor(1.0),
+            "loss_center_midpoint": torch.tensor(1.0),
+        },
+        batch_size=1,
+    )
+
+    assert "debug/val/coordinate_gated_rms" in logged_names
+    assert "debug/val/hypothesis/loss_center_direct" in logged_names
+    assert "debug/val/final_refiner/loss_center_midpoint" in logged_names
+    assert not any("poseflow_v" in name for name in logged_names if name.startswith("debug/"))
 
 
 def test_v4_sampler_recomputes_hypotheses_with_50_plus_fresh_coordinate_pool() -> None:
@@ -631,6 +677,112 @@ def test_v3_target_builder_keeps_source_prior_padding_paired() -> None:
     assert state.shape == source.shape == (1, 3, 8)
     torch.testing.assert_close(endpoint[:, 2], source[:, 2])
     assert targets[0]["boxes"].shape == (2, 4)
+
+
+def test_v5_target_builder_mixes_augmented_and_interpolated_person_sources() -> None:
+    model = SimpleNamespace(scale=6.0)
+    state, source, times, targets = build_poseflow_v5_targets(
+        _batch(),
+        model,
+        num_queries=4,
+        num_body_points=2,
+        padding_policy="source_prior",
+        noise_seed=7,
+    )
+
+    endpoint = source + (state - source) / times[:, None, None]
+    assert state.shape == source.shape == (1, 4, 8)
+    assert torch.isfinite(source).all()
+    torch.testing.assert_close(endpoint[:, 2:], source[:, 2:])
+    assert targets[0]["boxes"].shape == (2, 4)
+
+
+def test_v5_box_outputs_supervise_center_and_corner_midpoint() -> None:
+    pipeline = PoseFlowV5PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+    ).build(max_epochs=1)
+    batch = _batch() | {"image": torch.randn(1, 3, 64, 64)}
+
+    losses = pipeline._losses_for_batch(batch)
+
+    assert isinstance(pipeline.model, PoseFlowV5Model)
+    assert torch.isfinite(losses["total"])
+    assert "loss_center_direct" in losses
+    assert "loss_center_midpoint" in losses
+    losses["total"].backward()
+    assert pipeline.model.initial_coordinate_head.layers[-1].weight.grad is not None
+
+
+def test_v5_target_builder_uses_augmented_resamples_for_one_person_images() -> None:
+    model = SimpleNamespace(scale=6.0)
+    batch = _batch()
+    batch["gt_labeled"][:, 1] = False
+    batch["person_mask"] = torch.tensor([[True, False]])
+    state, source, times, _ = build_poseflow_v5_targets(
+        batch,
+        model,
+        num_queries=4,
+        num_body_points=2,
+        padding_policy="source_prior",
+        noise_seed=7,
+    )
+
+    endpoint = source + (state - source) / times[:, None, None]
+    assert torch.isfinite(source).all()
+    torch.testing.assert_close(endpoint[:, 1:], source[:, 1:])
+
+
+def test_v5_benchmark_resolves_its_distinct_schedule() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_poseflow_v5")
+
+    assert config.pipeline._target_.endswith("PoseFlowV5PipelineConfig")
+    assert config.pipeline.scheduler_type == "two_cycle_cosine"
+    assert config.pipeline.lr_cycle_restart_epoch == 40
+    assert config.pipeline.center_loss_factor == pytest.approx(0.1)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_v5_cuda_forward_backward_and_three_step_sampler_are_finite() -> None:
+    pipeline = PoseFlowV5PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+    ).build(max_epochs=3).cuda()
+    batch = {name: value.cuda() for name, value in _batch().items()} | {
+        "image": torch.randn(1, 3, 64, 64, device="cuda"),
+    }
+
+    losses = pipeline._losses_for_batch(batch)
+    losses["total"].backward()
+    with torch.no_grad():
+        sampled = pipeline.model.sample_keypoints(batch["image"])
+
+    assert torch.isfinite(losses["total"])
+    assert torch.isfinite(sampled["flow_person_state"]).all()
 
 
 class _V3EndpointOracle(torch.nn.Module):
