@@ -2766,3 +2766,205 @@ Modified files:
   `results/poseflow_v3_evaluation/`; no temporary filesystem paths are used.
 - V3's fixed 50-carried + 150-fresh refill is held in every condition. It does
   not support score-threshold renewal, so no invalid renewal sweep was started.
+
+[2026-09-18] Completed PoseFlow V3 seeded Euler-step sweep
+
+- Full 8,000-image CrowdPose test evaluations with immutable `epoch079.ckpt`,
+  fixed per-image source seed 1729, fixed 50+150 refill, and no ensemble found
+  keypoint/bbox AP: S=1 `0.569040/0.525046`, S=2 `0.533563/0.491439`, S=4
+  `0.265657/0.268325`, S=8 `0.249828/0.262193`, S=16
+  `0.255456/0.268366`.
+- S=1 is the best tested operating point. S=2 drops materially and S>=4
+  collapses by roughly 0.31 keypoint AP versus S=1. The summary and complete
+  per-condition prediction/metrics artifacts are in `results/poseflow_v3_evaluation/`.
+
+[2026-09-18] Launched PoseFlow V5 seeded Euler-step sweep
+
+- Per user direction, started V5 before any V4 evaluation. The one-image S=1
+  smoke loaded immutable V5 `epoch079.ckpt` successfully with per-image seed
+  1729.
+- Serial full CrowdPose test evaluations at S=1, 2, 4, and 8 are running in
+  tmux `poseflow-v5-steps-20260918`. Artifacts and the persistent log are under
+  `results/poseflow_v5_evaluation/`. No ensemble or renewal override is used;
+  V4 remains untouched.
+
+[2026-09-19] Added PoseFlow V5 test-subset monitoring preset
+
+- Added deterministic seed-42 CrowdPose annotation subset tooling and generated
+  `crowdpose_test_val_seed42_1000.json`: 1,000 test images and 4,411 closed
+  annotations. The source test annotation remains unchanged.
+- Added `benchmark_poseflow_v5_testval_1000`, retaining 12,000-image trainval
+  training and the full 8,000-image standalone test configuration while using
+  the fixed 1,000-image subset for periodic AP. Its existing checkpoint monitor
+  remains null; monitored AP does not select checkpoints or early-stop runs.
+- Added five focused subset/preset tests; they pass, and the resolved config and
+  annotation closure/cardinality checks pass. `git diff --check` passes.
+- The dedicated preset records sampled subset AP every five epochs while
+  retaining validation loss every epoch; it still does not monitor AP for
+  checkpoint selection or early stopping.
+
+[2026-09-19] Launched paper-scale PoseFlow V5 for 100 epochs
+
+- Added `benchmark_poseflow_v5_paper_100e`: 6E/6D, 900 queries, 100
+  proposals/groups/DN slots, 800/1333 transforms, batch 1 with accumulation
+  8, OTA, full `trainval` training, and the fixed 1,000-image test subset for
+  validation loss each epoch and AP every five epochs. It preserves V5's
+  absolute LR values and moves the two-cycle restart to after epoch 50.
+- Exact full-scale real-batch CUDA forward/backward was finite; strict
+  Lightning checkpoint restore passed for 905 tensors; focused config/V5/
+  scheduler tests passed (13), as did `git diff --check`.
+- Started fresh non-resumed tmux `poseflow-v5-paper-100e-20260919`. Persistent
+  log: `results/poseflow_v5_paper_100e_training/launch_20260919_0040.log`.
+  Resolved run: `results/poseflow_v5_paper_100e_training/poseflow_v5_paper_100e_training/20260919_115201/`.
+  Startup reports a 53.4M-parameter V5 model, finite training losses, and
+  approximately 10.9GB VRAM use.
+
+[2026-09-19] Started paper-scale PoseFlow V5 TensorBoard
+
+- Started isolated tmux `poseflow-v5-paper-tensorboard-20260919` on port 6007.
+  It tails only the active paper-scale V5 run's `tb_logs` directory and leaves
+  the existing multi-run TensorBoard on port 6006 unchanged.
+
+[2026-09-25] Started paper-scale PoseFlow V5 full-test step sweep
+
+- Confirmed final `epoch099.ckpt` equals `last.ckpt` by SHA-256 and passed a
+  one-image evaluator smoke at 800/1333 with finite metrics.
+- Launched serial S=1, 2, 4, 8 on all 8,000 CrowdPose test images with shared
+  per-image flow seed 1729, no renewal/ensemble, and isolated per-step
+  prediction/metric/progress files in `results/poseflow_v5_paper_100e_evaluation/`.
+- Tmux session: `poseflow-v5-paper-step-sweep-20260925`. Full-test results are
+  pending and must be read from each completed `metrics.json`.
+
+[2026-09-25] Completed paper-scale PoseFlow V5 full-test step sweep
+
+- Final `epoch099.ckpt`, 800/1333, full 8,000-image CrowdPose test, per-image
+  seed 1729, no renewal or ensemble: all S=1/2/4/8 runs completed.
+- Keypoint AP: 0.681345 / 0.681522 / 0.681657 / 0.681614.
+- Bbox AP: 0.581246 / 0.580477 / 0.580388 / 0.579280.
+- Bbox AR: 0.657653 / 0.657898 / 0.657668 / 0.658145.
+- Artifacts: `results/poseflow_v5_paper_100e_evaluation/s{01,02,04,08}_seed1729/`.
+  Extra Euler steps gave no meaningful keypoint AP gain at this checkpoint.
+
+[2026-09-25] Launched PoseFlow V5 first-and-final supervision ablation
+
+- Added V5-only `decoder_loss_mode=first_last`: optimize hypothesis and final
+  class/box/pose, their center losses, final denoising, and corner-order loss;
+  retain intermediate losses as diagnostics. Default `all` is unchanged.
+- Added a derived paper-scale preset changing only the objective and output
+  identity. Config-equivalence and gradient-exclusion tests pass; 62 focused
+  tests pass. Full-model real-batch CUDA backward was finite, and the control
+  checkpoint restored strictly.
+- Started fresh 100-epoch run in tmux
+  `poseflow-v5-first-last-100e-20260925`. Persistent launch log:
+  `results/poseflow_v5_paper_first_last_100e_training/launch_20260925.log`.
+  Resolved run is
+  `results/poseflow_v5_paper_first_last_100e_training/poseflow_v5_paper_first_last_100e_training/20260925_171300/`.
+  Startup reached finite training batches at about 9.7 GiB device memory.
+  First validation and final full-test step sweep are pending.
+
+[2026-09-25] Started V5 first-and-final comparison TensorBoard
+
+- Tmux `poseflow-v5-first-last-tensorboard-20260925` serves the completed
+  `paper_v5` control and active `first_last` ablation on port 6008.
+  Verified both runs appear in TensorBoard's run list. At epoch 0 the
+  ablation has training-step/LR tags; validation tags await epoch completion.
+
+[2026-09-25] Resumed V5 first-and-final training after host shutdown
+
+- The original run stopped early in epoch 3. Its intact `last.ckpt` records
+  completed epoch 2, global step 4500, and model/optimizer/scheduler state;
+  the original resolved config still matches the preset exactly.
+- Resumed into separate `resume_20260925_2133/` output via tmux
+  `poseflow-v5-first-last-resume-20260925`; epoch 3 has finite training loss.
+  Original checkpoints/logs are preserved, while checkpoint ranking resets
+  for the new directory. Persistent launch log:
+  `results/poseflow_v5_paper_first_last_100e_training/resume_20260925_2133.log`.
+- Restarted comparison TensorBoard on port 6008 with control, original
+  ablation, and resumed ablation as three labeled runs.
+
+[2026-09-26] Started paper-scale DiffusionRegPose standalone test evaluation
+
+- Selected the native six-layer/900-query epoch-79 checkpoint with its resolved
+  training config. A one-image 800/1333, one-step, seed-42 smoke loaded without
+  learned-weight warnings and produced finite keypoint/bbox AP.
+- Launched the full 8,000-image CrowdPose test evaluation in tmux
+  `diffusionregpose-paper-full-eval-20260926`, concurrently with the active
+  PoseFlow training. Persistent predictions, metrics, and log are under
+  `results/diffusionregpose_paper_full_standalone_eval/full_s1_seed42/`.
+  The full AP is pending; do not substitute training-loop AP for this result.
+
+[2026-09-26] Completed paper-scale DiffusionRegPose standalone test AP
+
+- Final native epoch-79 checkpoint, 8,000 CrowdPose test images, 800/1333,
+  one diffusion sampling step, global seed 42: keypoint AP 0.6737627959,
+  bbox AP 0.5955053922, bbox AR 0.7147253379; 161,132 predictions.
+- Artifacts: `results/diffusionregpose_paper_full_standalone_eval/full_s1_seed42/`
+  (`predictions.json`, `metrics.json`, `eval.log`). Full log shows no missing
+  learned weights or shape-incompatible checkpoint keys.
+- Compared with completed paper V5 PoseFlow S=1 (per-image seed 1729):
+  0.6813452368 keypoint and 0.5812462797 bbox AP. The common annotation,
+  800/1333 resize, and one-step setting support descriptive comparison;
+  different RNG contract and training recipe preclude a causal flow-vs-diffusion
+  claim. Active first-and-final PoseFlow training was not interrupted.
+
+[2026-09-26] Launched paper-scale DiffusionRegPose step sweep
+
+- S=16 one-image smoke passed with finite AP. Started serial full-test S=2,4,8,16
+  evaluations from the native epoch-79 checkpoint, all with seed 42 and
+  800/1333 resize. Tmux: `diffusionregpose-paper-step-sweep-20260926`.
+- Each step writes separate `eval.log`, `predictions.json`, and `metrics.json`
+  under `results/diffusionregpose_paper_full_standalone_eval/s{02,04,08,16}_seed42/`.
+  Runs stop on failure; results remain pending. PoseFlow training continues.
+
+[2026-09-26] Queued matched-step PoseFlow V5 S=16 evaluation
+
+- User clarified that the purpose is to compare the step-response curves of
+  DiffusionRegPose and PoseFlow. Existing V5 PoseFlow full-test S=1/2/4/8
+  results use per-image seed 1729; S=16 was missing.
+- One-image V5 S=16 smoke passed with finite AP and default no-renewal,
+  no-ensemble sampling. Queued the full S=16 test in tmux
+  `poseflow-v5-paper-s16-after-diffusion-20260926` to start after diffusion
+  S=2/4/8/16 finishes, avoiding three simultaneous full GPU jobs.
+- When complete, compare within-model AP changes from S=1; cross-model
+  absolute AP differs in RNG contract and training recipe.
+
+[2026-09-27] Completed DiffusionRegPose/PoseFlow paper-scale step comparison
+
+- All full 8,000-image test evaluations finished at 800/1333 with no
+  checkpoint-compatibility or runtime errors. DiffusionRegPose final native
+  checkpoint used global seed 42 and deterministic DDIM eta=0; PoseFlow V5
+  control used per-image seed 1729 with renewal and ensemble disabled.
+- At S=1/2/4/8/16, DiffusionRegPose keypoint AP was
+  0.673763/0.687720/0.686809/0.683941/0.679760, and bbox AP was
+  0.595505/0.598977/0.600660/0.596142/0.590207.
+- At the same steps, PoseFlow V5 keypoint AP was
+  0.681345/0.681522/0.681657/0.681614/0.680575, and bbox AP was
+  0.581246/0.580477/0.580388/0.579280/0.579127.
+- DiffusionRegPose gained +0.013957 keypoint AP at S=2 versus S=1, with
+  diminishing gains through S=16. PoseFlow V5 showed no meaningful positive
+  step response. The absolute model comparison is descriptive, not causal:
+  model/training recipes and RNG contracts differ. Results reside under
+  `results/diffusionregpose_paper_full_standalone_eval/` and
+  `results/poseflow_v5_paper_100e_evaluation/`.
+[2026-09-27] Launched DiffusionRegPose inference-seed sensitivity sweep
+
+- Reused the final paper-scale epoch-79 checkpoint, full 8,000-image CrowdPose
+  test annotation, 800/1333 resize, and existing seed-42 S=1/S=2 artifacts.
+- Started serial full-test S=1 and S=2 evaluations for seeds 43–46 in tmux
+  `diffusionregpose-seed-sensitivity-20260927`, with separate predictions,
+  metrics, and progress logs under
+  `results/diffusionregpose_paper_full_standalone_eval/s0{1,2}_seed{43,44,45,46}/`.
+- The active PoseFlow first/last training was not interrupted. Results are
+  pending; this measures inference-seed variability only.
+
+[2026-09-27] Added DiffusionRegPose-to-PoseFlow chronological report
+
+- Documented external reproduction, native parity/training, efficient-model
+  trials, OTA/Hungarian matching, PoseFlow versions, and the completed
+  paper-scale S=1/2/4/8/16 comparison in
+  `reports/diffusionregpose-to-poseflow-chronology.md`.
+- Labeled official-checkpoint, native-validation, and standalone-test AP
+  separately; noted the paper AP gap and flat V5 step response without
+  claiming statistical significance.
+- Verified ten latest keypoint/bbox metric pairs, 27 local links, and
+  `git diff --check`; left active training and seed-sensitivity runs untouched.

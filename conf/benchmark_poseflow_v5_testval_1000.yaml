@@ -1,0 +1,26 @@
+defaults:
+  - pipeline: poseflow_v5
+  - data: crowdpose_diffusionregpose_development_256
+  - hardware: auto
+  - training: diffusionregpose_development
+  - _self_
+
+run_name: poseflow_v5_testval_1000_training
+out_dir: results/poseflow_v5_testval_1000_training
+skip_training: false
+
+data:
+  batch_size: 4
+  val_ann: crowdpose/annotations/crowdpose_test_val_seed42_1000.json
+
+training:
+  accumulate_grad_batches: 2
+
+pipeline:
+  val_ap_every_n_epochs: 5
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

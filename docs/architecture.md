@@ -277,6 +277,10 @@ V5's initial and refiner box heads emit corner A, corner B, and center. Only
 the corners are converted to the detector's `cxcywh` box/reference; two small
 auxiliary losses supervise the direct center and the corner midpoint against
 the GT center. They are excluded from matching and inference output.
+The V5-only `decoder_loss_mode` selects either the original all-stage objective
+or a first-and-final ablation. In the latter, the hypothesis and final clean
+outputs, their center losses, final denoising losses, and the corner-order
+penalty are optimized; intermediate stage losses are retained for diagnostics.
 
 PoseFlow can optionally add one shared pose-hypothesis codebook after deformable
 image cross-attention in selected decoder layers. Each image-conditioned query

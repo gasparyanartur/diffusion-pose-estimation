@@ -1,0 +1,38 @@
+defaults:
+  - pipeline: poseflow_v5
+  - data: crowdpose_diffusionregpose
+  - hardware: auto
+  - training: diffusionregpose
+  - _self_
+
+run_name: poseflow_v5_paper_100e_training
+out_dir: results/poseflow_v5_paper_100e_training
+skip_training: false
+
+pipeline:
+  num_queries: 900
+  num_proposals: 100
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  num_box_decoder_layers: 2
+  num_group: 100
+  dn_number: 100
+  pretrained_keep_encoder_layers: null
+  pretrained_keep_decoder_layers: null
+  lr_cycle_restart_epoch: 50
+  val_ap_every_n_epochs: 5
+
+data:
+  val_ann: crowdpose/annotations/crowdpose_test_val_seed42_1000.json
+  eval_resize_scale: 800
+  eval_max_size: 1333
+
+training:
+  max_epochs: 100
+  accumulate_grad_batches: 8
+
+hydra:
+  run:
+    dir: ${out_dir}/${run_name}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

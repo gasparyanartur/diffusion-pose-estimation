@@ -725,6 +725,55 @@ def test_v5_box_outputs_supervise_center_and_corner_midpoint() -> None:
     assert pipeline.model.initial_coordinate_head.layers[-1].weight.grad is not None
 
 
+def test_v5_first_last_objective_excludes_intermediate_gradients() -> None:
+    assert PoseFlowV5PipelineConfig().decoder_loss_mode == "all"
+    pipeline = PoseFlowV5PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+        decoder_loss_mode="first_last",
+    ).build(max_epochs=1)
+    task_names = ("loss_ce", "loss_bbox", "loss_giou", "loss_keypoints", "loss_oks")
+    center_names = ("loss_center_direct", "loss_center_midpoint")
+    denoising_names = ("dn_loss_ce", "dn_loss_bbox", "dn_loss_giou")
+    losses = {
+        f"{name}{suffix}": torch.tensor(1.0, requires_grad=True)
+        for suffix in ("_0", "_1", "_2", "")
+        for name in (*task_names, *center_names)
+    }
+    losses.update({
+        f"{name}{suffix}": torch.tensor(1.0, requires_grad=True)
+        for suffix in ("_1", "_2", "")
+        for name in denoising_names
+    })
+    losses["loss_corner_order"] = torch.tensor(1.0, requires_grad=True)
+
+    total = pipeline._first_last_total(losses)
+    total.backward()
+
+    torch.testing.assert_close(total, torch.tensor(51.6))
+    for name in (*task_names, *center_names):
+        assert losses[name].grad is not None
+        assert losses[f"{name}_0"].grad is not None
+        assert losses[f"{name}_1"].grad is None
+        assert losses[f"{name}_2"].grad is None
+    for name in denoising_names:
+        assert losses[name].grad is not None
+        assert losses[f"{name}_1"].grad is None
+        assert losses[f"{name}_2"].grad is None
+    assert losses["loss_corner_order"].grad is not None
+
+
 def test_v5_target_builder_uses_augmented_resamples_for_one_person_images() -> None:
     model = SimpleNamespace(scale=6.0)
     batch = _batch()
@@ -753,6 +802,53 @@ def test_v5_benchmark_resolves_its_distinct_schedule() -> None:
     assert config.pipeline.scheduler_type == "two_cycle_cosine"
     assert config.pipeline.lr_cycle_restart_epoch == 40
     assert config.pipeline.center_loss_factor == pytest.approx(0.1)
+
+
+def test_v5_paper_100_epoch_benchmark_preserves_full_scale_contract() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_poseflow_v5_paper_100e")
+
+    assert config.pipeline._target_.endswith("PoseFlowV5PipelineConfig")
+    assert config.pipeline.num_queries == 900
+    assert config.pipeline.num_proposals == 100
+    assert config.pipeline.num_group == 100
+    assert config.pipeline.dn_number == 100
+    assert config.pipeline.num_encoder_layers == 6
+    assert config.pipeline.num_decoder_layers == 6
+    assert config.pipeline.num_box_decoder_layers == 2
+    assert config.pipeline.pretrained_keep_encoder_layers is None
+    assert config.pipeline.pretrained_keep_decoder_layers is None
+    assert config.pipeline.matching_strategy == "ota"
+    assert config.pipeline.lr_cycle_restart_epoch == 50
+    assert config.pipeline.val_ap_every_n_epochs == 5
+    assert config.data.train_ann == "crowdpose/annotations/crowdpose_trainval.json"
+    assert config.data.val_ann == "crowdpose/annotations/crowdpose_test_val_seed42_1000.json"
+    assert config.data.test_ann == "crowdpose/annotations/crowdpose_test.json"
+    assert config.data.train_resize_scales[-1] == 800
+    assert config.data.train_max_size == 1333
+    assert config.data.eval_resize_scale == 800
+    assert config.data.eval_max_size == 1333
+    assert config.data.batch_size == 1
+    assert config.training.accumulate_grad_batches == 8
+    assert config.training.max_epochs == 100
+    assert config.training.checkpoint.monitor is None
+
+
+def test_v5_first_last_paper_preset_changes_only_objective_and_output() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        control = OmegaConf.to_container(
+            compose(config_name="benchmark_poseflow_v5_paper_100e"), resolve=True,
+        )
+        ablation = OmegaConf.to_container(
+            compose(config_name="benchmark_poseflow_v5_paper_first_last_100e"), resolve=True,
+        )
+    assert isinstance(control, dict) and isinstance(ablation, dict)
+    assert ablation["pipeline"].pop("decoder_loss_mode") == "first_last"
+    assert ablation.pop("run_name") != control.pop("run_name")
+    assert ablation.pop("out_dir") != control.pop("out_dir")
+    assert ablation == control
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v5_paper_100e
+  - _self_
+
+run_name: poseflow_v5_paper_first_last_100e_training
+out_dir: results/poseflow_v5_paper_first_last_100e_training
+
+pipeline:
+  decoder_loss_mode: first_last

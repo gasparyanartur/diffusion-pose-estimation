@@ -1314,6 +1314,7 @@ class PoseFlowV5Pipeline(PoseFlowV4Pipeline):
         self,
         *args,
         center_loss_factor: float,
+        decoder_loss_mode: Literal["all", "first_last"],
         lr_cycle_restart_epoch: int,
         lr_cycle_first_min: float,
         lr_cycle_restart_peak: float,
@@ -1322,6 +1323,7 @@ class PoseFlowV5Pipeline(PoseFlowV4Pipeline):
     ) -> None:
         super().__init__(*args, **kwargs)
         self.center_loss_factor = center_loss_factor
+        self.decoder_loss_mode = decoder_loss_mode
         self.lr_cycle_restart_epoch = lr_cycle_restart_epoch
         self.lr_cycle_first_min = lr_cycle_first_min
         self.lr_cycle_restart_peak = lr_cycle_restart_peak
@@ -1407,6 +1409,27 @@ class PoseFlowV5Pipeline(PoseFlowV4Pipeline):
             center_losses[f"loss_center_midpoint{suffix}"] = midpoint / normalizer
         return center_losses
 
+    def _first_last_total(self, losses: dict[str, Tensor]) -> Tensor:
+        first_losses = {
+            name: losses[f"{name}_0"]
+            for name in ("loss_ce", "loss_bbox", "loss_giou", "loss_keypoints", "loss_oks")
+        }
+        total = self.criterion._weighted_clean_loss(losses)
+        total = total + self.criterion._weighted_clean_loss(first_losses)
+        if "dn_loss_ce" in losses:
+            total = total + (
+                self.criterion.dn_label_coef * losses["dn_loss_ce"]
+                + self.criterion.weights.bbox * self.criterion.dn_bbox_coef * losses["dn_loss_bbox"]
+                + self.criterion.weights.giou * self.criterion.dn_bbox_coef * losses["dn_loss_giou"]
+            )
+        center_weight = self.center_loss_factor * self.criterion.weights.giou
+        for suffix in ("_0", ""):
+            total = total + center_weight * (
+                losses[f"loss_center_direct{suffix}"]
+                + losses[f"loss_center_midpoint{suffix}"]
+            )
+        return total + self.corner_order_loss_weight * losses["loss_corner_order"]
+
     def _losses_for_batch(
         self,
         batch: dict[str, Tensor],
@@ -1446,6 +1469,8 @@ class PoseFlowV5Pipeline(PoseFlowV4Pipeline):
         losses.update(center_losses)
         center_weight = self.center_loss_factor * self.criterion.weights.giou
         losses["total"] = losses["total"] + center_weight * sum(center_losses.values())
+        if self.decoder_loss_mode == "first_last":
+            losses["total"] = self._first_last_total(losses)
         return losses
 
 
@@ -1460,6 +1485,7 @@ class PoseFlowV5PipelineConfig(PoseFlowV4PipelineConfig):
     lr_cycle_restart_peak: float = 3e-5
     lr_cycle_final_min: float = 2e-6
     center_loss_factor: float = 0.1
+    decoder_loss_mode: Literal["all", "first_last"] = "all"
 
     @model_validator(mode="after")
     def _validate_v5_configuration(self) -> "PoseFlowV5PipelineConfig":
@@ -1549,6 +1575,7 @@ class PoseFlowV5PipelineConfig(PoseFlowV4PipelineConfig):
             flow_sampling_steps=self.flow_sampling_steps,
             corner_order_loss_weight=self.corner_order_loss_weight,
             center_loss_factor=self.center_loss_factor,
+            decoder_loss_mode=self.decoder_loss_mode,
             lr_cycle_restart_epoch=self.lr_cycle_restart_epoch,
             lr_cycle_first_min=self.lr_cycle_first_min,
             lr_cycle_restart_peak=self.lr_cycle_restart_peak,

@@ -191,6 +191,11 @@ Visible-mask: `visible = visibility == 2`.
   an auxiliary center point at its hypothesis and refiner stages. Decoded
   boxes remain corner-derived; direct-center and corner-midpoint-to-GT-center
   losses each use `0.1 * GIoU-weight` and do not alter OTA or inference.
+  The optional V5-only `decoder_loss_mode=first_last` ablation optimizes the
+  hypothesis and final decoder outputs (including their center losses), final
+  denoising losses, and the corner-order penalty. Intermediate refiner and
+  denoising losses remain logged but do not contribute to the objective;
+  `all` retains the original supervision at every decoder stage.
 - The native training wrapper has passed one-image CPU and CUDA smoke runs,
   including checkpoint restore. The external-compatible preset freezes the
   ResNet stem and `layer1`, shares the decoder pose-size head, and applies the
