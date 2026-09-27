@@ -79,14 +79,16 @@ remained. The [runtime audit](diffusionregpose-runtime-audit.md) documents
 both the measured speed and this failure.
 
 The next compatible presets retained checkpoint-compatible weights while
-reducing resolution and query-side work. At 256/427 pixels, a 200-query run
-reached **0.5634 AP at epoch 20** before stopping; the 128/192 version reached
-**0.5458 at epoch 80**. A 3-encoder/3-decoder selected-layer model then
-transferred EDPose layers 2, 4, and 6 explicitly, used 200 initial queries
-and 50 person groups, and reached **0.6302 validation keypoint / 0.5964 bbox
-AP** after 80 epochs. Those altered-resolution runs are development results,
-not paper-parity results. Architecture, timing, and AP provenance are collected
-in the [efficiency journey](diffusionregpose-efficiency-journey.ipynb).
+reducing resolution and query-side work. A **6-encoder/6-decoder Hungarian**
+model at 256/427 pixels and 200 initial queries reached **0.5634 validation
+AP on `crowdpose_val.json` at epoch 20** before stopping; its 128/192 version
+reached **0.5458 validation AP at epoch 80**. A different **3-encoder/3-decoder
+Hungarian** model transferred EDPose layers 2, 4, and 6 explicitly, used 200
+initial queries and 50 person groups, and reached **0.6302 validation
+keypoint / 0.5964 bbox AP at epoch 80**. These are development runs with
+different architectures and checkpoints, not paper-parity results. Their
+architecture and AP provenance are in the
+[efficiency journey](diffusionregpose-efficiency-journey.ipynb).
 
 ### 11–13 September: change matching and loss normalization
 
@@ -99,12 +101,27 @@ The original Hungarian path remained the control.
 The matched 3-encoder/3-decoder, 256/427, single-seed comparison changed only
 clean-query assignment in its resolved training configuration. At epoch 80,
 OTA versus Hungarian validation keypoint AP was **0.703043 vs 0.630153**.
-Independent full-test evaluation of the final checkpoints, however, gave
+Standalone evaluation of those final checkpoints on the full test split gave
 **0.548950 vs 0.515739** keypoint AP and **0.518699 vs 0.508753** bbox AP.
-The test advantage is real for this pair of runs but smaller than the
-validation difference; it has not been shown to transfer to the full paper
-model or a second seed. The [OTA comparison](diffusionregpose-ota-comparison.md)
-contains the resolved-config audit, trajectories, and test metric artifacts.
+The test advantage holds for this pair of runs but is smaller than the
+validation difference. The [OTA comparison](diffusionregpose-ota-comparison.md)
+contains the resolved-config audit and full metrics.
+
+These AP values describe **different runs or different evaluation splits**:
+
+| Run and evaluation point | Architecture | Assignment | Evaluation | Keypoint AP |
+| --- | --- | --- | --- | ---: |
+| [Compatible 256, epoch 20](../results/diffusionregpose_development_compatible_256/dev256-compatible-full/20260910_075409/csv_logs/metrics.csv) | 6 encoder / 6 decoder | Hungarian | 2,000-image `crowdpose_val.json`, training-loop validation | 0.563411 |
+| [Selected-layer, epoch 80](../results/diffusionregpose_development_compatible_256_keep_layers/diffusionregpose_development_compatible_256_keep_layers/20260912_000637/csv_logs/metrics.csv) | 3 encoder / 3 decoder | Hungarian | 2,000-image `crowdpose_val.json`, training-loop validation | 0.630153 |
+| [Selected-layer, epoch 80](../results/diffusionregpose_development_compatible_256_keep_layers/test_eval_256_v3/metrics.json) | 3 encoder / 3 decoder | Hungarian | 8,000-image `crowdpose_test.json`, standalone S=1 | 0.515739 |
+| [Selected-layer, epoch 80](../results/diffusionregpose_development_compatible_256_keep_layers_ota/test_eval_256_v3/metrics.json) | 3 encoder / 3 decoder | OTA | 8,000-image `crowdpose_test.json`, standalone S=1 | 0.548950 |
+
+Thus **0.5634 is not the Hungarian control for the 0.5490 OTA result**. It is
+an earlier, deeper model measured on validation after 20 epochs. The
+controlled test comparison is **0.548950 OTA versus 0.515739 Hungarian** for
+the two selected-layer models. The large validation-to-test drops warrant
+caution; these artifacts do not by themselves establish their cause. Nor does
+this one-seed, reduced-model result establish a full paper-scale OTA gain.
 
 ### 13–18 September: PoseFlow and successive state designs
 

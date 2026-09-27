@@ -2968,3 +2968,21 @@ Modified files:
   claiming statistical significance.
 - Verified ten latest keypoint/bbox metric pairs, 27 local links, and
   `git diff --check`; left active training and seed-sensitivity runs untouched.
+
+[2026-09-27] Added DiffusionRegPose architecture walkthrough
+
+- Added `reports/diffusionregpose-how-it-works.md` covering image features,
+  three attention paths, decoder/query layout, diffusion targets and DDIM,
+  matching, supervised losses, denoising, and CrowdPose evaluation.
+- Verified default-config counts and loss weights against source, all 37
+  local links, and `git diff --check`. No production code or run changed.
+
+[2026-09-27] Clarified reduced-model AP provenance in chronology
+
+- Distinguished 0.5634 validation AP from a 6E/6D Hungarian epoch-20 run
+  from the 3E/3D epoch-80 OTA/Hungarian standalone test comparison
+  (0.548950 versus 0.515739).
+- Added a four-row run/split/protocol table and explicitly avoided comparing
+  AP across the 2,000-image validation and 8,000-image test annotations.
+- Verified resolved configs, annotation image counts, CSV/JSON metrics,
+  report links, and `git diff --check`.
