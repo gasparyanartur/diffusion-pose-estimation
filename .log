@@ -2986,3 +2986,85 @@ Modified files:
   AP across the 2,000-image validation and 8,000-image test annotations.
 - Verified resolved configs, annotation image counts, CSV/JSON metrics,
   report links, and `git diff --check`.
+
+[2026-09-28] Added 3D-prior depth and segmentation compatibility report
+
+- Added `reports/3d-prior/depth-segmentation-compatibility.md` comparing DA3,
+  DA2, MoGe, Depth Pro, Meta DINO dense heads, SAM, and COCO instance models.
+- Distinguished exact feature sharing from DINO-family resemblance, semantic
+  masks from person instances, and relative from metric geometry.
+- Checked primary sources and local links; no model inference or dependency
+  changes were made.
+
+[2026-09-28] Added CPU DA3-BASE CrowdPose point-cloud notebook
+
+- Executed `reports/3d-prior/pointcloud-exploration.ipynb` on three CrowdPose
+  images with 1, 3, and 8 annotated people. Saved three depth/3D figures and
+  RGB PLY point clouds under `reports/3d-prior/assets/`.
+- Used CPU with two threads while the RTX 3090 training job was busy; pinned
+  model/source revisions in the notebook. No CUDA inference or changes to the
+  shared training environment.
+- Verified synthetic back-projection, notebook outputs, PLY vertex counts,
+  local links, and `git diff --check`; documented relative-scale limitations.
+
+[2026-09-28] Audited DA3 projection and added RGBD/GLB outputs
+
+- Compared all projected pixels against DA3's official exporter for three
+  scenes; maximum coordinate error was 4.77e-7 in relative units.
+- Saved aligned RGB/depth/confidence/intrinsics NPZ files, confidence-filtered
+  RGB PLY clouds, DA3 RGB GLBs, and revised RGBD/3D notebook figures.
+- Verified CPU-only execution, RGBD array alignment, GLB point colors and
+  counts, notebook outputs, and `git diff --check`. Noted that single-view
+  geometry remains sheet-like despite correct projection.
+
+[2026-09-28] Marked single-image DA3 cloud as unsuitable for skeletal prior
+
+- User review found the three RGBD point clouds visually unusable for the
+  intended 3D skeletal reasoning. Recorded this as a negative feasibility
+  result in the notebook, README, and `.plan`; no pose integration was made.
+
+[2026-09-28] Ran CPU SHARP depth and Gaussian feasibility pilot
+
+- Added `scripts/investigation/sharp_feasibility.py` and executed one
+  three-person CrowdPose image with the official SHARP checkpoint on CPU.
+- Saved two metric depth layers, a sampled 200,000-Gaussian PLY, scene and
+  person-box diagnostic figures, and run metadata under `reports/3d-prior/assets/`.
+- Added `reports/3d-prior/sharp-feasibility.md` with source, focal-length
+  assumption, artifact links, and the limited conclusion: foreground depth is
+  clearer, but the Gaussian scene does not establish usable body geometry.
+- No CUDA inference or pose-pipeline changes; stopped before the remaining
+  images at the planned one-image quality gate.
+
+[2026-09-28] Built SHARP final-geometry RGBD notebook
+
+- Saved all 1,179,648 final Gaussian centers with camera intrinsics through a
+  second CPU-only SHARP pass; did not allocate CUDA memory.
+- Executed `reports/3d-prior/sharp-rgbd-pointcloud.ipynb`, deriving a sparse
+  nearest-center depth raster and back-projecting source RGB pixels to 3D.
+- Added overview, fixed top/side views, interactive scene/person-box HTML,
+  and binary RGB PLY. Verified 37.4% z-buffer coverage, 17,950 displayed
+  points, 0.000061 px projection round-trip error, and inspected static figures.
+- Documented that the first depth layer is intermediate and the derived
+  center z-buffer is an approximation rather than a SHARP-rendered depth map.
+
+[2026-09-28] Closed depth-based 3D-prior exploration
+
+- Recorded the user's decision that inspected DA3 and SHARP geometry is too
+  unreliable for skeletal reasoning; retained the experiment artifacts.
+- Updated the SHARP report, README, project assumptions, and `.plan` to keep
+  future investigation focused on DINO image features.
+- No model, training, evaluation, configuration, or architecture changes.
+[2026-09-28] Completed DiffusionRegPose inference-seed sensitivity sweep
+
+- Completed full 8,000-image S=1/S=2 evaluations at seeds 43–46, paired with
+  the existing seed-42 runs. Every run reached 8,000/8,000 and produced finite
+  keypoint/bbox metrics without checkpoint warnings or runtime errors.
+- Keypoint AP across seeds 42–46: S=1 mean 0.674350 (sample SD 0.000767),
+  S=2 mean 0.687106 (sample SD 0.000449). Paired S=2 minus S=1 gain mean
+  +0.012756 (sample SD 0.001149; range +0.011217 to +0.013957).
+- Bbox AP paired gain mean +0.001559 (sample SD 0.001471; range -0.000034
+  to +0.003472), so its step response is not consistent across these seeds.
+- This bounds inference-seed variation for the fixed checkpoint and fixed
+  test set; it does not estimate test-set uncertainty or training-seed variance.
+- Per-run artifacts are under
+  `results/diffusionregpose_paper_full_standalone_eval/s0{1,2}_seed{43,44,45,46}/`.

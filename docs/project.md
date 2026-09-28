@@ -273,6 +273,12 @@ Visible-mask: `visible = visibility == 2`.
   clean-query assignment changes from Hungarian to pose-aware Dynamic-K OTA.
 - Cached-DINO graph-diffusion refinement is unsupported and has no
   configuration or compatibility path.
+- The 3D-prior research thread has closed its depth-based reconstruction
+  route: inspected DA3 and SHARP point clouds did not provide reliable enough
+  human geometry for skeletal reasoning. Future research in that thread uses
+  DINO image features without an inferred 3D point cloud. This records an
+  experimental direction, not a new supported pipeline or feature contract;
+  see `reports/3d-prior/sharp-feasibility.md` for the visual evidence.
 - Box diffusion and DiffusionDet are separate object-detection models whose
   outputs are boxes and objectness scores, not poses. Box diffusion is the
   tensor-native `BoxDiffusionPipeline`; it accepts image tensors and does not

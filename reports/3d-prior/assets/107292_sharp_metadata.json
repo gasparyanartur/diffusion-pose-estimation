@@ -1,0 +1,29 @@
+{
+  "image": "data/crowdpose/images/107292.jpg",
+  "checkpoint": "tmp/sharp-checkpoints/sharp_2572gikvuh.pt",
+  "device": "cpu",
+  "threads": 2,
+  "original_hw": [
+    423,
+    640
+  ],
+  "internal_hw": [
+    1536,
+    1536
+  ],
+  "focal_source": "SHARP fallback 30 mm equivalent",
+  "focal_px": 531.9272832026804,
+  "gaussians_sampled": 200000,
+  "opacity_ge_0_5": 186449,
+  "depth_layer_median_m": [
+    3.0437099933624268,
+    3.0491843223571777
+  ],
+  "elapsed_seconds": 185.1,
+  "depth_npz": "reports/3d-prior/assets/107292_sharp_depth.npz",
+  "gaussian_ply": "reports/3d-prior/assets/107292_sharp_gaussians_sampled.ply",
+  "figure": "reports/3d-prior/assets/107292_sharp_diagnostic.png",
+  "people_figure": "reports/3d-prior/assets/107292_sharp_people.png",
+  "person_box_gaussians": 33992,
+  "all_centers_npz": "reports/3d-prior/assets/107292_sharp_all_centers.npz"
+}

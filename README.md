@@ -422,3 +422,30 @@ Benchmark metrics are written under `results/`. Training outputs include
 resolved Hydra configs, logs, checkpoints, and test results under the pipeline
 run directory. See each script's `--help` output and its Hydra root config for
 available options.
+
+## 9. 3D-prior research
+
+The [depth and segmentation compatibility report](reports/3d-prior/depth-segmentation-compatibility.md)
+compares pretrained models and identifies which feature backbones their heads
+expect. The [point-cloud notebook](reports/3d-prior/pointcloud-exploration.ipynb)
+uses Depth Anything 3 Base on three CrowdPose images and saves aligned RGBD
+arrays, RGB-colored point-cloud figures, colored PLY files, and DA3's GLB
+exports under `reports/3d-prior/assets/`. The notebook checks its projection
+against DA3's exporter and records DA3's estimated intrinsics. Install the
+[official DA3 package](https://github.com/ByteDance-Seed/Depth-Anything-3)
+in a separate environment, then open the notebook from the repository root.
+It explicitly runs on CPU with two threads to avoid the training GPU. Its
+single-image clouds have relative scale and show only visible surfaces.
+On the three inspected CrowdPose examples, their person geometry was too
+incomplete for a 3D skeletal prior; the notebook records this negative result.
+The [SHARP feasibility pilot](reports/3d-prior/sharp-feasibility.md) compares
+SHARP's two depth layers and a sampled Gaussian scene on one of those images.
+The [executed SHARP RGBD notebook](reports/3d-prior/sharp-rgbd-pointcloud.ipynb)
+projects final Gaussian centers into a sparse depth raster, combines valid
+pixels with source RGB, and shows interactive scene and person-box point
+clouds plus fixed top and side views. The first depth layer is an intermediate
+visible-surface estimate; the center-derived raster is an approximation to
+final rendered depth. The inspected depth-based geometry is too unreliable for
+the intended skeletal prior, so this route is closed and no 3D prior was
+integrated into the pose model. Future work in this thread will use DINO image
+features; the notebooks remain as evidence for the decision.
