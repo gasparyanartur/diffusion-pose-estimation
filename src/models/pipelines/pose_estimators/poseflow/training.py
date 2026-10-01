@@ -21,7 +21,15 @@ from src.models.pipelines.pose_estimators.diffusionregpose.training import (
     update_diffusionregpose_bbox_ap_metric,
 )
 from src.training.optim import build_adamw_with_schedule
-from .model import PoseFlowModel, PoseFlowV3Model, PoseFlowV4Model, PoseFlowV5Model
+from .model import (
+    PoseFlowModel,
+    PoseFlowV3Model,
+    PoseFlowV4Model,
+    PoseFlowV5Model,
+    PoseFlowV6Model,
+    PoseFlowV7Model,
+    PoseFlowV8Model,
+)
 from .state import (
     cxcywh_to_corners,
     euler_update_person_state,
@@ -30,6 +38,43 @@ from .state import (
     merge_person_slot_fields,
     pack_person_state,
 )
+
+
+def _adapt_v8_encoder_attention_levels(
+    source_state: dict[str, Tensor],
+    target_state: dict[str, Tensor],
+    *,
+    num_heads: int,
+    source_levels: int = 4,
+    target_levels: int = 3,
+) -> tuple[dict[str, Tensor], tuple[str, ...]]:
+    """Retain the first three pretrained level groups in V8 encoder attention."""
+    adapted = dict(source_state)
+    adapted_keys: list[str] = []
+    for name, value in source_state.items():
+        if ".encoder.layers." not in name or not any(
+            component in name
+            for component in (".sampling_offsets.", ".attention_weights.")
+        ):
+            continue
+        target = target_state.get(name)
+        if target is None or target.shape == value.shape or value.ndim < 1:
+            continue
+        if target.ndim != value.ndim or target.shape[1:] != value.shape[1:]:
+            continue
+        source_group = value.shape[0] // (num_heads * source_levels)
+        target_group = target.shape[0] // (num_heads * target_levels)
+        if (
+            source_group <= 0
+            or source_group != target_group
+            or value.shape[0] != num_heads * source_levels * source_group
+            or target.shape[0] != num_heads * target_levels * target_group
+        ):
+            continue
+        grouped = value.reshape(num_heads, source_levels, source_group, *value.shape[1:])
+        adapted[name] = grouped[:, :target_levels].reshape_as(target)
+        adapted_keys.append(name)
+    return adapted, tuple(adapted_keys)
 
 
 def _flow_generator(
@@ -1501,38 +1546,41 @@ class PoseFlowV5PipelineConfig(PoseFlowV4PipelineConfig):
             raise ValueError("V5 learning rates and center_loss_factor must be non-negative")
         return self
 
+    def _poseflow_model_kwargs(self) -> dict[str, object]:
+        return {
+            "backbone_pretrained": self.backbone_pretrained,
+            "timesteps": self.timesteps,
+            "sampling_timesteps": self.sampling_timesteps,
+            "num_queries": self.num_queries,
+            "num_proposals": self.num_proposals,
+            "num_classes": self.num_classes,
+            "num_feature_levels": self.num_feature_levels,
+            "num_encoder_layers": self.num_encoder_layers,
+            "num_decoder_layers": self.num_decoder_layers,
+            "hidden_dim": self.hidden_dim,
+            "feedforward_dim": self.feedforward_dim,
+            "num_heads": self.num_heads,
+            "num_body_points": self.num_body_points,
+            "num_box_decoder_layers": self.num_box_decoder_layers,
+            "num_group": self.num_group,
+            "dn_number": self.dn_number,
+            "dn_box_noise_scale": self.dn_box_noise_scale,
+            "dn_label_noise_ratio": self.dn_label_noise_ratio,
+            "freeze_backbone_stem_and_layer1": self.freeze_backbone_stem_and_layer1,
+            "freeze_backbone": self.freeze_backbone,
+            "freeze_backbone_and_transformer": self.freeze_backbone_and_transformer,
+            "separate_expansion_pose_head": self.pretrained_keep_decoder_layers is not None,
+            "flow_sampling_steps": self.flow_sampling_steps,
+            "flow_renewal": False,
+            "flow_renewal_score_threshold": self.flow_renewal_score_threshold,
+            "flow_ensemble": self.flow_ensemble,
+            "flow_state_conditioning": self.flow_state_conditioning,
+            "fourier_bands": self.fourier_bands,
+            "corner_order_loss_weight": self.corner_order_loss_weight,
+        }
+
     def _build_poseflow_model(self) -> PoseFlowV5Model:
-        return PoseFlowV5Model(
-            backbone_pretrained=self.backbone_pretrained,
-            timesteps=self.timesteps,
-            sampling_timesteps=self.sampling_timesteps,
-            num_queries=self.num_queries,
-            num_proposals=self.num_proposals,
-            num_classes=self.num_classes,
-            num_feature_levels=self.num_feature_levels,
-            num_encoder_layers=self.num_encoder_layers,
-            num_decoder_layers=self.num_decoder_layers,
-            hidden_dim=self.hidden_dim,
-            feedforward_dim=self.feedforward_dim,
-            num_heads=self.num_heads,
-            num_body_points=self.num_body_points,
-            num_box_decoder_layers=self.num_box_decoder_layers,
-            num_group=self.num_group,
-            dn_number=self.dn_number,
-            dn_box_noise_scale=self.dn_box_noise_scale,
-            dn_label_noise_ratio=self.dn_label_noise_ratio,
-            freeze_backbone_stem_and_layer1=self.freeze_backbone_stem_and_layer1,
-            freeze_backbone=self.freeze_backbone,
-            freeze_backbone_and_transformer=self.freeze_backbone_and_transformer,
-            separate_expansion_pose_head=self.pretrained_keep_decoder_layers is not None,
-            flow_sampling_steps=self.flow_sampling_steps,
-            flow_renewal=False,
-            flow_renewal_score_threshold=self.flow_renewal_score_threshold,
-            flow_ensemble=self.flow_ensemble,
-            flow_state_conditioning=self.flow_state_conditioning,
-            fourier_bands=self.fourier_bands,
-            corner_order_loss_weight=self.corner_order_loss_weight,
-        )
+        return PoseFlowV5Model(**self._poseflow_model_kwargs())
 
     def build(self, **kwargs) -> PoseFlowV5Pipeline:
         diffusion_pipeline = DiffusionRegPosePipelineConfig.build(self, **kwargs)
@@ -1580,4 +1628,300 @@ class PoseFlowV5PipelineConfig(PoseFlowV4PipelineConfig):
             lr_cycle_first_min=self.lr_cycle_first_min,
             lr_cycle_restart_peak=self.lr_cycle_restart_peak,
             lr_cycle_final_min=self.lr_cycle_final_min,
+        )
+
+
+class PoseFlowV6Pipeline(PoseFlowV5Pipeline):
+    """V5 flow training with DINO multi-scale decoder fusion."""
+
+    def __init__(
+        self,
+        *args,
+        lr_main_warmup_epochs: int,
+        lr_backbone_warmup_epochs: int,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.lr_main_warmup_epochs = lr_main_warmup_epochs
+        self.lr_backbone_warmup_epochs = lr_backbone_warmup_epochs
+
+    def configure_optimizers(self):
+        return build_adamw_with_schedule(
+            self,
+            lr=self.lr,
+            lr_backbone=self.lr_backbone,
+            weight_decay=self.weight_decay,
+            lr_T_max=self.max_epochs,
+            lr_min_frac=self.lr_min_frac,
+            scheduler_type="cosine",
+            lr_warmup_epochs_by_group={
+                "main": self.lr_main_warmup_epochs,
+                "backbone": self.lr_backbone_warmup_epochs,
+            },
+            split_weight_decay=self.split_weight_decay,
+        )
+
+
+class PoseFlowV6PipelineConfig(PoseFlowV5PipelineConfig):
+    """Distinct V6 checkpoint family with frozen DINOv3 stage features."""
+
+    scheduler_type: Literal["cosine"] = "cosine"
+    lr: float = 1e-4
+    lr_backbone: float | None = 1e-5
+    lr_main_warmup_epochs: int = 1
+    lr_backbone_warmup_epochs: int = 10
+    dino_model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m"
+    dino_frozen: bool = True
+    dino_hidden_state_indices: tuple[int, ...] = (2, 3, 4)
+    dino_feature_channels: tuple[int, ...] = (192, 384, 768)
+
+    @model_validator(mode="after")
+    def _validate_v6_schedule(self) -> "PoseFlowV6PipelineConfig":
+        if self.lr_main_warmup_epochs < 0 or self.lr_backbone_warmup_epochs < 0:
+            raise ValueError("V6 warmup durations must be non-negative")
+        if not self.dino_hidden_state_indices or len(self.dino_hidden_state_indices) != len(
+            self.dino_feature_channels
+        ):
+            raise ValueError("V6 DINO stage indices and channels must be non-empty and aligned")
+        return self
+
+    def _build_poseflow_model(self) -> PoseFlowV6Model:
+        return PoseFlowV6Model(
+            **self._poseflow_model_kwargs(),
+            dino_model_name=self.dino_model_name,
+            dino_frozen=self.dino_frozen,
+            dino_hidden_state_indices=self.dino_hidden_state_indices,
+            dino_feature_channels=self.dino_feature_channels,
+        )
+
+    def build(self, **kwargs) -> PoseFlowV6Pipeline:
+        diffusion_pipeline = DiffusionRegPosePipelineConfig.build(self, **kwargs)
+        model = self._build_poseflow_model()
+        load_result = model.load_state_dict(
+            diffusion_pipeline.model.state_dict(), strict=False
+        )
+        expected_missing = {
+            f"{prefix}.{name}"
+            for prefix in (
+                "hypothesis_stage",
+                "initial_coordinate_head",
+                "initial_class_head",
+                "v5_box_heads",
+                "v4_class_heads",
+                "v4_pose_heads",
+                "v4_pose_hw_heads",
+                "dino_backbone",
+                "dino_input_projections",
+                "dino_decoder_fusion",
+            )
+            for name in getattr(model, prefix).state_dict()
+        }
+        if set(load_result.missing_keys) != expected_missing or load_result.unexpected_keys:
+            raise RuntimeError("PoseFlow V6 initialization changed shared model tensors")
+        return PoseFlowV6Pipeline(
+            model,
+            diffusion_pipeline.criterion,
+            lr=diffusion_pipeline.lr,
+            lr_backbone=diffusion_pipeline.lr_backbone,
+            weight_decay=diffusion_pipeline.weight_decay,
+            max_epochs=diffusion_pipeline.max_epochs,
+            lr_warmup_epochs=diffusion_pipeline.lr_warmup_epochs,
+            lr_min_frac=diffusion_pipeline.lr_min_frac,
+            scheduler_type=self.scheduler_type,
+            lr_decay_milestones=diffusion_pipeline.lr_decay_milestones,
+            split_weight_decay=diffusion_pipeline.split_weight_decay,
+            val_ap_every_n_epochs=diffusion_pipeline.val_ap_every_n_epochs,
+            val_ann_file=kwargs.get("val_ann_file"),
+            diffusion_noise_seed=diffusion_pipeline.diffusion_noise_seed,
+            deterministic_seed=diffusion_pipeline.deterministic_seed,
+            flow_padding_policy=self.flow_padding_policy,
+            flow_sampling_steps=self.flow_sampling_steps,
+            corner_order_loss_weight=self.corner_order_loss_weight,
+            center_loss_factor=self.center_loss_factor,
+            decoder_loss_mode=self.decoder_loss_mode,
+            lr_cycle_restart_epoch=self.lr_cycle_restart_epoch,
+            lr_cycle_first_min=self.lr_cycle_first_min,
+            lr_cycle_restart_peak=self.lr_cycle_restart_peak,
+            lr_cycle_final_min=self.lr_cycle_final_min,
+            lr_main_warmup_epochs=self.lr_main_warmup_epochs,
+            lr_backbone_warmup_epochs=self.lr_backbone_warmup_epochs,
+        )
+
+
+class PoseFlowV7Pipeline(PoseFlowV6Pipeline):
+    """V6 training contract with a smaller Tiny DINOv3 branch."""
+
+
+class PoseFlowV7PipelineConfig(PoseFlowV6PipelineConfig):
+    """Distinct V7 checkpoint family using DINOv3 ConvNeXt-Tiny stages 2 and 4."""
+
+    num_feature_levels: Literal[2] = 2
+    dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
+    dino_hidden_state_indices: tuple[int, ...] = (2, 4)
+    dino_feature_channels: tuple[int, ...] = (192, 768)
+
+    def _build_poseflow_model(self) -> PoseFlowV7Model:
+        return PoseFlowV7Model(
+            **self._poseflow_model_kwargs(),
+            dino_model_name=self.dino_model_name,
+            dino_frozen=self.dino_frozen,
+            dino_hidden_state_indices=self.dino_hidden_state_indices,
+            dino_feature_channels=self.dino_feature_channels,
+        )
+
+    def build(self, **kwargs) -> PoseFlowV7Pipeline:
+        diffusion_pipeline = DiffusionRegPosePipelineConfig.build(self, **kwargs)
+        model = self._build_poseflow_model()
+        load_result = model.load_state_dict(diffusion_pipeline.model.state_dict(), strict=False)
+        expected_missing = {
+            f"{prefix}.{name}"
+            for prefix in (
+                "hypothesis_stage",
+                "initial_coordinate_head",
+                "initial_class_head",
+                "v5_box_heads",
+                "v4_class_heads",
+                "v4_pose_heads",
+                "v4_pose_hw_heads",
+                "dino_backbone",
+                "dino_input_projections",
+                "dino_decoder_fusion",
+            )
+            for name in getattr(model, prefix).state_dict()
+        }
+        if set(load_result.missing_keys) != expected_missing or load_result.unexpected_keys:
+            raise RuntimeError("PoseFlow V7 initialization changed shared model tensors")
+        return PoseFlowV7Pipeline(
+            model,
+            diffusion_pipeline.criterion,
+            lr=diffusion_pipeline.lr,
+            lr_backbone=diffusion_pipeline.lr_backbone,
+            weight_decay=diffusion_pipeline.weight_decay,
+            max_epochs=diffusion_pipeline.max_epochs,
+            lr_warmup_epochs=diffusion_pipeline.lr_warmup_epochs,
+            lr_min_frac=diffusion_pipeline.lr_min_frac,
+            scheduler_type=self.scheduler_type,
+            lr_decay_milestones=diffusion_pipeline.lr_decay_milestones,
+            split_weight_decay=diffusion_pipeline.split_weight_decay,
+            val_ap_every_n_epochs=diffusion_pipeline.val_ap_every_n_epochs,
+            val_ann_file=kwargs.get("val_ann_file"),
+            diffusion_noise_seed=diffusion_pipeline.diffusion_noise_seed,
+            deterministic_seed=diffusion_pipeline.deterministic_seed,
+            flow_padding_policy=self.flow_padding_policy,
+            flow_sampling_steps=self.flow_sampling_steps,
+            corner_order_loss_weight=self.corner_order_loss_weight,
+            center_loss_factor=self.center_loss_factor,
+            decoder_loss_mode=self.decoder_loss_mode,
+            lr_cycle_restart_epoch=self.lr_cycle_restart_epoch,
+            lr_cycle_first_min=self.lr_cycle_first_min,
+            lr_cycle_restart_peak=self.lr_cycle_restart_peak,
+            lr_cycle_final_min=self.lr_cycle_final_min,
+            lr_main_warmup_epochs=self.lr_main_warmup_epochs,
+            lr_backbone_warmup_epochs=self.lr_backbone_warmup_epochs,
+        )
+
+
+class PoseFlowV8Pipeline(PoseFlowV7Pipeline):
+    """V7 training contract with independent DINO coarse/fine feature adapters."""
+
+
+class PoseFlowV8PipelineConfig(PoseFlowV7PipelineConfig):
+    """DINO-only four-level feature pyramid with separate coarse and fine paths."""
+
+    num_feature_levels: Literal[4] = 4
+    num_encoder_feature_levels: Literal[3] = 3
+    dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
+    dino_hidden_state_indices: tuple[int, ...] = (1, 2, 3, 4)
+    dino_feature_channels: tuple[int, ...] = (96, 192, 384, 768)
+    dino_coarse_hidden_state_indices: tuple[int, ...] = (2, 3, 4)
+
+    @model_validator(mode="after")
+    def _validate_v8_dino_stages(self) -> "PoseFlowV8PipelineConfig":
+        if self.dino_hidden_state_indices != (1, 2, 3, 4):
+            raise ValueError("PoseFlow V8 requires all four DINO ConvNeXt stages")
+        if self.dino_feature_channels != (96, 192, 384, 768):
+            raise ValueError("PoseFlow V8 requires DINO stage channels [96, 192, 384, 768]")
+        if self.dino_coarse_hidden_state_indices != (2, 3, 4):
+            raise ValueError("PoseFlow V8 coarse features must use DINO stages [2, 3, 4]")
+        return self
+
+    def _build_poseflow_model(self) -> PoseFlowV8Model:
+        model_kwargs = self._poseflow_model_kwargs()
+        model_kwargs["backbone_pretrained"] = False
+        model_kwargs["num_encoder_feature_levels"] = self.num_encoder_feature_levels
+        return PoseFlowV8Model(
+            **model_kwargs,
+            dino_model_name=self.dino_model_name,
+            dino_frozen=self.dino_frozen,
+            dino_hidden_state_indices=self.dino_hidden_state_indices,
+            dino_feature_channels=self.dino_feature_channels,
+            dino_coarse_hidden_state_indices=self.dino_coarse_hidden_state_indices,
+        )
+
+    def build(self, **kwargs) -> PoseFlowV8Pipeline:
+        source_config = self.model_copy(update={"backbone_pretrained": False})
+        diffusion_pipeline = DiffusionRegPosePipelineConfig.build(source_config, **kwargs)
+        model = self._build_poseflow_model()
+        source_state = {
+            key: value
+            for key, value in diffusion_pipeline.model.state_dict().items()
+            if not key.startswith(("backbone.", "input_proj."))
+        }
+        target_state = model.state_dict()
+        source_state, adapted_encoder_keys = _adapt_v8_encoder_attention_levels(
+            source_state,
+            target_state,
+            num_heads=self.num_heads,
+        )
+        load_result = model.load_state_dict(source_state, strict=False)
+        expected_missing = {
+            f"{prefix}.{name}"
+            for prefix in (
+                "hypothesis_stage",
+                "initial_coordinate_head",
+                "initial_class_head",
+                "v5_box_heads",
+                "v4_class_heads",
+                "v4_pose_heads",
+                "v4_pose_hw_heads",
+                "dino_backbone",
+                "dino_coarse_input_projections",
+                "dino_fine_input_projections",
+            )
+            for name in getattr(model, prefix).state_dict()
+        }
+        if set(load_result.missing_keys) != expected_missing or load_result.unexpected_keys:
+            raise RuntimeError("PoseFlow V8 initialization changed shared model tensors")
+        if len(adapted_encoder_keys) != self.num_encoder_layers * 4:
+            raise RuntimeError(
+                "PoseFlow V8 expected to adapt four level-specific attention tensors "
+                "per encoder layer"
+            )
+        return PoseFlowV8Pipeline(
+            model,
+            diffusion_pipeline.criterion,
+            lr=diffusion_pipeline.lr,
+            lr_backbone=diffusion_pipeline.lr_backbone,
+            weight_decay=diffusion_pipeline.weight_decay,
+            max_epochs=diffusion_pipeline.max_epochs,
+            lr_warmup_epochs=diffusion_pipeline.lr_warmup_epochs,
+            lr_min_frac=diffusion_pipeline.lr_min_frac,
+            scheduler_type=self.scheduler_type,
+            lr_decay_milestones=diffusion_pipeline.lr_decay_milestones,
+            split_weight_decay=diffusion_pipeline.split_weight_decay,
+            val_ap_every_n_epochs=diffusion_pipeline.val_ap_every_n_epochs,
+            val_ann_file=kwargs.get("val_ann_file"),
+            diffusion_noise_seed=diffusion_pipeline.diffusion_noise_seed,
+            deterministic_seed=diffusion_pipeline.deterministic_seed,
+            flow_padding_policy=self.flow_padding_policy,
+            flow_sampling_steps=self.flow_sampling_steps,
+            corner_order_loss_weight=self.corner_order_loss_weight,
+            center_loss_factor=self.center_loss_factor,
+            decoder_loss_mode=self.decoder_loss_mode,
+            lr_cycle_restart_epoch=self.lr_cycle_restart_epoch,
+            lr_cycle_first_min=self.lr_cycle_first_min,
+            lr_cycle_restart_peak=self.lr_cycle_restart_peak,
+            lr_cycle_final_min=self.lr_cycle_final_min,
+            lr_main_warmup_epochs=self.lr_main_warmup_epochs,
+            lr_backbone_warmup_epochs=self.lr_backbone_warmup_epochs,
         )

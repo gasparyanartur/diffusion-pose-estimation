@@ -110,6 +110,13 @@ Visible-mask: `visible = visibility == 2`.
   PoseFlow runs also record detached clean-query codebook diagnostics: gate and
   query/attention/residual scales every epoch, plus attention entropy and
   effective slot count from the first validation batch only.
+- PoseFlow V8 is a separate DINO-only ConvNeXt-Tiny feature family. Its fine
+  path uses all four native stages `[96, 192, 384, 768]`; its coarse path uses
+  stages 2/3/4 `[192, 384, 768]`. It does not generate another pyramid.
+  Independent `1x1 Conv + GroupNorm(32)` adapter banks create the three-level
+  encoder/query features and four-level decoder deformable-attention features.
+  The DINO backbone remains frozen by default; only the adapters and model
+  heads train from their respective branches.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
   pose model. Its training criterion defaults to the reference Hungarian
   assignment and supports opt-in DiffusionDet-style Dynamic-K OTA while

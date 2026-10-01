@@ -282,6 +282,89 @@ or a first-and-final ablation. In the latter, the hypothesis and final clean
 outputs, their center losses, final denoising losses, and the corner-order
 penalty are optimized; intermediate stage losses are retained for diagnostics.
 
+PoseFlow V6 is a separate V5-derived checkpoint family. It retains V5's source
+sampling, coordinate state, OTA losses, center supervision, schedule, and
+inference path, while adding an online frozen DINOv3 ConvNeXt-Small backbone.
+Stages 2/3/4 (192/384/768 channels at strides 8/16/32) are projected to the
+decoder width and kept as three spatial maps. After the existing image
+cross-attention in every configured decoder layer, three independent
+single-scale deformable-attention modules read those maps using that layer's
+current query references. The three readouts and the query state are
+concatenated and passed through an MLP; its output is applied as a
+zero-initialized gated residual before the decoder FFN. This preserves
+per-scale features for the MLP rather than summing scales inside one
+multi-scale-attention operation. The DINO path receives the same transformed,
+ImageNet-normalized image tensor as PoseFlow and derives per-scale masks and
+valid ratios from the batch padding mask. During training it also conditions
+denoising queries, preserving their leading query order. V6 initializes all
+shared V5/EDPose tensors from the same baseline and treats DINO, projections,
+attention modules, MLPs, and gates as newly initialized parameters. V5
+checkpoints do not restore V6's new branch and V6 checkpoints are not V5
+checkpoints. The extra DINO forward and three per-layer attention reads have
+not yet been profiled. V6 trains the main/model parameter group at `1e-4`
+with a one-epoch warmup, then cosine decay from epoch 1 through epoch T. Its
+ResNet group uses `1e-5`, warms for 10 epochs, and decays independently from
+epoch 10 through T; both schedules reach their configured peak at the start
+of their stated decay epoch, and neither schedule restarts.
+
+PoseFlow V7 is a distinct V5-derived checkpoint family that keeps V6's
+per-decoder-layer DINO residual-fusion design but uses frozen DINOv3
+ConvNeXt-Tiny stages 2 and 4. These taps have 192 and 768 channels at strides
+8 and 32 for 256-pixel inputs. Stage 2 shares stride 8 with the first selected
+ResNet map; stage 4 supplies coarse context. The base transformer uses only
+its first two ResNet maps (internal layers 2/3, strides 8/16), so the model
+attends to four spatial maps across two branches rather than one shared
+four-level pyramid. Each DINO scale has its own single-scale deformable
+attention readout; query plus both readouts pass through the fusion MLP before
+the zero-initialized residual gate. V7 retains V6's independent cosine
+warmups and all-stage losses.
+
+PoseFlow V8 keeps V7's flow, loss, and reduced training setup, but replaces the
+ResNet and V7 post-attention DINO fusion branches with a DINO-only feature
+path. Frozen ConvNeXt-Tiny supplies all four native stages in fine-to-coarse
+order: 96/192/384/768 channels at strides 4/8/16/32 (64x64 through 8x8 for a
+256-pixel input). It does not synthesize another pyramid. Each stage has an
+independent fine `1x1 Conv + GroupNorm(32)` projection to the configured
+transformer width. The coarse adapter bank uses stages 2/3/4 only (192/384/768
+channels at strides 8/16/32), while the fine bank uses stages 1/2/3/4. Coarse
+features and their three-level metadata feed the transformer encoder and human
+query generation; encoded coarse memory remains the source for those
+predictions. Fine features bypass the encoder and form the four-level spatial
+memory sampled by decoder deformable cross-attention. The encoder's deformable
+attention is constructed for three levels and the decoder for four. The paths
+share the frozen DINO representation, but use independent projections and
+separate masks, spatial shapes, level offsets, and valid ratios. Each downstream
+objective updates its own adapter bank. Decoder and loss behavior otherwise
+remains unchanged.
+
+V8 initializes compatible transformer and prediction tensors from the selected
+EDPose checkpoint. Its ResNet and legacy input projections are intentionally
+unused, and both DINO adapter banks start from fresh initialization. V8 has its
+own checkpoint family; V7 checkpoints do not load strictly into it.
+
+At the reduced 3-encoder/3-decoder configuration, 256-pixel input, and 200
+query/50 proposal setup, measured model parameter counts are:
+
+| Model | Total | Trainable | Frozen |
+| --- | ---: | ---: | ---: |
+| PoseFlow V5, four ResNet levels | 43,014,736 | 42,792,336 | 222,400 |
+| PoseFlow V6, four ResNet levels plus three DINO Small taps | 95,206,675 | 45,529,587 | 49,677,088 |
+| PoseFlow V7, two ResNet levels plus two DINO Tiny taps | 67,266,675 | 39,224,147 | 28,042,528 |
+| PoseFlow V8, DINO Tiny 3-level coarse / 4-level fine adapters | 42,384,848 | 14,564,720 | 27,820,128 |
+
+Counts include frozen backbone parameters and exclude criterion parameters.
+V7 has about 8.3% fewer trainable parameters than V5, but about 56.4% more
+total parameters because its frozen DINO backbone contributes 27.8M weights.
+V8 has 24,881,827 fewer total parameters and 24,659,427 fewer trainable
+parameters than V7; it removes the ResNet and per-decoder DINO fusion path.
+Its coarse and fine DINO adapter banks contain 346,368 and 371,712 parameters,
+respectively, or 718,080 together. The count is 99,360 lower than the earlier
+all-four-level-coarse V8 variant: 25,344 parameters from omitting the stage-1
+coarse adapter and 74,016 from constructing three rather than four encoder
+attention levels. This also removes stride-4 locations from the encoder while
+retaining them in fine decoder memory. These are parameter counts, not measured
+runtime or memory results.
+
 PoseFlow can optionally add one shared pose-hypothesis codebook after deformable
 image cross-attention in selected decoder layers. Each image-conditioned query
 reads from the same learned `C × hidden_dim` token bank, and the same attention

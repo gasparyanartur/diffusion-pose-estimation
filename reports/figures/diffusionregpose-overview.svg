@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" role="img" aria-labelledby="title desc">
+  <title id="title">DiffusionRegPose model overview</title>
+  <desc id="desc">Image features pass through a ResNet and deformable encoder to 900 person proposals. Box decoding and a separate 100 by 14 by 2 keypoint state construct joint references. One hundred people expand to box and joint queries, then pose decoding produces predictions for DDIM updates and CrowdPose pose NMS.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#39619a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="arrow-muted" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#8294af" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <style>
+      text { font-family: 'DejaVu Sans', Arial, sans-serif; fill: #17243a; }
+      .title { font-size: 49px; font-weight: 700; }
+      .subtitle { font-size: 24px; fill: #52647d; }
+      .stage { font-size: 24px; font-weight: 700; letter-spacing: 1.5px; fill: #365680; }
+      .node { font-size: 25px; font-weight: 600; }
+      .detail { font-size: 21px; fill: #53657d; }
+      .note { font-size: 21px; fill: #475d79; }
+      .card { fill: #ffffff; stroke: #d9e2ee; stroke-width: 2; rx: 24; }
+      .box { fill: #edf4ff; stroke: #9ab9e5; stroke-width: 2; rx: 16; }
+      .state { fill: #f4edff; stroke: #bca4e7; stroke-width: 2; rx: 16; }
+      .output { fill: #e9f8f2; stroke: #8ccbb2; stroke-width: 2; rx: 16; }
+      .flow { fill: none; stroke: #39619a; stroke-width: 4; marker-end: url(#arrow); stroke-linecap: round; stroke-linejoin: round; }
+      .memory { fill: none; stroke: #8294af; stroke-width: 3; stroke-dasharray: 10 9; marker-end: url(#arrow-muted); stroke-linecap: round; }
+    </style>
+  </defs>
+  <rect width="1920" height="1080" fill="#f7f9fc"/>
+  <text x="56" y="83" class="title">DiffusionRegPose: from image to multi-person poses</text>
+  <text x="58" y="126" class="subtitle">Default checkpoint-compatible model · image-conditioned proposals · box and joint decoding · DDIM sampling</text>
+
+  <rect x="56" y="174" width="420" height="770" class="card"/>
+  <rect x="518" y="174" width="420" height="770" class="card"/>
+  <rect x="980" y="174" width="420" height="770" class="card"/>
+  <rect x="1442" y="174" width="420" height="770" class="card"/>
+  <text x="83" y="223" class="stage">1  IMAGE FEATURES</text>
+  <text x="545" y="223" class="stage">2  PERSON PROPOSALS</text>
+  <text x="1007" y="223" class="stage">3  QUERY CONSTRUCTION</text>
+  <text x="1469" y="223" class="stage">4  POSE + SAMPLING</text>
+
+  <rect x="82" y="258" width="368" height="91" class="box"/>
+  <text x="266" y="313" text-anchor="middle" class="node">Image + padding mask</text>
+  <path d="M266 350 V379" class="flow"/>
+  <rect x="82" y="382" width="368" height="112" class="box"/>
+  <text x="266" y="428" text-anchor="middle" class="node">ResNet-50</text>
+  <text x="266" y="462" text-anchor="middle" class="detail">layer2 · layer3 · layer4</text>
+  <path d="M266 495 V525" class="flow"/>
+  <rect x="82" y="528" width="368" height="112" class="box"/>
+  <text x="266" y="572" text-anchor="middle" class="node">4 projected feature levels</text>
+  <text x="266" y="606" text-anchor="middle" class="detail">256 channels each</text>
+  <path d="M266 641 V671" class="flow"/>
+  <rect x="82" y="674" width="368" height="132" class="box"/>
+  <text x="266" y="720" text-anchor="middle" class="node">Flatten + position</text>
+  <text x="266" y="753" text-anchor="middle" class="node">and level embeddings</text>
+
+  <rect x="544" y="280" width="368" height="131" class="box"/>
+  <text x="728" y="333" text-anchor="middle" class="node">6 deformable</text>
+  <text x="728" y="366" text-anchor="middle" class="node">encoder layers</text>
+  <path d="M728 412 V495" class="flow"/>
+  <rect x="544" y="500" width="368" height="144" class="box"/>
+  <text x="728" y="548" text-anchor="middle" class="node">Two-stage person</text>
+  <text x="728" y="582" text-anchor="middle" class="node">score + box proposals</text>
+  <text x="728" y="617" text-anchor="middle" class="detail">top 900 candidates</text>
+  <text x="728" y="735" text-anchor="middle" class="note">Encoder image memory also feeds</text>
+  <text x="728" y="768" text-anchor="middle" class="note">both decoder stages</text>
+
+  <rect x="1006" y="264" width="368" height="104" class="box"/>
+  <text x="1190" y="309" text-anchor="middle" class="node">Decoder layers 1–2</text>
+  <text x="1190" y="343" text-anchor="middle" class="detail">box queries</text>
+  <path d="M1375 316 H1387 V660 H1378" class="flow"/>
+  <rect x="1006" y="470" width="368" height="100" class="state"/>
+  <text x="1190" y="511" text-anchor="middle" class="node">100 × 14 × 2</text>
+  <text x="1190" y="544" text-anchor="middle" class="detail">keypoint state (separate)</text>
+  <path d="M1190 571 V606" class="flow"/>
+  <rect x="1006" y="610" width="368" height="100" class="box"/>
+  <text x="1190" y="653" text-anchor="middle" class="node">Joint-reference</text>
+  <text x="1190" y="685" text-anchor="middle" class="node">construction</text>
+  <path d="M1190 711 V741" class="flow"/>
+  <rect x="1006" y="745" width="368" height="145" class="box"/>
+  <text x="1190" y="790" text-anchor="middle" class="node">Select 100 people</text>
+  <text x="1190" y="823" text-anchor="middle" class="node">100 × 15 queries</text>
+  <text x="1190" y="857" text-anchor="middle" class="detail">1 box + 14 joints per person</text>
+
+  <rect x="1468" y="268" width="368" height="118" class="box"/>
+  <text x="1652" y="315" text-anchor="middle" class="node">Decoder layers 3–6</text>
+  <text x="1652" y="350" text-anchor="middle" class="detail">box + joint refinement</text>
+  <path d="M1652 387 V456" class="flow"/>
+  <rect x="1468" y="460" width="368" height="124" class="output"/>
+  <text x="1652" y="507" text-anchor="middle" class="node">100 person predictions</text>
+  <text x="1652" y="544" text-anchor="middle" class="detail">scores · boxes · 14-joint poses</text>
+  <path d="M1652 585 V635" class="flow"/>
+  <rect x="1468" y="640" width="368" height="105" class="output"/>
+  <text x="1652" y="684" text-anchor="middle" class="node">DDIM state update</text>
+  <text x="1652" y="715" text-anchor="middle" class="detail">next model call if requested</text>
+  <path d="M1467 522 H1453 V823 H1464" class="flow"/>
+  <rect x="1468" y="771" width="368" height="105" class="output"/>
+  <text x="1652" y="815" text-anchor="middle" class="node">Pose NMS</text>
+  <text x="1652" y="847" text-anchor="middle" class="detail">CrowdPose result records</text>
+
+  <path d="M451 738 C491 738 495 346 540 346" class="flow"/>
+  <path d="M913 572 C953 572 962 316 1002 316" class="flow"/>
+  <path d="M1375 818 C1414 818 1424 327 1464 327" class="flow"/>
+  <path d="M913 335 H1002" class="memory"/>
+  <path d="M913 346 H947 V245 H1652 V264" class="memory"/>
+
+  <text x="58" y="1000" class="note">900 = initial image-derived proposals</text>
+  <text x="654" y="1000" class="note">100 = selected people and separate keypoint-state proposals</text>
+</svg>

@@ -222,6 +222,39 @@ python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v5
 # label-contract correction.
 # Checkpoints include the latest completed training epoch as `last.ckpt`.
 
+# Train PoseFlow V6: V5's flow/source/loss contract with frozen DINOv3
+# ConvNeXt-Small stages 2/3/4 read by separate deformable attention modules
+# after image attention at every configured decoder layer.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v6
+
+# V6 is a distinct checkpoint family. DINO stage features are sampled at
+# each layer's current references, concatenated with the decoder query, and
+# fused through an MLP and zero-initialized residual gate. The DINO backbone
+# weights must be available through Hugging Face before building the model.
+# V6 uses LR 1e-4 for model parameters and 1e-5 for ResNet parameters. Their
+# warmups (1 and 10 epochs) and cosine decay starts are independent; the
+# ResNet reaches 1e-5 at the start of epoch 10.
+
+# Train PoseFlow V7: frozen DINOv3 ConvNeXt-Tiny stages 2/4 plus the first
+# two ResNet maps (internal layers 2/3). DINO stage 2 shares stride 8 with
+# ResNet layer 2; DINO stage 4 adds stride-32 context.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v7
+
+# V7 uses two ResNet feature levels and two separately attended DINO maps at
+# every decoder layer. It is a separate checkpoint family from V5/V6.
+# Its measured model count is 67,266,675 total parameters: 39,224,147
+# trainable and 28,042,528 frozen. The frozen Tiny backbone means total
+# parameters are not matched to the DINO-free V5 baseline.
+
+# Train PoseFlow V8: frozen DINOv3 ConvNeXt-Tiny, stages 2-4 for coarse
+# encoder/query generation and all four stages for fine decoder attention.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v8
+
+# V8 removes the ResNet path and V7's per-decoder DINO fusion. At the reduced
+# setup it has 42,384,848 total / 14,564,720 trainable / 27,820,128 frozen
+# parameters. Encoder deformable attention uses 3 levels; decoder attention
+# uses all 4. V8 is a distinct checkpoint family from V7.
+
 # Fast checkpoint-compatible validation loop (full architecture, tiny data and
 # resolution; this is an AP smoke test, not a paper benchmark). The lower LR
 # avoids destroying the downloaded checkpoint on the tiny subset.
@@ -449,3 +482,16 @@ final rendered depth. The inspected depth-based geometry is too unreliable for
 the intended skeletal prior, so this route is closed and no 3D prior was
 integrated into the pose model. Future work in this thread will use DINO image
 features; the notebooks remain as evidence for the decision.
+
+The [DiffusionRegPose DINO multi-stage investigation](reports/diffusionregpose-dino-multistage-investigation.md)
+traces the existing deformable-attention memory, compares DINO fusion options,
+and includes the prior simple-head backbone benchmark: frozen DINOv3
+ConvNeXt-Small stage 4 scored 0.008 AP, versus 0.049/0.050 for trainable
+ResNet-18/34. The [executed backbone sweep notebook](notebooks/visualization/visualize_backbone_sweep.ipynb)
+contains the full results table and visualizations. The DINO analysis explains
+the feature-grid and freeze-policy caveats, compares ConvNeXt stage taps with
+ViT block taps, and treats four ResNet levels plus DINO stages 2–4 (seven
+shared levels) as the direct full-fusion experiment. A separate
+query-conditioned decoder branch remains an optional lower-cost diagnostic.
+Runtime effects for DiffusionRegPose remain unmeasured pending a matched
+profile.

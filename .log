@@ -3068,3 +3068,164 @@ Modified files:
   test set; it does not estimate test-set uncertainty or training-seed variance.
 - Per-run artifacts are under
   `results/diffusionregpose_paper_full_standalone_eval/s0{1,2}_seed{43,44,45,46}/`.
+
+[2026-09-28] Investigated multi-stage DINO features for DiffusionRegPose
+
+- Traced ResNet layer2/3/4 plus stride-64 projection through flattened memory,
+  six deformable encoder layers, two-stage proposal selection, and six decoder
+  layers. Documented DINO ConvNeXt stage contracts, normalization boundary,
+  variable-size/padding alignment, cache limitations, and checkpoint implications.
+- Compared replacement, common-memory augmentation, and a separate query-side
+  DINO branch. Recommended a frozen stages-2/3/4 query-conditioned residual
+  branch with zero gate as the lowest-risk multi-stage pilot.
+- Existing RTX 3090 profiles establish controls only: paper B1 380.9 ms/update
+  and 4.04 GiB allocated; compatible-256 B8 681.9 ms/update and 6.10 GiB.
+  Four-stage DINO concatenation is estimated at about 5x current image-memory
+  tokens at paper resolution; this is not a wall-clock estimate.
+- Added `reports/diffusionregpose-dino-multistage-investigation.md` and linked
+  it from README. Specified a matched B1 runtime/contract profile before any
+  AP run. No model/config/training/evaluation changes and no GPU jobs.
+
+[2026-09-28] Expanded DiffusionRegPose-DINO cost analysis
+
+- Added a model-specific MAC-floor comparison at 800x1216: current 154.9G
+  encoder/26.6G decoder; shared-memory DINO stages 2-4 325.6G/35.1G; all
+  four DINO stages 833.6G/59.2G. These are arithmetic floors, not timing claims.
+- Quantified deformable sample-site growth (encoder 3.48x or 9.97x for the two
+  shared-memory options; decoder per layer 1.75x or 2x), DINO map projections,
+  and raw-plus-projected feature storage. Added the separate pose-decoder
+  branch estimate and stated its scope excludes DINO trunk latency.
+- Corrected an important distinction: the repository's DINO ConvNeXt call
+  already returns all hidden states, so tapping additional stages adds retained
+  map storage but not another DINO pass. A DINO path added to the current
+  ResNet-only model still requires one additional DINO backbone forward.
+
+[2026-09-29] Recovered simple-head DINO ConvNeXt benchmark evidence
+
+- Found the measured table in the executed backbone-sweep visualization
+  notebook; it was renamed into `notebooks/visualization/` during the August
+  16 notebook reorganization. Git history shows no deleted standalone results
+  report; `reports/backbone-probe-design.md` is the design document.
+- Verified matching non-backbone resolved configs for the four single-backbone
+  runs. Test AP: trainable ResNet-18 0.048678, ResNet-34 0.049862, frozen DINO
+  ConvNeXt-Small stage 4 0.008311, frozen DINO ViT-S/16 0.037624. ConvNeXt
+  used a 4x4 feature grid at 128px versus 8x8 for the ResNets and ViT; ResNets
+  were trainable while DINO was frozen. Recorded the result as a strong,
+  configuration-specific warning, not proof against all DINO stages/fusions.
+- Added the run metrics and caveats to the DiffusionRegPose-DINO report,
+  linked the actual sweep notebook in README, and revised the follow-up profile
+  to compare no-DINO, stage-4-only, and stages-2-4 branches.
+- No model/config/training/evaluation changes or GPU jobs.
+
+[2026-09-29] Clarified DINO fusion choices and compared ViT/ConvNeXt taps
+
+- Reframed the seven-level shared-memory design (four current ResNet-derived
+  maps plus DINO ConvNeXt stages 2–4) as the direct full-fusion experiment;
+  the residual query-conditioned branch is an optional diagnostic for pose
+  refinement at bounded encoder cost.
+- Documented why changing `num_feature_levels` alone is insufficient in the
+  current input-preparation code and found the proposal-scale-by-level-index
+  behavior that must be addressed for duplicate stride-8/16/32 DINO maps.
+- Compared DINOv3 ViT-S/16 block taps with ConvNeXt-Small stage taps. ViT can
+  expose intermediate blocks from one forward, but those maps all share stride
+  16; true multi-resolution ViT features need an explicit neck. Added official
+  DINOv3 source links and kept current end-to-end runtime as unmeasured.
+- No model/config/training/evaluation changes or GPU jobs.
+
+[2026-09-29] Implemented PoseFlow V6 DINO multi-scale decoder fusion
+
+- Added a distinct PoseFlow V6 model/config/pipeline and benchmark preset. It
+  inherits V5 flow, source, loss, schedule, and evaluation behavior, while V5
+  remains checkpoint-compatible and unmodified at runtime.
+- Added a V6-specific frozen DINOv3 ConvNeXt-Small stage extractor, projections
+  for stages 2/3/4, and three single-scale deformable readouts at every
+  configured decoder layer. Per-scale readouts and query features are
+  concatenated, MLP-projected, then applied through a zero-initialized residual
+  gate. Denoising queries retain their order and receive the branch too.
+- Wired context/current references through PoseFlow's custom joint-refiner
+  loop; this loop bypasses the standard decoder entry point. Kept the optional
+  post-attention hook inactive for V5.
+- Added focused model/config tests. V6 tests: 4 passed; V5 regression subset:
+  9 passed. Python syntax compilation and `git diff --check` passed. No training
+  or runtime-profile job was launched; V6 overhead remains unmeasured.
+
+[2026-09-29] Set independent PoseFlow V6 optimizer warmups and cosine decays
+
+- Added optional per-parameter-group warmup/cosine schedules to the shared
+  optimizer builder while leaving the existing global scheduler path intact.
+- V6 uses LR 1e-4 for main/model parameters and 1e-5 for the ResNet, with
+  one-epoch and ten-epoch warmups. Their cosine decays begin independently at
+  the start of epochs 1 and 10 and reach the configured minimum fraction at
+  epoch T, without resets.
+- Verified the LR boundary contract, including ResNet LR exactly 1e-5 at the
+  start of epoch 10. Targeted config/scheduler tests and the V5 schedule
+  regression subset passed (11 tests total); syntax compilation and
+  `git diff --check` passed.
+- Stopped the active V5 first_last run at epoch 55 and preserved its latest
+  checkpoint (`resume_20260925_2133/checkpoints/last.ckpt`, 582 MiB).
+- V6 launch reached backbone construction but exited before training because
+  Hugging Face returned 401 for the gated DINOv3 ConvNeXt-Small repository.
+  No token or cached repository was found, and GPU use returned to idle.
+- Follow-up identified the token at the brain-image project's private Hugging
+  Face config and the cached DINOv3 ConvNeXt-Small weights in the legacy
+  `/storage/huggingface_hub` cache. The environment instead selected
+  `/storage/huggingface/hub`.
+- Merged the 17 legacy repos/revisions/files into the configured cache,
+  verified all 20 repos and loaded ConvNeXt-Small offline, then made
+  `/storage/huggingface_hub` a symlink to `/storage/huggingface/hub`. V6 was
+  relaunched with the token file and canonical cache, loaded all 342 DINO
+  weight tensors, and is actively training with finite losses.
+- The duplicate migration copy at
+  `/storage/huggingface_hub.migrated_20260929` remains because automatic review
+  rejected its `rm -rf` removal as an `rm -f style` command. It was retained;
+  no workaround was attempted.
+- Copied the available token to `/storage/huggingface/token` with mode 600 so
+  future processes using the standard HF_HOME authenticate without a
+  project-specific token-path override; default token lookup and authenticated
+  ConvNeXt repository metadata access both succeed.
+- Live verification: tmux session `poseflow-v6-dino-multiscale-20260929` is
+  active in epoch 0 at 47% with 2,847 logged finite train-loss samples and
+  active RTX 3090 utilization. Launch output is
+  `results/poseflow_v6_training/launch_20260929.log`.
+
+[2026-09-30] PoseFlow V7 Tiny multiscale run
+- Added PoseFlow V7 using frozen DINOv3 ConvNeXt-Tiny stages 2/4 and ResNet internal layers 2/3 (two levels), with separate per-decoder DINO readouts and all-stage losses. V6 defaults remain unchanged.
+- Added checkpoint adaptation for two-level deformable attention. EDPose initialization loaded 517 compatible tensors; 25 level-dependent tensors were sliced; 16 source-only tensors were unused (input_proj levels 2/3 and pose_vis_embed). Critical coverage: input projections, level embeddings, encoder, prediction heads 100%; decoder 99.95%.
+- Exact model parameter counts: V5 43,014,736 total / 42,792,336 trainable / 222,400 frozen; V6 95,206,675 / 45,529,587 / 49,677,088; V7 67,266,675 / 39,224,147 / 28,042,528.
+- A first-batch valid-ratio mismatch when using two ResNet levels was fixed by truncating masks and positional maps to the configured feature count. V7 then reached finite optimizer steps.
+- Active sessions: `poseflow-v7-dino-tiny-20260930` (training) and `poseflow-v7-tensorboard-20260930` (TensorBoard port 6010). Run log: `results/poseflow_v7_training/launch_20260930.log`; failed pre-fix startup preserved as `launch_20260930_attempt1.log`. V6 session remains active.
+- Early concurrent observation: V7 had 30 optimizer steps with finite losses (first reported 259 and 246); GPU used 12,506/24,576 MiB at the observation. This is startup evidence, not a stable throughput comparison.
+- Concurrent progress snapshot: V7 epoch 0 reached 118/3000 steps at about 1.30 steps/s; V6 remained active at epoch 56, 1295/3000 steps, about 2.02 steps/s. Shared GPU allocation was 13,044/24,576 MiB and utilization 89%; concurrent step rates are provisional, not a matched runtime benchmark. TensorBoard at `http://localhost:6010/` returned HTTP 200.
+- Follow-up snapshot: V7 epoch 0 reached 420/3000 steps at about 1.44 steps/s with finite loss; V6 remained active at epoch 56, 1602/3000 steps, about 1.90 steps/s. GPU use was 14,096/24,576 MiB. These are concurrent-run observations only; a standalone runtime comparison remains pending.
+
+[2026-09-30] PoseFlow V8 DINO-only coarse/fine feature split
+- Added PoseFlow V8 with frozen DINOv3 ConvNeXt-Tiny native stages `[1,2,3,4]` (channels `[96,192,384,768]`, strides `[4,8,16,32]`) and no ResNet path or generated pyramid. Separate `dino_coarse_input_projections` and `dino_fine_input_projections` each use one `1x1 Conv + GroupNorm(32)` per level at the configured `d_model` width.
+- Coarse projections feed the encoder and coarse hypothesis/query generation. Fine projections bypass the encoder and are the four-level memory sampled by existing decoder deformable cross-attention. Masks, valid ratios, shapes, and positional grids align across branches; decoder and loss code remain intact.
+- Checkpoint initialization builds the selected-layer EDPose source with four levels, loads compatible transformer/head tensors, and intentionally excludes ResNet and legacy input projections. The two new adapter banks and DINO weights are V8-specific; V8 is a distinct checkpoint family.
+- Exact reduced-setup model counts: V8 42,484,208 total / 14,664,080 trainable / 27,820,128 frozen. Against V7 this is 24,782,467 fewer total parameters and 24,560,067 fewer trainable parameters. Each adapter bank has 371,712 parameters, so the independent second bank adds 371,712 (including convolution bias and GroupNorm affine parameters); both banks total 743,424.
+- Synthetic shape/routing test verifies four stage shapes, non-shared adapter weights, encoder/coarse and decoder/fine memory routing, finite outputs, and no retained ResNet/input-projection module. Resolved V8 config and pretrained transfer build passed. Focused PoseFlow + DiffusionRegPose tests: 79 passed; `git diff --check` passed.
+- Launched from EDPose initialization in tmux window `v8-training`, using the reduced 256/427 setup, batch 4, accumulation 2, 3 encoder/decoder layers, 80 epochs, and all-stage loss. Log: `results/poseflow_v8_training/launch_20260930.log`. At the first check V8 was epoch 0, step 19/3000 with finite loss; GPU allocation was 20,472/24,576 MiB at 82 C while V6 evaluation and V7 resume were also running. This concurrent runtime snapshot is not a standalone speed comparison.
+- Follow-up V8 startup check: still training at epoch 0, 132/3000 batches; losses remain finite. Observed rate is about 1.05 batches/s with concurrent workloads, GPU allocation 20,472/24,576 MiB and 83 C. `git diff --check` remains clean. This is an early shared-GPU snapshot only.
+- Started combined PoseFlow V5-V8 TensorBoard in tmux session `poseflow-tensorboard` on `http://127.0.0.1:6010/`. Dashboard includes the smaller V5 3-layer/80-epoch run (`20260917_121833`), V6 training log (`20260929_024515`), active V7 resume, and active V8 run. The V5 paper-scale and first-last variants are excluded per user clarification. TensorBoard 2.20.0 responds HTTP 200; server log is `results/poseflow_v8_training/tensorboard_v5_v8.log`.
+- Updated the combined PoseFlow TensorBoard to include `V7-pre-cancel` from the original run `20260930_002334`, alongside the active `V7-resume`; the dashboard now lists V5-small, V6, both V7 runs, and V8. Verified TensorBoard run discovery on port 6010.
+- PoseFlow V8 coarse/fine retry: coarse encoder/query adapters now use native DINO stages 2/3/4 (strides 8/16/32); fine decoder memory retains stages 1/2/3/4 (strides 4/8/16/32). Added independent encoder=3 and decoder=4 deformable-attention level counts and separate fine-branch spatial shapes, level offsets, padding masks, and valid ratios.
+- EDPose transfer adapts only the 12 encoder sampling-offset/attention-weight tensors (3 encoder layers x 4 tensors), retaining the first three source level groups; decoder attention and all four learned level embeddings remain shape-compatible. Startup loaded 525 compatible model tensors with 30 expected missing and 0 unexpected model keys.
+- Exact count derived from the previous measured V8 count: 42,384,848 total / 14,564,720 trainable / 27,820,128 frozen. This is 99,360 fewer than the all-four-level-coarse V8: 25,344 removed stage-1 coarse projection parameters plus 74,016 removed encoder attention parameters. Adapter banks now contain 346,368 coarse and 371,712 fine parameters.
+- Preserved the original V8-all-four log/run; it completed epoch 0 training but was interrupted during validation and has no checkpoint. Started a fresh EDPose-initialized run as `poseflow_v8_coarse234_training` in tmux window `v8-coarse234`; log `results/poseflow_v8_coarse234_training/launch_20260930.log`. At startup check it reached epoch 0, 95/3000 batches with finite loss (last 168.0); V8 process GPU allocation 4,320 MiB versus 15,104 MiB for the previous architecture snapshot. Other GPU jobs remain active, so total utilization is shared.
+- Updated TensorBoard on port 6010 to show `V8-all-four` and `V8-coarse234`, retaining V5-small, V6, V7-pre-cancel, and V7-resume. Run discovery returns all six labels.
+- Updated V8 project/architecture/README descriptions and existing V8 test expectations. Python compileall, Hydra config resolution, and `git diff --check` passed; pytest was not run.
+- Follow-up live check for the V8 coarse234 retry: epoch 0 reached 207/3000 batches with finite loss 148.0; process stayed alive. Per-process GPU use was 4,840 MiB (versus 15,104 MiB in the old all-four-coarse snapshot), while V7 and V6 evaluation continued. TensorBoard still reports all six requested runs; `git diff --check` remains clean.
+
+[2026-09-30] Extended DiffusionRegPose-to-PoseFlow chronology through V8
+- Added verified five-seed DiffusionRegPose S=1/S=2 full-test results: all paired keypoint gains positive, mean +0.012756 AP. Marked the V5 first/last ablation as stopped without final test results.
+- Explained the reasoning from coordinate-flow/V3-V5 through V6 multiscale DINO decoder conditioning, V7's smaller dual-backbone variant, and V8's DINO-only coarse-proposal/fine-decoder split. Reported completed V6 epoch-79 full-test S=1/2/3/4 metrics and kept V7/V8 AP status pending.
+- Verified V6 evaluation logs reached 8000/8000, all 55 local report links resolve, and `git diff --check` passes. No jobs or production code were changed.
+
+[2026-09-30] Exported DiffusionRegPose diagram for slides
+- Added a slide-ready 2880×1620 PNG and scalable SVG under `reports/figures/`, based on the Mermaid flowchart in `reports/diffusionregpose-how-it-works.md`.
+- Preserved distinct 900 proposals, 100 selected people, separate keypoint state, encoder-to-decoder memory, and DDIM/Pose NMS branches. Visually checked the render, verified SVG/XML and PNG dimensions, and ran `git diff --check`.
+
+[2026-10-01] Explained Hungarian matching and OTA
+- Added `reports/diffusionregpose-matching-explained.md` with source-linked matching costs, assignment rules, Dynamic-K selection, normalization, edge cases, and a worked example.
+- Linked it from `reports/diffusionregpose-how-it-works.md` and corrected the existing OTA matcher anchor. Preserved the separate experiment comparison and unrelated worktree changes.
+- Verified the example with SciPy's assignment routine and the Dynamic-K arithmetic, checked all relative report links, and passed `git diff --check`; the new untracked report has no trailing whitespace.

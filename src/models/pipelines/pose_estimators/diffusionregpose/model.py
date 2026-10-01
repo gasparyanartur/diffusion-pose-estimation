@@ -48,6 +48,12 @@ class TransformerInputs:
     spatial_shapes: Tensor
     level_start_index: Tensor
     valid_ratios: Tensor
+    decoder_context: object | None = None
+    decoder_memory: Tensor | None = None
+    decoder_padding_mask: Tensor | None = None
+    decoder_spatial_shapes: Tensor | None = None
+    decoder_level_start_index: Tensor | None = None
+    decoder_valid_ratios: Tensor | None = None
 
 
 def gen_encoder_output_proposals(
@@ -98,6 +104,7 @@ class DiffusionRegPoseTransformer(nn.Module):
         feedforward_dim: int = 2048,
         num_heads: int,
         num_feature_levels: int,
+        num_encoder_feature_levels: int | None = None,
         num_body_points: int,
         num_box_decoder_layers: int,
         num_group: int,
@@ -109,11 +116,18 @@ class DiffusionRegPoseTransformer(nn.Module):
         expansion_pose_embed: nn.Module | None = None,
     ) -> None:
         super().__init__()
+        encoder_feature_levels = (
+            num_feature_levels
+            if num_encoder_feature_levels is None
+            else num_encoder_feature_levels
+        )
+        if encoder_feature_levels < 1:
+            raise ValueError("num_encoder_feature_levels must be positive")
         encoder_layer = DeformableTransformerEncoderLayer(
             d_model=hidden_dim,
             d_ffn=feedforward_dim,
             dropout=0.0,
-            num_levels=num_feature_levels,
+            num_levels=encoder_feature_levels,
             num_heads=num_heads,
             num_points=4,
         )
@@ -126,6 +140,7 @@ class DiffusionRegPoseTransformer(nn.Module):
             num_points=4,
         )
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
+        self.num_encoder_feature_levels = encoder_feature_levels
         self.decoder = DeformableTransformerDecoder(
             decoder_layer,
             num_decoder_layers,
@@ -195,6 +210,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         num_proposals: int = 100,
         num_classes: int = 2,
         num_feature_levels: int = 4,
+        num_encoder_feature_levels: int | None = None,
         num_encoder_layers: int = 6,
         num_decoder_layers: int = 6,
         hidden_dim: int = 256,
@@ -225,6 +241,8 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         self.num_queries = num_queries
         self.num_proposals = num_proposals
         self.num_classes = num_classes
+        if num_encoder_feature_levels is not None and num_encoder_feature_levels < 1:
+            raise ValueError("num_encoder_feature_levels must be positive")
         if dn_number < 0:
             raise ValueError("dn_number must be non-negative")
         if hidden_dim % 32:
@@ -251,6 +269,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             feedforward_dim=feedforward_dim,
             num_heads=num_heads,
             num_feature_levels=num_feature_levels,
+            num_encoder_feature_levels=num_encoder_feature_levels,
             num_body_points=num_body_points,
             num_box_decoder_layers=num_box_decoder_layers,
             num_group=num_group,
@@ -318,6 +337,10 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         """Return optional decoder conditioning inserted after image attention."""
         return None
 
+    @staticmethod
+    def decoder_feature_memory(inputs: TransformerInputs, encoded_memory: Tensor) -> Tensor:
+        return encoded_memory if inputs.decoder_memory is None else inputs.decoder_memory
+
     def prepare_transformer_inputs(self, images: Tensor, padding_mask: Tensor) -> TransformerInputs:
         features, masks, positions = self.backbone(images, padding_mask)
         projected = [projection(feature) for projection, feature in zip(self.input_proj, features)]
@@ -326,6 +349,8 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             projected.append(self.input_proj[len(projected)](source))
             masks.append(torch.nn.functional.interpolate(padding_mask[:, None].float(), size=projected[-1].shape[-2:]).to(torch.bool)[:, 0])
             positions.append(self.backbone[1](projected[-1], masks[-1]).to(projected[-1].dtype))
+        masks = masks[:len(projected)]
+        positions = positions[:len(projected)]
         flattened, flattened_pos, flattened_masks, shapes = [], [], [], []
         for feature, position, mask in zip(projected, positions, masks):
             _, _, height, width = feature.shape
@@ -515,6 +540,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             intermediate_logits,
             intermediate_boxes,
         ) = self.select_two_stage_queries(memory, inputs)
+        decoder_memory = self.decoder_feature_memory(inputs, memory)
         denoising = self.training and targets is not None
         dn_state: dict[str, Tensor] | None = None
         if denoising:
@@ -526,7 +552,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         denoising_query_count = self.transformer.decoder.num_dn if denoising else 0
         decoder_features, decoder_references = self.transformer.decoder(
             query_features.transpose(0, 1),
-            memory,
+            decoder_memory,
             refpoints_unsigmoid=reference_boxes.transpose(0, 1),
             level_start_index=inputs.level_start_index,
             spatial_shapes=inputs.spatial_shapes,
@@ -546,6 +572,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             ),
             diffusion_keypoints=((diffusion_keypoints / self.scale) + 1.0) / 2.0,
             post_image_attention_by_layer=self.post_image_attention_by_layer(),
+            post_image_attention_context=inputs.decoder_context,
             denoising_query_count=denoising_query_count,
             collect_post_image_attention_diagnostics=collect_post_image_attention_diagnostics,
             collect_post_image_attention_weights=collect_post_image_attention_weights,

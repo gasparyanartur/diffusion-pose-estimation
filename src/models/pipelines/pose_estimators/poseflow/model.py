@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch import nn
 
 from src.models.pipelines.pose_estimators.diffusionregpose.model import (
     DiffusionRegPoseModel,
 )
+from src.models.pipelines.pose_estimators.diffusionregpose.backbone import (
+    PositionEmbeddingSineHW,
+)
 from src.models.pipelines.pose_estimators.diffusionregpose.transformer import (
     MLP,
+    MultiScaleDeformableAttention,
     inverse_sigmoid,
     sine_embedding_for_position,
 )
+from src.models.pipelines.pose_estimators.diffusionregpose.model import TransformerInputs
 
 from .state import (
     blend_box_references,
@@ -812,9 +819,31 @@ class PoseFlowV4Model(PoseFlowModel):
         )
         predictions: list[dict[str, Tensor]] = []
         dn_predictions: list[dict[str, Tensor]] = []
+        post_image_attention_by_layer = self.post_image_attention_by_layer()
+        decoder_context = getattr(inputs, "decoder_context", None)
+        decoder_valid_ratios = (
+            inputs.valid_ratios
+            if inputs.decoder_valid_ratios is None
+            else inputs.decoder_valid_ratios
+        )
+        decoder_spatial_shapes = (
+            inputs.spatial_shapes
+            if inputs.decoder_spatial_shapes is None
+            else inputs.decoder_spatial_shapes
+        )
+        decoder_level_start_index = (
+            inputs.level_start_index
+            if inputs.decoder_level_start_index is None
+            else inputs.decoder_level_start_index
+        )
+        decoder_padding_mask = (
+            inputs.padding_mask
+            if inputs.decoder_padding_mask is None
+            else inputs.decoder_padding_mask
+        )
         for layer_index, layer in enumerate(self.transformer.decoder.layers):
             reference_input = references_t[:, :, None] * torch.cat(
-                (inputs.valid_ratios, inputs.valid_ratios), dim=-1
+                (decoder_valid_ratios, decoder_valid_ratios), dim=-1
             )[None]
             query_position = self.transformer.decoder.ref_point_head(
                 sine_embedding_for_position(
@@ -827,10 +856,16 @@ class PoseFlowV4Model(PoseFlowModel):
                 tgt_query_pos=query_position,
                 tgt_reference_points=reference_input,
                 memory=memory,
-                memory_level_start_index=inputs.level_start_index,
-                memory_spatial_shapes=inputs.spatial_shapes,
-                memory_key_padding_mask=inputs.padding_mask,
+                memory_level_start_index=decoder_level_start_index,
+                memory_spatial_shapes=decoder_spatial_shapes,
+                memory_key_padding_mask=decoder_padding_mask,
                 self_attn_mask=mask,
+                post_image_attention=(
+                    None if post_image_attention_by_layer is None
+                    else post_image_attention_by_layer.get(layer_index)
+                ),
+                post_image_attention_context=decoder_context,
+                raw_reference_points=references_t,
             )
             normal_features = self.transformer.decoder.norm(output).transpose(0, 1)
             prediction, updated_references, dn_prediction = self._predict_expanded(
@@ -892,7 +927,7 @@ class PoseFlowV4Model(PoseFlowModel):
         refiners, dn_refiners = self._run_joint_refiners(
             features,
             references,
-            memory=memory,
+            memory=self.decoder_feature_memory(inputs, memory),
             inputs=inputs,
             targets=targets,
             dn_count=dn_count,
@@ -1084,4 +1119,413 @@ class PoseFlowV5Model(PoseFlowV4Model):
             sampling_steps=self.flow_sampling_steps,
             ensemble=self.flow_ensemble,
             generator=generator,
+        )
+
+
+@dataclass
+class PoseFlowDINOContext:
+    features: tuple[Tensor, ...]
+    masks: tuple[Tensor, ...]
+    valid_ratios: Tensor
+    spatial_shapes: Tensor
+
+
+class PoseFlowDINOv3ConvNeXtBackbone(nn.Module):
+    _STAGE_CHANNELS = {1: 96, 2: 192, 3: 384, 4: 768}
+    _CHANNELS = (192, 384, 768)
+    _HIDDEN_STATE_INDICES = (2, 3, 4)
+
+    def __init__(
+        self,
+        *,
+        model_name: str,
+        frozen: bool = True,
+        model: nn.Module | None = None,
+        hidden_state_indices: tuple[int, ...] = _HIDDEN_STATE_INDICES,
+        expected_channels: tuple[int, ...] | None = None,
+    ) -> None:
+        super().__init__()
+        if not hidden_state_indices or tuple(sorted(set(hidden_state_indices))) != hidden_state_indices:
+            raise ValueError("DINO hidden-state indices must be non-empty, unique, and increasing")
+        if expected_channels is None:
+            try:
+                expected_channels = tuple(self._STAGE_CHANNELS[index] for index in hidden_state_indices)
+            except KeyError as exc:
+                raise ValueError(f"Unsupported DINO ConvNeXt stage index: {exc.args[0]}") from exc
+        if len(expected_channels) != len(hidden_state_indices):
+            raise ValueError("DINO hidden-state indices and expected channels must have equal length")
+        if model is None:
+            from transformers import AutoModel
+
+            model = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        self.model = model
+        self.frozen = frozen
+        self.hidden_state_indices = hidden_state_indices
+        self.expected_channels = expected_channels
+        if frozen:
+            for parameter in self.model.parameters():
+                parameter.requires_grad_(False)
+            self.model.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if self.frozen:
+            self.model.eval()
+        return self
+
+    def forward(self, images: Tensor) -> tuple[Tensor, ...]:
+        if self.frozen:
+            with torch.no_grad():
+                outputs = self.model(images)
+        else:
+            outputs = self.model(images)
+        hidden_states = outputs.hidden_states
+        if hidden_states is None or len(hidden_states) <= max(self.hidden_state_indices):
+            raise RuntimeError("DINOv3 ConvNeXt did not return the expected hidden states")
+        features = tuple(hidden_states[index] for index in self.hidden_state_indices)
+        for feature, channels in zip(features, self.expected_channels):
+            if feature.ndim != 4 or feature.shape[1] != channels:
+                raise RuntimeError(
+                    f"DINOv3 stage feature must have {channels} channels; got {tuple(feature.shape)}"
+                )
+        return features
+
+
+class PoseFlowDINODecoderFusion(nn.Module):
+    def __init__(
+        self,
+        *,
+        hidden_dim: int,
+        num_heads: int,
+        num_scales: int = 3,
+        num_points: int = 4,
+    ) -> None:
+        super().__init__()
+        if num_scales < 1:
+            raise ValueError("DINO fusion requires at least one feature scale")
+        self.num_scales = num_scales
+        self.stage_attention = nn.ModuleList(
+            MultiScaleDeformableAttention(
+                d_model=hidden_dim,
+                num_levels=1,
+                num_heads=num_heads,
+                num_points=num_points,
+            )
+            for _ in range(num_scales)
+        )
+        self.joint_projection = MLP(hidden_dim * (num_scales + 1), hidden_dim, hidden_dim, 2)
+        self.residual_gate = nn.Parameter(torch.zeros(()))
+
+    def forward(
+        self,
+        query_features: Tensor,
+        *,
+        query_position: Tensor,
+        reference_points: Tensor,
+        decoder_context: PoseFlowDINOContext,
+        denoising_query_count: int = 0,
+        collect_diagnostics: bool = False,
+        collect_attention: bool = False,
+    ) -> Tensor:
+        del denoising_query_count, collect_diagnostics, collect_attention
+        if len(decoder_context.features) != self.num_scales or len(decoder_context.masks) != self.num_scales:
+            raise RuntimeError("DINO decoder context scale count does not match its fusion module")
+        query = query_features.transpose(0, 1)
+        positioned_query = (query_features + query_position).transpose(0, 1)
+        batch_reference_points = reference_points.transpose(0, 1)
+        scale_readouts = []
+        for scale_index, (attention, feature, mask) in enumerate(zip(
+            self.stage_attention,
+            decoder_context.features,
+            decoder_context.masks,
+        )):
+            spatial_shapes = decoder_context.spatial_shapes[scale_index:scale_index + 1]
+            level_start_index = spatial_shapes.new_zeros(1)
+            valid_ratio = decoder_context.valid_ratios[:, scale_index:scale_index + 1]
+            scale_reference_points = batch_reference_points[:, :, None, :] * torch.cat(
+                (valid_ratio, valid_ratio), dim=-1
+            )[:, None]
+            readout = attention(
+                positioned_query,
+                scale_reference_points,
+                feature.flatten(2).transpose(1, 2),
+                spatial_shapes,
+                level_start_index,
+                mask.flatten(1),
+            )
+            if readout.shape[1:] != query.shape[1:]:
+                raise RuntimeError("DINO scale readout does not match decoder query dimensions")
+            scale_readouts.append(readout)
+        joint_features = self.joint_projection(
+            torch.cat((query, *scale_readouts), dim=-1)
+        )
+        return (query + self.residual_gate * joint_features).transpose(0, 1)
+
+
+class PoseFlowV6Model(PoseFlowV5Model):
+    """V5 flow model with per-layer, multi-scale DINO decoder fusion."""
+
+    def __init__(
+        self,
+        *args,
+        dino_model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        dino_frozen: bool = True,
+        dino_backbone: nn.Module | None = None,
+        dino_hidden_state_indices: tuple[int, ...] = (2, 3, 4),
+        dino_feature_channels: tuple[int, ...] = (192, 384, 768),
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        hidden_dim = self.transformer.decoder.d_model
+        num_heads = self.transformer.decoder.num_heads
+        self.dino_backbone = PoseFlowDINOv3ConvNeXtBackbone(
+            model_name=dino_model_name,
+            frozen=dino_frozen,
+            model=dino_backbone,
+            hidden_state_indices=dino_hidden_state_indices,
+            expected_channels=dino_feature_channels,
+        )
+        self.dino_input_projections = nn.ModuleList(
+            nn.Sequential(
+                nn.Conv2d(channels, hidden_dim, kernel_size=1),
+                nn.GroupNorm(32, hidden_dim),
+            )
+            for channels in dino_feature_channels
+        )
+        self.dino_decoder_fusion = nn.ModuleList(
+            PoseFlowDINODecoderFusion(
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
+                num_scales=len(dino_feature_channels),
+            )
+            for _ in range(self.transformer.decoder.num_layers)
+        )
+
+    @staticmethod
+    def _valid_ratio(mask: Tensor) -> Tensor:
+        valid_height = (~mask[:, :, 0]).sum(1).float() / mask.shape[1]
+        valid_width = (~mask[:, 0, :]).sum(1).float() / mask.shape[2]
+        return torch.stack((valid_width, valid_height), dim=-1)
+
+    def prepare_transformer_inputs(self, images: Tensor, padding_mask: Tensor) -> TransformerInputs:
+        inputs = super().prepare_transformer_inputs(images, padding_mask)
+        raw_features = self.dino_backbone(images)
+        projected_features = tuple(
+            projection(feature)
+            for projection, feature in zip(self.dino_input_projections, raw_features)
+        )
+        masks = tuple(
+            F.interpolate(
+                padding_mask[:, None].float(), size=feature.shape[-2:], mode="nearest"
+            )[:, 0].to(torch.bool)
+            for feature in projected_features
+        )
+        spatial_shapes = torch.as_tensor(
+            [feature.shape[-2:] for feature in projected_features],
+            dtype=torch.long,
+            device=images.device,
+        )
+        valid_ratios = torch.stack([self._valid_ratio(mask) for mask in masks], dim=1)
+        inputs.decoder_context = PoseFlowDINOContext(
+            features=projected_features,
+            masks=masks,
+            valid_ratios=valid_ratios,
+            spatial_shapes=spatial_shapes,
+        )
+        return inputs
+
+    def post_image_attention_by_layer(self) -> dict[int, nn.Module]:
+        return dict(enumerate(self.dino_decoder_fusion))
+
+
+class PoseFlowV7Model(PoseFlowV6Model):
+    """V6 flow model with Tiny DINOv3 stages 2 and 4."""
+
+    def __init__(
+        self,
+        *args,
+        dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+        dino_frozen: bool = True,
+        dino_backbone: nn.Module | None = None,
+        dino_hidden_state_indices: tuple[int, ...] = (2, 4),
+        dino_feature_channels: tuple[int, ...] = (192, 768),
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            *args,
+            dino_model_name=dino_model_name,
+            dino_frozen=dino_frozen,
+            dino_backbone=dino_backbone,
+            dino_hidden_state_indices=dino_hidden_state_indices,
+            dino_feature_channels=dino_feature_channels,
+            **kwargs,
+        )
+
+
+class PoseFlowV8Model(PoseFlowV5Model):
+    """DINO-only feature pyramid with independent coarse and fine adapters."""
+
+    def __init__(
+        self,
+        *args,
+        dino_model_name: str = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m",
+        dino_frozen: bool = True,
+        dino_backbone: nn.Module | None = None,
+        dino_hidden_state_indices: tuple[int, ...] = (1, 2, 3, 4),
+        dino_feature_channels: tuple[int, ...] = (96, 192, 384, 768),
+        dino_coarse_hidden_state_indices: tuple[int, ...] = (2, 3, 4),
+        **kwargs,
+    ) -> None:
+        kwargs["backbone_pretrained"] = False
+        kwargs.setdefault("num_encoder_feature_levels", 3)
+        super().__init__(*args, **kwargs)
+        if self.num_feature_levels != 4:
+            raise ValueError("PoseFlow V8 requires all four native DINO feature levels")
+        if dino_hidden_state_indices != (1, 2, 3, 4):
+            raise ValueError("PoseFlow V8 requires all four native DINO stage outputs")
+        if len(dino_feature_channels) != 4:
+            raise ValueError("PoseFlow V8 requires exactly four DINO stage outputs")
+        if dino_coarse_hidden_state_indices != (2, 3, 4):
+            raise ValueError("PoseFlow V8 coarse features must use DINO stages 2, 3, and 4")
+        if kwargs.get("num_encoder_feature_levels", 3) != 3:
+            raise ValueError("PoseFlow V8 requires a three-level coarse encoder")
+
+        self.position_embedding = PositionEmbeddingSineHW(
+            self.transformer.decoder.d_model // 2,
+            temperature_h=20,
+            temperature_w=20,
+        )
+        self.dino_backbone = PoseFlowDINOv3ConvNeXtBackbone(
+            model_name=dino_model_name,
+            frozen=dino_frozen,
+            model=dino_backbone,
+            hidden_state_indices=dino_hidden_state_indices,
+            expected_channels=dino_feature_channels,
+        )
+        hidden_dim = self.transformer.decoder.d_model
+        channel_by_stage = dict(zip(dino_hidden_state_indices, dino_feature_channels, strict=True))
+        self.dino_coarse_input_projections = self._build_dino_input_projections(
+            tuple(channel_by_stage[index] for index in dino_coarse_hidden_state_indices),
+            hidden_dim,
+        )
+        self.dino_fine_input_projections = self._build_dino_input_projections(
+            dino_feature_channels, hidden_dim
+        )
+
+        # V8 replaces, rather than augments, the legacy ResNet feature path.
+        del self.backbone
+        del self.input_proj
+
+    @staticmethod
+    def _build_dino_input_projections(
+        channels: tuple[int, ...], hidden_dim: int
+    ) -> nn.ModuleList:
+        projections = nn.ModuleList(
+            nn.Sequential(
+                nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                nn.GroupNorm(32, hidden_dim),
+            )
+            for in_channels in channels
+        )
+        for projection in projections:
+            nn.init.xavier_uniform_(projection[0].weight)
+            nn.init.zeros_(projection[0].bias)
+        return projections
+
+    @staticmethod
+    def _flatten_feature_levels(
+        features: tuple[Tensor, ...],
+    ) -> Tensor:
+        return torch.cat(
+            [feature.flatten(2).transpose(1, 2) for feature in features], dim=1
+        )
+
+    @staticmethod
+    def _feature_valid_ratio(mask: Tensor) -> Tensor:
+        valid_height = (~mask[:, :, 0]).sum(1).float() / mask.shape[1]
+        valid_width = (~mask[:, 0, :]).sum(1).float() / mask.shape[2]
+        return torch.stack((valid_width, valid_height), dim=-1)
+
+    def prepare_transformer_inputs(
+        self, images: Tensor, padding_mask: Tensor
+    ) -> TransformerInputs:
+        dino_features = self.dino_backbone(images)
+        feature_by_stage = dict(
+            zip(self.dino_backbone.hidden_state_indices, dino_features, strict=True)
+        )
+        coarse_sources = tuple(feature_by_stage[index] for index in (2, 3, 4))
+        coarse_features = tuple(
+            projection(feature)
+            for projection, feature in zip(
+                self.dino_coarse_input_projections, coarse_sources, strict=True
+            )
+        )
+        fine_features = tuple(
+            projection(feature)
+            for projection, feature in zip(
+                self.dino_fine_input_projections, dino_features, strict=True
+            )
+        )
+        coarse_masks = tuple(
+            F.interpolate(
+                padding_mask[:, None].float(),
+                size=feature.shape[-2:],
+                mode="nearest",
+            )[:, 0].to(torch.bool)
+            for feature in coarse_features
+        )
+        positions = tuple(
+            self.position_embedding(feature, mask).to(feature.dtype)
+            for feature, mask in zip(coarse_features, coarse_masks, strict=True)
+        )
+        coarse_spatial_shapes = torch.as_tensor(
+            [feature.shape[-2:] for feature in coarse_features],
+            dtype=torch.long,
+            device=images.device,
+        )
+        coarse_padding_mask = torch.cat([mask.flatten(1) for mask in coarse_masks], dim=1)
+        coarse_valid_ratios = torch.stack(
+            [self._feature_valid_ratio(mask) for mask in coarse_masks], dim=1
+        )
+        coarse_level_start_index = torch.cat(
+            (
+                coarse_spatial_shapes.new_zeros(1),
+                coarse_spatial_shapes.prod(1).cumsum(0)[:-1],
+            )
+        )
+        fine_masks = tuple(
+            F.interpolate(
+                padding_mask[:, None].float(),
+                size=feature.shape[-2:],
+                mode="nearest",
+            )[:, 0].to(torch.bool)
+            for feature in fine_features
+        )
+        fine_spatial_shapes = torch.as_tensor(
+            [feature.shape[-2:] for feature in fine_features],
+            dtype=torch.long,
+            device=images.device,
+        )
+        fine_padding_mask = torch.cat([mask.flatten(1) for mask in fine_masks], dim=1)
+        fine_valid_ratios = torch.stack(
+            [self._feature_valid_ratio(mask) for mask in fine_masks], dim=1
+        )
+        fine_level_start_index = torch.cat(
+            (
+                fine_spatial_shapes.new_zeros(1),
+                fine_spatial_shapes.prod(1).cumsum(0)[:-1],
+            )
+        )
+        return TransformerInputs(
+            memory=self._flatten_feature_levels(coarse_features),
+            position=self._flatten_feature_levels(positions),
+            padding_mask=coarse_padding_mask,
+            spatial_shapes=coarse_spatial_shapes,
+            level_start_index=coarse_level_start_index,
+            valid_ratios=coarse_valid_ratios,
+            decoder_memory=self._flatten_feature_levels(fine_features),
+            decoder_padding_mask=fine_padding_mask,
+            decoder_spatial_shapes=fine_spatial_shapes,
+            decoder_level_start_index=fine_level_start_index,
+            decoder_valid_ratios=fine_valid_ratios,
         )

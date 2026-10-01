@@ -16,10 +16,14 @@ from src.models.pipelines.pose_estimators.poseflow import (
     PoseFlowV3Model,
     PoseFlowV4Model,
     PoseFlowV5Model,
+    PoseFlowV6Model,
     PoseFlowPipelineConfig,
     PoseFlowV3PipelineConfig,
     PoseFlowV4PipelineConfig,
     PoseFlowV5PipelineConfig,
+    PoseFlowV6PipelineConfig,
+    PoseFlowV8Model,
+    PoseFlowV8PipelineConfig,
     PoseHypothesisCodebook,
     build_poseflow_targets,
     build_poseflow_v3_targets,
@@ -27,7 +31,12 @@ from src.models.pipelines.pose_estimators.poseflow import (
     flow_sample_keypoints,
     flow_sample_person_states,
 )
-from src.models.pipelines.pose_estimators.poseflow.model import PoseFlowHypothesisStage
+from src.models.pipelines.pose_estimators.poseflow.model import (
+    PoseFlowDINOContext,
+    PoseFlowDINODecoderFusion,
+    PoseFlowDINOv3ConvNeXtBackbone,
+    PoseFlowHypothesisStage,
+)
 from src.models.pipelines.pose_estimators.poseflow.state import (
     blend_box_references,
     corners_to_cxcywh,
@@ -41,6 +50,7 @@ from src.models.pipelines.pose_estimators.poseflow.state import (
     state_reference_gate,
     unpack_person_state,
 )
+from src.training.optim import build_adamw_with_schedule
 
 
 def _batch() -> dict[str, torch.Tensor]:
@@ -51,6 +61,234 @@ def _batch() -> dict[str, torch.Tensor]:
         "gt_labeled": torch.tensor([[[True, True], [True, False]]]),
         "gt_boxes_canon": torch.tensor([[[0.5, 0.5, 0.2, 0.4], [0.4, 0.6, 0.3, 0.2]]]),
     }
+
+
+def test_poseflow_dino_backbone_returns_convnext_stages_two_through_four() -> None:
+    class FakeDINO(torch.nn.Module):
+        def forward(self, images: torch.Tensor) -> SimpleNamespace:
+            batch, _, height, width = images.shape
+            return SimpleNamespace(hidden_states=(
+                images,
+                torch.zeros(batch, 96, height // 4, width // 4),
+                torch.zeros(batch, 192, height // 8, width // 8),
+                torch.zeros(batch, 384, height // 16, width // 16),
+                torch.zeros(batch, 768, height // 32, width // 32),
+            ))
+
+    backbone = PoseFlowDINOv3ConvNeXtBackbone(
+        model_name="unused-in-test", model=FakeDINO(), frozen=True
+    )
+    features = backbone(torch.randn(2, 3, 64, 96))
+
+    assert [tuple(feature.shape) for feature in features] == [
+        (2, 192, 8, 12), (2, 384, 4, 6), (2, 768, 2, 3)
+    ]
+    assert not backbone.model.training
+    assert all(not parameter.requires_grad for parameter in backbone.parameters())
+
+
+def test_poseflow_dino_decoder_fusion_is_initially_identity_and_trainable() -> None:
+    batch_size, query_count, hidden_dim = 2, 5, 32
+    spatial_shapes = torch.tensor([[8, 8], [4, 4], [2, 2]])
+    context = PoseFlowDINOContext(
+        features=(
+            torch.randn(batch_size, hidden_dim, 8, 8),
+            torch.randn(batch_size, hidden_dim, 4, 4),
+            torch.randn(batch_size, hidden_dim, 2, 2),
+        ),
+        masks=(
+            torch.zeros(batch_size, 8, 8, dtype=torch.bool),
+            torch.zeros(batch_size, 4, 4, dtype=torch.bool),
+            torch.zeros(batch_size, 2, 2, dtype=torch.bool),
+        ),
+        valid_ratios=torch.ones(batch_size, 3, 2),
+        spatial_shapes=spatial_shapes,
+    )
+    fusion = PoseFlowDINODecoderFusion(hidden_dim=hidden_dim, num_heads=8)
+    query = torch.randn(query_count, batch_size, hidden_dim, requires_grad=True)
+    query_position = torch.randn_like(query)
+    references = torch.rand(query_count, batch_size, 4)
+
+    output = fusion(
+        query,
+        query_position=query_position,
+        reference_points=references,
+        decoder_context=context,
+        denoising_query_count=2,
+    )
+    torch.testing.assert_close(output, query)
+    assert output.shape == query.shape
+
+    with torch.no_grad():
+        fusion.residual_gate.fill_(0.5)
+    output = fusion(
+        query,
+        query_position=query_position,
+        reference_points=references,
+        decoder_context=context,
+        denoising_query_count=2,
+    )
+    output.square().mean().backward()
+    assert fusion.residual_gate.grad is not None
+    assert fusion.joint_projection.layers[-1].weight.grad is not None
+
+
+def test_poseflow_v6_config_and_model_use_all_configured_decoder_layers() -> None:
+    class FakeDINO(torch.nn.Module):
+        def forward(self, images: torch.Tensor) -> SimpleNamespace:
+            batch, _, height, width = images.shape
+            return SimpleNamespace(hidden_states=(
+                images,
+                torch.zeros(batch, 96, height // 4, width // 4),
+                torch.zeros(batch, 192, height // 8, width // 8),
+                torch.zeros(batch, 384, height // 16, width // 16),
+                torch.zeros(batch, 768, height // 32, width // 32),
+            ))
+
+    config = PoseFlowV6PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+    )
+    model = PoseFlowV6Model(
+        **config._poseflow_model_kwargs(),
+        dino_backbone=FakeDINO(),
+    )
+    inputs = model.prepare_transformer_inputs(
+        torch.randn(2, 3, 64, 96),
+        torch.zeros(2, 64, 96, dtype=torch.bool),
+    )
+
+    assert len(model.post_image_attention_by_layer()) == 3
+    assert inputs.decoder_context.spatial_shapes.tolist() == [[8, 12], [4, 6], [2, 3]]
+    assert [feature.shape[1] for feature in inputs.decoder_context.features] == [32, 32, 32]
+    fusion_calls = [0, 0, 0]
+    handles = [
+        module.register_forward_hook(
+            lambda _module, _inputs, _output, index=index: fusion_calls.__setitem__(
+                index, fusion_calls[index] + 1
+            )
+        )
+        for index, module in enumerate(model.dino_decoder_fusion)
+    ]
+    features = torch.randn(2, 6, 32)
+    references = torch.rand(2, 6, 4)
+    model._run_joint_refiners(
+        features,
+        references,
+        memory=torch.randn(2, 126, 32),
+        inputs=inputs,
+        targets=None,
+        dn_count=0,
+    )
+    for handle in handles:
+        handle.remove()
+    assert fusion_calls == [1, 1, 1]
+
+
+def test_poseflow_v8_routes_three_level_coarse_and_four_level_fine_memories() -> None:
+    class FakeDINO(torch.nn.Module):
+        def forward(self, images: torch.Tensor) -> SimpleNamespace:
+            batch, _, height, width = images.shape
+            return SimpleNamespace(hidden_states=(
+                images,
+                torch.randn(batch, 96, height // 4, width // 4),
+                torch.randn(batch, 192, height // 8, width // 8),
+                torch.randn(batch, 384, height // 16, width // 16),
+                torch.randn(batch, 768, height // 32, width // 32),
+            ))
+
+    config = PoseFlowV8PipelineConfig(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=1,
+        num_feature_levels=4,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+    )
+    model = PoseFlowV8Model(
+        **config._poseflow_model_kwargs(),
+        dino_backbone=FakeDINO(),
+    ).eval()
+    images = torch.randn(2, 3, 64, 96)
+    padding_mask = torch.zeros(2, 64, 96, dtype=torch.bool)
+    captured: dict[str, object] = {}
+    prepare_inputs = model.prepare_transformer_inputs
+
+    def capture_inputs(image: torch.Tensor, mask: torch.Tensor):
+        inputs = prepare_inputs(image, mask)
+        captured["inputs"] = inputs
+        return inputs
+
+    model.prepare_transformer_inputs = capture_inputs
+    encoder_hook = model.transformer.encoder.register_forward_pre_hook(
+        lambda _module, args: captured.__setitem__("encoder_memory", args[0])
+    )
+
+    def capture_decoder_memory(_module, args, kwargs):
+        captured["decoder_memory"] = args[1] if len(args) > 1 else kwargs["memory"]
+        captured["decoder_spatial_shapes"] = kwargs["memory_spatial_shapes"]
+        captured["decoder_padding_mask"] = kwargs["memory_key_padding_mask"]
+
+    decoder_hook = model.transformer.decoder.layers[0].register_forward_pre_hook(
+        capture_decoder_memory, with_kwargs=True
+    )
+    with torch.no_grad():
+        result = model(
+            images,
+            torch.zeros(2, 4, 4),
+            torch.full((2,), 0.5),
+            person_state=torch.zeros(2, 4, 8),
+            padding_mask=padding_mask,
+        )
+    encoder_hook.remove()
+    decoder_hook.remove()
+
+    inputs = captured["inputs"]
+    assert inputs.spatial_shapes.tolist() == [[8, 12], [4, 6], [2, 3]]
+    assert inputs.memory.shape == (2, 126, 32)
+    assert inputs.decoder_spatial_shapes.tolist() == [
+        [16, 24], [8, 12], [4, 6], [2, 3]
+    ]
+    assert inputs.decoder_memory.shape == (2, 510, 32)
+    assert inputs.decoder_padding_mask.shape == (2, 510)
+    assert captured["encoder_memory"] is inputs.memory
+    assert captured["decoder_memory"] is inputs.decoder_memory
+    assert torch.equal(captured["decoder_spatial_shapes"], inputs.decoder_spatial_shapes)
+    assert model.transformer.encoder.layers[0].self_attn.num_levels == 3
+    assert model.transformer.decoder.layers[0].cross_attn.num_levels == 4
+    assert all(
+        torch.isfinite(value).all()
+        for value in result.values()
+        if isinstance(value, torch.Tensor)
+    )
+    assert len(model.dino_coarse_input_projections) == 3
+    assert len(model.dino_fine_input_projections) == 4
+    assert not hasattr(model, "backbone")
+    assert not hasattr(model, "input_proj")
+    for coarse_projection, fine_projection in zip(
+        model.dino_coarse_input_projections,
+        model.dino_fine_input_projections[1:],
+        strict=True,
+    ):
+        assert coarse_projection[0].weight.data_ptr() != fine_projection[0].weight.data_ptr()
 
 
 def test_poseflow_uses_ota_by_default() -> None:
@@ -697,6 +935,15 @@ def test_v5_target_builder_mixes_augmented_and_interpolated_person_sources() -> 
     assert targets[0]["boxes"].shape == (2, 4)
 
 
+def test_poseflow_v6_hydra_preset_selects_the_v6_pipeline() -> None:
+    config_dir = str(Path(__file__).resolve().parents[1] / "conf")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        config = compose(config_name="benchmark_poseflow_v6")
+
+    assert config.pipeline._target_.endswith("PoseFlowV6PipelineConfig")
+    assert config.pipeline.dino_frozen is True
+
+
 def test_v5_box_outputs_supervise_center_and_corner_midpoint() -> None:
     pipeline = PoseFlowV5PipelineConfig(
         backbone_pretrained=False,
@@ -802,6 +1049,84 @@ def test_v5_benchmark_resolves_its_distinct_schedule() -> None:
     assert config.pipeline.scheduler_type == "two_cycle_cosine"
     assert config.pipeline.lr_cycle_restart_epoch == 40
     assert config.pipeline.center_loss_factor == pytest.approx(0.1)
+
+
+def test_v6_uses_independent_warmup_and_cosine_schedules() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_poseflow_v6")
+
+    assert config.pipeline._target_.endswith("PoseFlowV6PipelineConfig")
+    assert config.pipeline.lr == pytest.approx(1e-4)
+    assert config.pipeline.lr_backbone == pytest.approx(1e-5)
+    assert config.pipeline.lr_main_warmup_epochs == 1
+    assert config.pipeline.lr_backbone_warmup_epochs == 10
+    assert config.pipeline.scheduler_type == "cosine"
+    assert config.pipeline.decoder_loss_mode == "all"
+
+
+def test_v8_benchmark_resolves_four_native_dino_stages_and_small_setup() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        config = compose(config_name="benchmark_poseflow_v8")
+
+    assert config.pipeline._target_.endswith("PoseFlowV8PipelineConfig")
+    assert config.pipeline.num_feature_levels == 4
+    assert config.pipeline.num_encoder_feature_levels == 3
+    assert config.pipeline.dino_model_name.endswith("convnext-tiny-pretrain-lvd1689m")
+    assert config.pipeline.dino_hidden_state_indices == [1, 2, 3, 4]
+    assert config.pipeline.dino_feature_channels == [96, 192, 384, 768]
+    assert config.pipeline.dino_coarse_hidden_state_indices == [2, 3, 4]
+    assert config.pipeline.dino_frozen is True
+    assert config.pipeline.num_encoder_layers == 3
+    assert config.pipeline.num_decoder_layers == 3
+    assert config.data.eval_resize_scale == 256
+    assert config.data.batch_size == 4
+    assert config.training.accumulate_grad_batches == 2
+
+
+def test_per_group_warmup_hits_peak_before_independent_cosine_decay() -> None:
+    class OptimizerFixture(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = torch.nn.Module()
+            self.model.backbone = torch.nn.Linear(2, 2)
+            self.model.head = torch.nn.Linear(2, 2)
+
+    config = build_adamw_with_schedule(
+        OptimizerFixture(),
+        lr=1e-4,
+        lr_backbone=1e-5,
+        weight_decay=0.0,
+        lr_T_max=20,
+        lr_min_frac=0.01,
+        scheduler_type="cosine",
+        lr_warmup_epochs_by_group={"main": 1, "backbone": 10},
+    )
+    optimizer = config["optimizer"]
+    scheduler = config["lr_scheduler"]["scheduler"]
+
+    def group_lrs() -> dict[str, float]:
+        return {
+            group["schedule_group"]: group["lr"]
+            for group in optimizer.param_groups
+        }
+
+    assert group_lrs()["main"] == pytest.approx(1e-4, rel=1e-6)
+    assert group_lrs()["backbone"] == pytest.approx(1e-6, rel=1e-5)
+
+    for _ in range(9):
+        optimizer.step()
+        scheduler.step()
+    # The scheduler is now at the start of one-based epoch 10.
+    assert group_lrs()["backbone"] == pytest.approx(1e-5, rel=1e-6)
+    assert group_lrs()["main"] < 1e-4
+
+    for _ in range(10):
+        optimizer.step()
+        scheduler.step()
+    assert group_lrs()["main"] == pytest.approx(1e-6, rel=1e-5)
+    assert group_lrs()["backbone"] == pytest.approx(1e-7, rel=1e-5)
 
 
 def test_v5_paper_100_epoch_benchmark_preserves_full_scale_contract() -> None:

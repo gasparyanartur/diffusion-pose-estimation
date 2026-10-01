@@ -1,0 +1,34 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV6PipelineConfig
+
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# V6 preserves V5's flow/source/loss path and adds DINOv3 multi-scale fusion
+# after image cross-attention at every configured decoder layer.
+matching_strategy: ota
+ota_candidate_topk: 5
+flow_padding_policy: source_prior
+flow_sampling_steps: 3
+flow_state_conditioning: true
+flow_renewal: false
+
+num_encoder_layers: 3
+num_decoder_layers: 3
+num_box_decoder_layers: 1
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]
+
+fourier_bands: 8
+corner_order_loss_weight: 1.0
+center_loss_factor: 0.1
+dino_model_name: facebook/dinov3-convnext-small-pretrain-lvd1689m
+dino_frozen: true
+
+lr: 1.0e-4
+lr_backbone: 1.0e-5
+lr_main_warmup_epochs: 1
+lr_backbone_warmup_epochs: 10
+lr_min_frac: 1.0e-2
+scheduler_type: cosine
+decoder_loss_mode: all

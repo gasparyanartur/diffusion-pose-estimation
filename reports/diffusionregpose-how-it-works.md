@@ -231,10 +231,12 @@ background labels and random DN boxes. DN construction is in
 [`_prepare_denoising_queries`](../src/models/pipelines/pose_estimators/diffusionregpose/model.py#L448);
 the losses are in [`_denoising_losses`](../src/models/pipelines/pose_estimators/diffusionregpose/training.py#L928).
 
-The optional [Dynamic-K OTA matcher](../src/models/pipelines/pose_estimators/diffusionregpose/training.py#L613)
+The optional [Dynamic-K OTA matcher](../src/models/pipelines/pose_estimators/diffusionregpose/training.py#L660)
 allows multiple clean query matches per person and normalizes by positive
 assignments. It is **not the default** in `diffusionregpose.yaml`; its measured
 selected-layer comparison is reported [separately](diffusionregpose-ota-comparison.md).
+For a worked explanation of both assignment strategies, see the
+[Hungarian matching and OTA report](diffusionregpose-matching-explained.md).
 
 ## Inference and evaluation boundary
 

@@ -211,6 +211,53 @@ def diffusionregpose_checkpoint_component_coverage(
     return coverage
 
 
+def adapt_checkpoint_deformable_attention_levels(
+    model_state: Mapping[str, Tensor],
+    checkpoint_state: Mapping[str, Tensor],
+    *,
+    num_heads: int,
+) -> tuple[dict[str, Tensor], tuple[str, ...]]:
+    """Slice pretrained level-specific tensors to a reduced feature pyramid."""
+    model_level_embed = model_state.get("transformer.level_embed")
+    checkpoint_level_embed = checkpoint_state.get("transformer.level_embed")
+    if model_level_embed is None or checkpoint_level_embed is None:
+        return dict(checkpoint_state), ()
+    target_levels = model_level_embed.shape[0]
+    source_levels = checkpoint_level_embed.shape[0]
+    if target_levels >= source_levels or model_level_embed.shape[1:] != checkpoint_level_embed.shape[1:]:
+        return dict(checkpoint_state), ()
+
+    adapted = dict(checkpoint_state)
+    adapted["transformer.level_embed"] = checkpoint_level_embed[:target_levels]
+    adapted_keys = ["transformer.level_embed"]
+    for name, value in checkpoint_state.items():
+        target = model_state.get(name)
+        if target is None or target.shape == value.shape or not name.startswith("transformer."):
+            continue
+        if ".sampling_offsets." in name:
+            values_per_point = 2
+        elif ".attention_weights." in name:
+            values_per_point = 1
+        else:
+            continue
+        if value.ndim < 1 or target.ndim != value.ndim or value.shape[1:] != target.shape[1:]:
+            continue
+        source_group = value.shape[0] // (num_heads * source_levels)
+        target_group = target.shape[0] // (num_heads * target_levels)
+        if (
+            source_group == 0
+            or source_group % values_per_point != 0
+            or source_group != target_group
+            or value.shape[0] != num_heads * source_levels * source_group
+            or target.shape[0] != num_heads * target_levels * target_group
+        ):
+            continue
+        grouped = value.reshape(num_heads, source_levels, source_group, *value.shape[1:])
+        adapted[name] = grouped[:, :target_levels].reshape_as(target)
+        adapted_keys.append(name)
+    return adapted, tuple(adapted_keys)
+
+
 def validate_diffusionregpose_checkpoint_coverage(
     coverage: Mapping[str, float],
     *,
@@ -1375,6 +1422,11 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                     target_num_box_decoder_layers=self.num_box_decoder_layers,
                 )
             model_state = model.state_dict()
+            state, adapted_level_keys = adapt_checkpoint_deformable_attention_levels(
+                model_state,
+                state,
+                num_heads=self.num_heads,
+            )
             coverage = diffusionregpose_checkpoint_component_coverage(
                 model_state, state
             )
@@ -1408,8 +1460,11 @@ class DiffusionRegPosePipelineConfig(BaseConfig):
                 warnings.warn(
                     f"Loaded {checkpoint_path} with {len(incompatible.missing_keys)} missing and "
                     f"{len(incompatible.unexpected_keys)} unexpected model keys, "
-                    f"{len(checkpoint_only_keys)} unused checkpoint keys, and "
+                    f"{len(compatible_state)} compatible model tensors, "
+                    f"{len(checkpoint_only_keys)} unused checkpoint keys "
+                    f"{sorted(checkpoint_only_keys)}, and "
                     f"{len(shape_incompatible_keys)} shape-incompatible keys. "
+                    f"Adapted feature-level tensors: {adapted_level_keys}. "
                     f"Critical coverage: {coverage_summary}.",
                     stacklevel=2,
                 )

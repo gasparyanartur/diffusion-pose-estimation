@@ -247,11 +247,12 @@ class DeformableTransformerEncoder(nn.Module):
 
 
 def build_input_projections(backbone_channels, *, hidden_dim=256, num_levels=4):
-    if num_levels < len(backbone_channels):
-        raise ValueError("num_levels cannot be smaller than the backbone feature count")
-    projections = [nn.Sequential(nn.Conv2d(channels, hidden_dim, 1), nn.GroupNorm(32, hidden_dim)) for channels in backbone_channels]
+    if num_levels < 1:
+        raise ValueError("num_levels must be positive")
+    selected_channels = backbone_channels[:num_levels]
+    projections = [nn.Sequential(nn.Conv2d(channels, hidden_dim, 1), nn.GroupNorm(32, hidden_dim)) for channels in selected_channels]
     channels = backbone_channels[-1]
-    for _ in range(num_levels - len(backbone_channels)):
+    for _ in range(num_levels - len(projections)):
         projections.append(nn.Sequential(nn.Conv2d(channels, hidden_dim, 3, stride=2, padding=1), nn.GroupNorm(32, hidden_dim)))
     return nn.ModuleList(projections)
 
@@ -302,18 +303,27 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.linear1, self.dropout3 = nn.Linear(d_model, d_ffn), nn.Dropout(dropout)
         self.linear2, self.dropout4, self.norm3 = nn.Linear(d_ffn, d_model), nn.Dropout(dropout), nn.LayerNorm(d_model)
 
-    def forward(self, tgt, *, tgt_query_pos, tgt_reference_points, memory, memory_level_start_index, memory_spatial_shapes, memory_key_padding_mask=None, self_attn_mask=None, post_image_attention=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
+    def forward(self, tgt, *, tgt_query_pos, tgt_reference_points, memory, memory_level_start_index, memory_spatial_shapes, memory_key_padding_mask=None, self_attn_mask=None, post_image_attention=None, post_image_attention_context=None, raw_reference_points=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
         attended = self.self_attn(tgt + tgt_query_pos, tgt + tgt_query_pos, tgt, attn_mask=self_attn_mask)[0]
         tgt = self.norm2(tgt + self.dropout2(attended))
         crossed = self.cross_attn((tgt + tgt_query_pos).transpose(0, 1), tgt_reference_points.transpose(0, 1).contiguous(), memory, memory_spatial_shapes, memory_level_start_index, memory_key_padding_mask).transpose(0, 1)
         tgt = self.norm1(tgt + self.dropout1(crossed))
         if post_image_attention is not None:
-            tgt = post_image_attention(
-                tgt,
-                denoising_query_count=denoising_query_count,
-                collect_diagnostics=collect_post_image_attention_diagnostics,
-                collect_attention=collect_post_image_attention_weights,
-            )
+            callback_kwargs = {
+                "denoising_query_count": denoising_query_count,
+                "collect_diagnostics": collect_post_image_attention_diagnostics,
+                "collect_attention": collect_post_image_attention_weights,
+            }
+            if post_image_attention_context is not None:
+                callback_kwargs.update(
+                    query_position=tgt_query_pos,
+                    reference_points=(
+                        tgt_reference_points
+                        if raw_reference_points is None else raw_reference_points
+                    ),
+                    decoder_context=post_image_attention_context,
+                )
+            tgt = post_image_attention(tgt, **callback_kwargs)
         return self.norm3(tgt + self.dropout4(self.dropout3(self.linear2(F.relu(self.linear1(tgt))))))
 
 
@@ -358,7 +368,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.hw, self.keypoint_embed = nn.Embedding(num_body_points, 2), nn.Embedding(num_body_points, d_model)
         self.kpt_index = [i for i in range(num_group * (num_body_points + 1)) if i % (num_body_points + 1) != 0]
 
-    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, tgt_mask2=None, diffusion_keypoints=None, initial_reference_points=None, state_keypoint_gate=None, return_selection_metadata=False, post_image_attention_by_layer=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
+    def forward(self, tgt, memory, *, refpoints_unsigmoid, level_start_index, spatial_shapes, valid_ratios, memory_key_padding_mask=None, pos=None, tgt_mask=None, tgt_mask2=None, diffusion_keypoints=None, initial_reference_points=None, state_keypoint_gate=None, return_selection_metadata=False, post_image_attention_by_layer=None, post_image_attention_context=None, denoising_query_count=0, collect_post_image_attention_diagnostics=False, collect_post_image_attention_weights=False):
         if initial_reference_points is not None and initial_reference_points.shape != refpoints_unsigmoid.shape:
             raise ValueError("initial_reference_points must match refpoints_unsigmoid")
         output = tgt
@@ -379,7 +389,7 @@ class DeformableTransformerDecoder(nn.Module):
             post_image_attention = None
             if post_image_attention_by_layer is not None:
                 post_image_attention = post_image_attention_by_layer.get(layer_id)
-            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask, post_image_attention=post_image_attention, denoising_query_count=denoising_query_count, collect_post_image_attention_diagnostics=collect_post_image_attention_diagnostics, collect_post_image_attention_weights=collect_post_image_attention_weights)
+            output = layer(output, tgt_query_pos=query_pos, tgt_reference_points=reference_points_input, raw_reference_points=reference_points, memory=memory, memory_level_start_index=level_start_index, memory_spatial_shapes=spatial_shapes, memory_key_padding_mask=memory_key_padding_mask, self_attn_mask=layer_mask, post_image_attention=post_image_attention, post_image_attention_context=post_image_attention_context, denoising_query_count=denoising_query_count, collect_post_image_attention_diagnostics=collect_post_image_attention_diagnostics, collect_post_image_attention_weights=collect_post_image_attention_weights)
             intermediate.append(self.norm(output))
 
             if self.bbox_embed is not None and layer_id < self.num_box_decoder_layers:

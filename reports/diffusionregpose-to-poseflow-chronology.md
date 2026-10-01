@@ -1,6 +1,6 @@
 # From DiffusionRegPose to PoseFlow: experiment chronology
 
-Status: 2026-09-27. AP values below are fractions, so a difference of 0.01 is
+Status: 2026-09-30. AP values below are fractions, so a difference of 0.01 is
 one AP point. The main benchmark is the 8,000-image CrowdPose test annotation.
 This is a history of measured work, including unsuccessful and unfinished
 experiments, rather than a claim that every run was a matched ablation.
@@ -23,9 +23,17 @@ experiments, rather than a claim that every run was a matched ablation.
   V3 lost substantial AP with repeated steps. The later paper-scale V5 reached
   **0.6813** at one step, but its 1–16-step sweep had **no meaningful positive
   keypoint AP response**: the largest gain over S=1 was only **0.00031**.
-  DiffusionRegPose's own sweep gained **0.01396** at S=2. These are single
-  checkpoint, single-seed observations; no statistical significance test was
-  performed.
+  DiffusionRegPose's own sweep gained **0.01396** at S=2 for seed 42. Its
+  separate five-inference-seed S=1/S=2 test was positive for keypoint AP in
+  every paired seed (mean gain **0.01276**); it does not measure training-seed
+  or test-set uncertainty.
+- V6 tested whether frozen multiscale DINO image features could improve the
+  image-conditioned decoder: its reduced 3-encoder/3-decoder epoch-79 model
+  at 256/427 evaluation resize reached **0.5630** full-test keypoint AP at one
+  step and **0.5643** at two (per-image seed 42).
+  V7 reduces the two-backbone design; V8 lets DINO alone drive coarse person
+  proposals and fine pose refinement. V7/V8 have no completed full-test AP
+  comparison in this report.
 
 ## Chronology
 
@@ -126,25 +134,35 @@ this one-seed, reduced-model result establish a full paper-scale OTA gain.
 ### 13–18 September: PoseFlow and successive state designs
 
 The first PoseFlow replaced the diffusion state path with endpoint flow of
-keypoint coordinates while retaining the ED-Pose architecture, OTA task
-criterion, denoising, and pose NMS. Its selected-layer 256/427 checkpoint
+keypoint coordinates: a direct source-to-pose trajectory was meant to let
+repeated decoder calls refine a simple, fixed-source state. It retained the
+ED-Pose architecture, OTA task criterion, denoising, and pose NMS. Its
+selected-layer 256/427 checkpoint
 reached [**0.5501265 keypoint / 0.5196890 bbox AP**](../results/poseflow_training/poseflow_training/20260914_020329/evaluation_epoch079/metrics.json)
 at one Euler step. A bare S=1–8 sweep stayed within **0.000073 keypoint AP**;
 renewal and corrected cross-step candidate aggregation gave no persuasive
-improvement. A shared learned pose-codebook branch was implemented and
-diagnosed, but the C=128 run was stopped at epoch 61 to pursue V3; there is no
+improvement. A shared learned pose-codebook branch tested whether reusable
+pose-hypothesis tokens could enrich image-conditioned queries; it was
+implemented and diagnosed, but the C=128 run was stopped at epoch 61 to pursue
+V3. There is no
 completed final-AP comparison for that branch.
 
 V3 transported box corners and joints together, carrying 50 selected states
 and refilling 150 at each step. Its [fixed-seed full-test
 sweep](../results/poseflow_v3_evaluation/step_sweep_summary.md) fell from
 **0.5690 AP at S=1** to **0.5336 at S=2** and about **0.25–0.27 at S=4–16**.
-V4 rebuilt coordinate-conditioned image hypotheses at each call rather than
-carrying a latent hypothesis; its design and diagnostic training were
-implemented, but no completed full-test V4 comparison is used here. V5 added
-a two-cycle cosine schedule, same-image resampled/interpolated training
-sources, and auxiliary box-center supervision. Those changes were introduced
-together, so later V5 results cannot isolate any one of them. A separate
+Carrying a small selected state set made the current coordinates available at
+the next call, but the observed collapse showed that this transport rule did
+not make repeated refinement reliable. V4 therefore rebuilt 200
+coordinate-conditioned, image-attending hypotheses at every call rather than
+carrying a latent hypothesis; its 50 selected states still carried their
+coordinates and fixed sources, and 150 fresh states refilled the pool. This
+made the image available when interpreting the current state, but V4 has no
+completed full-test comparison here. V5 kept that structure and aimed to
+reduce training/source mismatch: it added same-image resampled and interpolated
+sources, a two-cycle cosine schedule, and auxiliary box-center supervision.
+Those changes were introduced together, so later V5 results cannot isolate
+any one of them. A separate
 256/427 V5 [S=1 test](../results/poseflow_v5_evaluation/s01_seed1729/metrics.json)
 was **0.5576 AP**. The model-family contracts are documented in
 [project assumptions](../docs/project.md) and [architecture](../docs/architecture.md).
@@ -198,7 +216,104 @@ shrinks at longer sampling. In this sweep, extra flow steps did not deliver a
 meaningful advantage, and neither our final DiffusionRegPose model nor V5
 reaches the paper's 72.7 AP. This does not establish that one model family is
 intrinsically better: training recipes and random-source contracts were not
-matched, and the sweep has no repeated seeds or uncertainty estimate.
+matched. The V5 sweep has one inference seed; the DiffusionRegPose S=1/S=2
+seed study below measures a different, narrower source of variation.
+
+### 27–30 September: inference seeds and the V5 loss ablation
+
+We repeated DiffusionRegPose S=1 and S=2 with inference seeds 42–46, using the
+same final native epoch-79 checkpoint, 800/1333 resize, deterministic DDIM
+(`eta=0`), and standalone evaluator on all 8,000 CrowdPose test images. Each
+seed pairs its S=1 and S=2 evaluations; the evaluator seeds proposal sampling
+before model construction, so the paired comparison holds the initial random
+draw fixed within that seed. AP values remain fractions.
+
+| Inference seed | S=1 keypoint AP | S=2 keypoint AP | S=2 minus S=1 | S=2 minus S=1 bbox AP |
+| ---: | ---: | ---: | ---: | ---: |
+| 42 | [0.673763](../results/diffusionregpose_paper_full_standalone_eval/full_s1_seed42/metrics.json) | [0.687720](../results/diffusionregpose_paper_full_standalone_eval/s02_seed42/metrics.json) | +0.013957 | +0.003472 |
+| 43 | [0.674178](../results/diffusionregpose_paper_full_standalone_eval/s01_seed43/metrics.json) | [0.687044](../results/diffusionregpose_paper_full_standalone_eval/s02_seed43/metrics.json) | +0.012866 | +0.002143 |
+| 44 | [0.675250](../results/diffusionregpose_paper_full_standalone_eval/s01_seed44/metrics.json) | [0.686468](../results/diffusionregpose_paper_full_standalone_eval/s02_seed44/metrics.json) | +0.011217 | -0.000034 |
+| 45 | [0.675040](../results/diffusionregpose_paper_full_standalone_eval/s01_seed45/metrics.json) | [0.687061](../results/diffusionregpose_paper_full_standalone_eval/s02_seed45/metrics.json) | +0.012021 | +0.000180 |
+| 46 | [0.673520](../results/diffusionregpose_paper_full_standalone_eval/s01_seed46/metrics.json) | [0.687236](../results/diffusionregpose_paper_full_standalone_eval/s02_seed46/metrics.json) | +0.013716 | +0.002032 |
+
+The paired keypoint gain is positive in all five seeds, with mean **0.012756**,
+sample standard deviation **0.001149**, and observed range **0.011217–0.013957**.
+The S=1 and S=2 AP means are **0.674350** and **0.687106**, respectively.
+Bbox AP increases in four seeds and is nearly unchanged but slightly negative
+in one; its mean paired gain is **0.001559**. These are inference-seed
+descriptives for one checkpoint and one fixed test set, not a formal confidence
+interval or evidence about retraining variation.
+
+The paper-scale V5 `decoder_loss_mode=first_last` ablation was stopped after
+epoch 55; its [resume checkpoint](../results/poseflow_v5_paper_first_last_100e_training/poseflow_v5_paper_first_last_100e_training/resume_20260925_2133/checkpoints/last.ckpt)
+is preserved, but no final full-test evaluation supports a step-response
+conclusion for it.
+
+### 29–30 September: DINO-conditioned V6, smaller V7, and DINO-only V8
+
+The V3 and V5 step sweeps motivated a different question: could stronger
+image features help the decoder interpret each current pose hypothesis, where
+additional coordinate updates alone had not helped? V6 keeps V5's flow state,
+source construction, OTA losses, and sampler, and adds a frozen DINOv3
+ConvNeXt-Small branch. At every configured decoder layer, separate deformable
+attention reads DINO stages 2/3/4 at the current query references (strides
+8/16/32). An MLP combines the three readouts with the existing query; a
+zero-initialized gate adds the result after ordinary image attention. This is
+query-side conditioning, not an added encoder pyramid: ResNet still creates
+the person proposals. The [resolved V6 config](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/.hydra/config.yaml)
+uses 3 encoder/3 decoder layers, 200 initial queries, 50 proposals, 256/427
+evaluation resizing, all-stage losses, and separate main/ResNet cosine
+warmups. The epoch-79 [checkpoint](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/checkpoints/epoch079.ckpt)
+completed training.
+
+The V6 standalone evaluator, using that checkpoint, the full 8,000-image test
+split, per-image flow seed 42, no renewal, and no ensemble, has completed these
+steps:
+
+| Flow steps | Keypoint AP | Change from S=1 | Bbox AP |
+| ---: | ---: | ---: | ---: |
+| 1 | [0.563047](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/evaluation_retry_20260930/crowdpose_test_seed42_steps1_metrics.json) | 0 | 0.511975 |
+| 2 | [0.564296](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/evaluation_retry_20260930/crowdpose_test_seed42_steps2_metrics.json) | +0.001250 | 0.512319 |
+| 3 | [0.563995](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/evaluation_retry_20260930/crowdpose_test_seed42_metrics.json) | +0.000949 | 0.511525 |
+| 4 | [0.564200](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/evaluation_retry_20260930/crowdpose_test_seed42_steps4_metrics.json) | +0.001153 | 0.511362 |
+
+This is a small positive step response for one V6 seed, far smaller than the
+DiffusionRegPose five-seed S=2 gain above. V6's training-loop validation on
+the 2,000-image `crowdpose_val.json` split recorded **0.772751 keypoint AP**
+at epoch 79 ([CSV](../results/poseflow_v6_training/poseflow_v6_training/20260929_024515/csv_logs/metrics.csv)); the lower full-test AP is a
+different split and evaluator path. The cause of that gap has not been
+established. S=6/8 evaluation is still in progress and is excluded here.
+
+V7 asks whether a smaller two-backbone version can keep the proposed DINO reads
+at lower model size. It uses frozen ConvNeXt-Tiny stages 2 and 4 (strides 8
+and 32), with two separate per-layer DINO readouts, while the base transformer
+uses only two ResNet maps (strides 8 and 16). Thus its four attended maps are
+split across two paths, not a four-level shared encoder. Its reduced
+[resolved config](../results/poseflow_v7_training/poseflow_v7_resume_20260930/20260930_180743/.hydra/config.yaml)
+retains V6's flow, all-stage losses, 3/3 transformer depth, 200/50 query
+setup, 256/427 resizing, and optimizer schedule. The resumed training run
+had an [epoch-29 checkpoint](../results/poseflow_v7_training/poseflow_v7_resume_20260930/20260930_180743/checkpoints/epoch029.ckpt)
+at this report's snapshot; no V7 full-test AP result is used here.
+
+V8 tests the broader hypothesis that frozen DINO features should also drive
+the *proposal* path, instead of appearing only as a decoder residual after
+ResNet has selected people. It removes ResNet and the V7 fusion branch. The
+same frozen ConvNeXt-Tiny supplies four native stages (strides 4/8/16/32),
+without synthesizing another pyramid. Independent `1x1 Conv + GroupNorm`
+adapter banks keep coarse encoder/query features separate from fine decoder
+features. The current [resolved V8 config](../results/poseflow_v8_coarse234_training/poseflow_v8_coarse234_training/20260930_191659/.hydra/config.yaml)
+uses stages 2/3/4 for coarse encoder attention and person-proposal selection,
+and all four stages for fine decoder deformable attention. Omitting the
+stride-4 map from the encoder avoids its dense token cost while retaining its
+spatial detail for pose refinement. The earlier all-four-coarse V8 startup
+stopped during validation without a checkpoint; its
+[launch log](../results/poseflow_v8_training/launch_20260930.log) was preserved, and
+the revised 3-level-coarse/4-level-fine run started fresh from compatible
+EDPose transformer/head tensors. The [V8 architecture and parameter
+accounting](../docs/architecture.md) document this checkpoint boundary.
+At this snapshot, revised V8 had an [epoch-2 checkpoint](../results/poseflow_v8_coarse234_training/poseflow_v8_coarse234_training/20260930_191659/checkpoints/epoch002.ckpt)
+and no full-test AP result. V7 and V8 are architectural tests, not established
+improvements over V5 or V6.
 
 ## Outstanding questions
 
@@ -208,5 +323,8 @@ matched, and the sweep has no repeated seeds or uncertainty estimate.
   sample-order, augmentation, noise, and optimizer-step comparison.
 - The selected-layer OTA gain needs a full-size matched Hungarian/OTA test and
   another seed before it can be generalized.
-- The first-and-final V5 loss ablation and any seed-sensitivity runs should be
-  reported only after their final, complete evaluation artifacts exist.
+- V5 first-and-final loss training stopped before final evaluation. A matched
+  completed ablation would be needed to attribute any change to the loss mode.
+- V6's validation-to-test AP gap needs an evaluator/split audit. Its full step
+  sweep and V7/V8 final test evaluations are pending; their DINO designs have
+  not yet established an AP or runtime advantage in a matched comparison.
