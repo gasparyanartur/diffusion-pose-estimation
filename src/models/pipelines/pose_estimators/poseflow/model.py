@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch import nn
 
+from src.data.skeleton import CROWDPOSE_EDGE_LIST
 from src.models.pipelines.pose_estimators.diffusionregpose.model import (
     DiffusionRegPoseModel,
 )
@@ -258,7 +259,6 @@ class PoseFlowHypothesisStage(nn.Module):
             gated_coordinate_features = gate[:, None, None] * coordinate_features
             self._last_diagnostics = {
                 "flow_time_mean": timesteps.detach().float().mean(),
-                "coordinate_gate_mean": gate.detach().float().mean(),
                 "coordinate_features_rms": self._diagnostic_rms(coordinate_features),
                 "coordinate_gated_rms": self._diagnostic_rms(gated_coordinate_features),
                 "image_tokens_rms": self._diagnostic_rms(token_features),
@@ -800,6 +800,11 @@ class PoseFlowV4Model(PoseFlowModel):
             "poseflow_full_pose_loss": torch.ones((), dtype=torch.bool, device=features.device),
         }, updated_references, dn_prediction
 
+    def _refiner_attention_mask(
+        self, mask: Tensor, layer_index: int, dn_count: int, dtype: torch.dtype
+    ) -> Tensor:
+        return mask
+
     def _run_joint_refiners(
         self,
         features: Tensor,
@@ -859,7 +864,9 @@ class PoseFlowV4Model(PoseFlowModel):
                 memory_level_start_index=decoder_level_start_index,
                 memory_spatial_shapes=decoder_spatial_shapes,
                 memory_key_padding_mask=decoder_padding_mask,
-                self_attn_mask=mask,
+                self_attn_mask=self._refiner_attention_mask(
+                    mask, layer_index, dn_count, output.dtype
+                ),
                 post_image_attention=(
                     None if post_image_attention_by_layer is None
                     else post_image_attention_by_layer.get(layer_index)
@@ -1108,6 +1115,7 @@ class PoseFlowV5Model(PoseFlowV4Model):
         padding_mask: Tensor | None = None,
         num_proposals: int | None = None,
         generator: torch.Generator | None = None,
+        collect_step_diagnostics: bool = False,
     ) -> dict[str, Tensor | list[dict[str, Tensor]]]:
         from .training import flow_sample_poseflow_v5_states
 
@@ -1119,7 +1127,203 @@ class PoseFlowV5Model(PoseFlowV4Model):
             sampling_steps=self.flow_sampling_steps,
             ensemble=self.flow_ensemble,
             generator=generator,
+            collect_step_diagnostics=collect_step_diagnostics,
         )
+
+
+class PoseFlowV10Model(PoseFlowV5Model):
+    """Whole-person latent refinement with one shared absolute geometry readout."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        hidden_dim = self.transformer.decoder.d_model
+        self.dn_box_conditioning = MLP(4, hidden_dim, hidden_dim, 2)
+        # Empty legacy containers preserve the initialization contract without parameters.
+        self.v5_box_heads = nn.ModuleList()
+        self.v4_class_heads = nn.ModuleList()
+        self.v4_pose_heads = nn.ModuleList()
+        self.v4_pose_hw_heads = nn.ModuleList()
+
+    def _initial_prediction(self, hypothesis: Tensor):
+        coordinates = self.initial_coordinate_head(hypothesis).sigmoid()
+        corners, center = coordinates[..., :4], coordinates[..., 4:6]
+        keypoint_xy = coordinates[..., 6:].reshape(
+            *hypothesis.shape[:2], self.transformer.decoder.num_body_points, 2
+        )
+        boxes, order_penalty = self._corners_to_valid_boxes(corners)
+        return {
+            "pred_logits": self.initial_class_head(hypothesis),
+            "pred_boxes": boxes,
+            "pred_keypoints": self._keypoints_from_xy(keypoint_xy),
+            "pred_box_points": torch.cat((corners, center), dim=-1),
+            "poseflow_full_pose_loss": torch.ones((), dtype=torch.bool, device=hypothesis.device),
+            "corner_order_penalty": order_penalty.mean(),
+        }, corners, keypoint_xy
+
+    def _expand_hypotheses(self, hypothesis, corners, keypoint_xy, initial):
+        selected = initial["pred_logits"].max(-1).values.topk(self.num_proposals, dim=1).indices
+        features = hypothesis.gather(1, selected[..., None].expand(-1, -1, hypothesis.shape[-1]))
+        selected_corners = corners.gather(1, selected[..., None].expand(-1, -1, 4))
+        references, _ = self._corners_to_valid_boxes(selected_corners)
+        return features, references, {
+            "selected_person_indices": selected,
+            "selected_person_corners": selected_corners,
+        }
+
+    def _prepare_denoising_queries(self, targets, device):
+        features, references, state = super()._prepare_denoising_queries(targets, device)
+        features = features + self.dn_box_conditioning(references.sigmoid())
+        return features, references, state
+
+    def inference_attention_mask(self, batch_size, device):
+        return torch.zeros(
+            batch_size * self.transformer.decoder.num_heads,
+            self.num_proposals, self.num_proposals, dtype=torch.bool, device=device,
+        )
+
+    def training_attention_mask(self, targets, batch_size, device):
+        mask = self.training_box_attention_mask(targets, batch_size, device)
+        count = self.transformer.decoder.num_dn + self.num_proposals
+        return mask[:, :count, :count]
+
+    def _predict_expanded(self, layer_index, features, references, *, dn_count):
+        prediction, _, _ = self._initial_prediction(features)
+        updated_references = prediction["pred_boxes"]
+        dn_prediction = None
+        if dn_count:
+            dn_prediction = {
+                "pred_logits": prediction["pred_logits"][:, :dn_count],
+                "pred_boxes": updated_references[:, :dn_count],
+            }
+        clean_prediction = {
+            name: value[:, dn_count:] if value.ndim > 0 else value
+            for name, value in prediction.items()
+        }
+        return clean_prediction, updated_references, dn_prediction
+
+    def _run_joint_refiners(
+        self,
+        features: Tensor,
+        references: Tensor,
+        *,
+        memory: Tensor,
+        inputs,
+        targets: list[dict[str, Tensor]] | None,
+        dn_count: int,
+    ) -> tuple[list[dict[str, Tensor]], list[dict[str, Tensor]]]:
+        output = features.transpose(0, 1)
+        references_t = references.transpose(0, 1)
+        mask = (
+            self.training_attention_mask(targets, features.shape[0], features.device)
+            if dn_count
+            else self.inference_attention_mask(features.shape[0], features.device)
+        )
+        predictions: list[dict[str, Tensor]] = []
+        dn_predictions: list[dict[str, Tensor]] = []
+        post_image_attention_by_layer = self.post_image_attention_by_layer()
+        decoder_context = getattr(inputs, "decoder_context", None)
+        decoder_valid_ratios = (
+            inputs.valid_ratios
+            if inputs.decoder_valid_ratios is None
+            else inputs.decoder_valid_ratios
+        )
+        decoder_spatial_shapes = (
+            inputs.spatial_shapes
+            if inputs.decoder_spatial_shapes is None
+            else inputs.decoder_spatial_shapes
+        )
+        decoder_level_start_index = (
+            inputs.level_start_index
+            if inputs.decoder_level_start_index is None
+            else inputs.decoder_level_start_index
+        )
+        decoder_padding_mask = (
+            inputs.padding_mask
+            if inputs.decoder_padding_mask is None
+            else inputs.decoder_padding_mask
+        )
+        for layer_index, layer in enumerate(self.transformer.decoder.layers):
+            reference_input = references_t[:, :, None] * torch.cat(
+                (decoder_valid_ratios, decoder_valid_ratios), dim=-1
+            )[None]
+            query_position = self.transformer.decoder.ref_point_head(
+                sine_embedding_for_position(
+                    reference_input[:, :, 0, :],
+                    num_pos_feats=self.transformer.decoder.d_model // 2,
+                )
+            )
+            output = layer(
+                output,
+                tgt_query_pos=query_position,
+                tgt_reference_points=reference_input,
+                memory=memory,
+                memory_level_start_index=decoder_level_start_index,
+                memory_spatial_shapes=decoder_spatial_shapes,
+                memory_key_padding_mask=decoder_padding_mask,
+                self_attn_mask=self._refiner_attention_mask(
+                    mask, layer_index, dn_count, output.dtype
+                ),
+                post_image_attention=(
+                    None if post_image_attention_by_layer is None
+                    else post_image_attention_by_layer.get(layer_index)
+                ),
+                post_image_attention_context=decoder_context,
+                raw_reference_points=references_t,
+            )
+            normal_features = self.transformer.decoder.norm(output).transpose(0, 1)
+            prediction, updated_references, dn_prediction = self._predict_expanded(
+                layer_index,
+                normal_features,
+                references_t.transpose(0, 1),
+                dn_count=dn_count,
+            )
+            predictions.append(prediction)
+            if dn_prediction is not None:
+                dn_predictions.append(dn_prediction)
+            references_t = updated_references.transpose(0, 1)
+        return predictions, dn_predictions
+
+
+class PoseFlowV9Model(PoseFlowV5Model):
+    """V5 with a learned nonneighbor bias in expanded joint attention."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        decoder = self.transformer.decoder
+        if decoder.num_body_points != 14:
+            raise ValueError("PoseFlow V9 requires the 14-joint CrowdPose skeleton")
+        self.off_edge_attention_bias = nn.Parameter(
+            torch.full((decoder.num_layers,), -5.0)
+        )
+
+        adjacency = torch.eye(decoder.num_body_points, dtype=torch.bool)
+        for source, destination in CROWDPOSE_EDGE_LIST:
+            adjacency[source, destination] = True
+            adjacency[destination, source] = True
+        group_size = decoder.num_body_points + 1
+        query_count = decoder.num_group * group_size
+        positions = torch.arange(query_count)
+        group_ids = positions // group_size
+        joint_ids = (positions % group_size - 1).clamp_min(0)
+        joint_query = positions % group_size != 0
+        off_edge_pairs = (
+            (group_ids[:, None] == group_ids[None, :])
+            & joint_query[:, None]
+            & joint_query[None, :]
+            & ~adjacency[joint_ids[:, None], joint_ids[None, :]]
+        )
+        self.register_buffer("_off_edge_pairs", off_edge_pairs, persistent=False)
+
+    def _refiner_attention_mask(
+        self, mask: Tensor, layer_index: int, dn_count: int, dtype: torch.dtype
+    ) -> Tensor:
+        off_edge_pairs = F.pad(
+            self._off_edge_pairs, (dn_count, 0, dn_count, 0), value=False
+        )
+        if mask.shape[-2:] != off_edge_pairs.shape:
+            raise ValueError("V9 attention mask does not match expanded query layout")
+        hard_mask = torch.zeros_like(mask, dtype=dtype).masked_fill(mask, float("-inf"))
+        return hard_mask + self.off_edge_attention_bias[layer_index].to(dtype) * off_edge_pairs.to(dtype)
 
 
 @dataclass

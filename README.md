@@ -199,14 +199,111 @@ python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4
 python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4_control
 
 # V4 additionally logs detached activity diagnostics under
-# debug/{train,val}/ (the TensorBoard run label identifies the model): coordinate/image/hypothesis RMS, initial
-# score, initial-to-final movement, and named stage losses. These are not AP
-# metrics or proof of a causal state effect.
+# debug/{train,val}/ (the TensorBoard run label identifies the model):
+# coordinate/image/hypothesis RMS, initial score, and initial-to-final
+# movement. Canonical train/ and val/ tags contain every stage loss.
 
 # Train PoseFlow V5: V4 hypotheses with a two-cycle cosine schedule,
 # augmented/interpolated GT-state training sources, and auxiliary box-center
 # supervision. It is a distinct checkpoint family; do not resume V4 weights.
 python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v5
+
+# Train PoseFlow V13: independently matched latent/geometry supervision.
+# Start fresh; every epoch also evaluates 32 fixed test images at noise
+# variance 25/50/100 percent with 1/2/3 DDIM calls.
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13
+
+# V13 reconstruction/gradient experiment: weight 1 -> 0.01 over epochs 0-39,
+# then hold; gradient norm cap 2.0. Fresh run with bounded gradient diagnostics.
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13_reconstruction_decay
+
+# Matched OTA experiment: same reconstruction schedule and cap; change matcher.
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13_ota_reconstruction_decay
+
+# TensorBoard: quick-test/noise_var_100/steps_3/pose_AP, etc.
+# The 25/50 percent conditions use GT-derived inputs; 100 percent starts
+# from Gaussian noise. These are preliminary subset metrics, not full-test AP.
+# Disable the bounded diagnostic with pipeline.quick_eval_enabled=false.
+# Summary/prediction JSONs: <run>/quick_test/epochNNN/; fixed IDs: subset.json.
+# V13 uses the same standalone evaluate_poseflow CLI and --flow-sampling-steps.
+# V13 decoder classification uses focal sum / matched-person count; clean
+# reconstruction keeps slot-mean classification.
+# Individual loss layers use _0/_1/_2; unsuffixed tags show the final layer;
+# *_mean tags show layer averages. loss_latent_mean enters the total loss.
+# loss_reconstruction stays raw; loss_reconstruction_weighted enters the total.
+# debug/optimization/ shows objective gradients, accumulated preclip norms,
+# clip_factor, expected_postclip_norm, learning rates and reconstruction weight.
+
+# Train PoseFlow V12: fifty fixed groups, 17 Gaussian latent states plus a
+# global helper token per group. Coordinates are readouts, never sampler inputs.
+# Separate checkpoint family; this command starts a fresh full training run.
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v12
+
+# V12 evaluation uses the existing evaluate_poseflow CLI. Its
+# --flow-sampling-steps option controls latent DDIM calls (eta=0), not Euler
+# coordinate updates. Renewal and ensemble flags are rejected for V12.
+# Bounded debug/latent logs separate conditional losses from sampled quality.
+
+# Train PoseFlow V11: box/existence coarse latent, then 17 structured tokens.
+# Refine with image -> within-person -> existence-only cross-person attention.
+# Center/size flow, shared point/size/existence MLPs, and V5 LR schedule.
+# Requires a new V11 checkpoint; no corner or auxiliary center losses.
+# V11 sampling skips the extra noisy-joint feature addition by default;
+# training and conditional validation retain it. Existing V11 checkpoints load
+# unchanged. For historical sampling, set pipeline.sampling_joint_conditioning
+# to true in the config passed to the evaluator. Box conditioning stays active.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v11
+
+# Attach to the launched full V11 run; the training pane shows live progress.
+tmux attach -t poseflow-v11-training
+# TensorBoard compares V11 with V5 and earlier V10 runs:
+# http://100.64.110.119:6012/ (bound to 0.0.0.0).
+
+# Two-epoch wiring smoke: full architecture, 12 train / 2 validation images.
+# Restart at epoch 1 only to exercise both LR cycles during the smoke.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v11 \
+    run_name=poseflow_v11_smoke out_dir=results/poseflow_v11_smoke \
+    data.subset_frac=0.001 data.num_workers=0 data.ap_batch_size=2 \
+    training.max_epochs=2 training.test_after_fit=false \
+    pipeline.lr_cycle_restart_epoch=1 pipeline.val_ap_every_n_epochs=1
+
+# Train PoseFlow V10: one person latent and shared absolute pose/bbox readout.
+# Retains V5 initialization/losses; uses single cosine decay with main/backbone
+# peak LR 1e-4/1e-5, warmups 1/10 epochs and group-relative 1% minima.
+# Use a distinct V10 checkpoint family.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10
+
+# Train V10-tiny with model width 128 and transformer FFN width 256.
+# It retains the same EDPose ResNet weights; width-dependent layers retrain.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10_tiny
+
+# Retry V10-tiny with V5's two-cycle LR schedule in a separate run.
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10_tiny_v5lr
+
+# The tmux launch keeps the progress bar visible; attach to its training session.
+tmux attach -t poseflow-v10-tiny-v5lr-training
+
+# Train PoseFlow V9: V5 with learned skeleton-biased joint attention
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v9
+
+# The standalone PoseFlow evaluator accepts optional --step-probe-dir,
+# --stage-probe-dir, --feature-probe-dir, and (V9 only) --attention-probe-dir.
+# Use --flow-seed to pair source draws, --limit for a fixed diagnostic subset,
+# and separate output directories.
+
+# Future V5/V9/V10/V11 runs log `debug/solution/val_first_batch/...` on periodic AP
+# epochs. The fixed first validation batch records proposal/refiner GT quality,
+# flow-slot turnover, score/NMS counts, and (V9) per-layer attention behavior.
+# `pipeline.solution_feature_diagnostics=true` also runs four paired feature
+# interventions on that batch; set it to false to avoid the extra forwards.
+# Existing processes retain their loaded instrumentation; these additions
+# apply to subsequent processes. V9 skeleton-bias attention remains V9-only.
+# V10 also records latent update/spread, readout saturation, decoded movement
+# and tiny boxes under the first-batch latent/step_<s>/layer_<l>/ tags.
+# V11 reports coarse box coverage (no coarse pose metrics) and role/update RMS,
+# decoded width/height, reference saturation, and cross-person existence updates
+# under first-batch tokens/step_<s>/layer_<l>/ tags.
+# debug/lr/{main,backbone} records each epoch's effective learning rates.
 
 # The preset uses the external-compatible variable-size multi-scale training
 # transforms, batch size 1 with gradient accumulation 8 (effective batch size

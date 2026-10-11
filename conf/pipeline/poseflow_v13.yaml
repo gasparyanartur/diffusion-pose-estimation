@@ -1,0 +1,37 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV13PipelineConfig
+
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+# Fifty fixed groups; 17 sampled latent states plus one helper token per group.
+num_queries: 50
+num_proposals: 50
+num_group: 50
+num_encoder_layers: 3
+num_decoder_layers: 3
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]
+num_box_decoder_layers: 1
+dn_number: 0
+matching_strategy: hungarian
+flow_state_conditioning: false
+flow_sampling_steps: 3
+flow_renewal: false
+flow_ensemble: false
+hidden_dim: 256
+feedforward_dim: 2048
+timesteps: 1000
+lr: 1.0e-4
+lr_backbone: 5.0e-5
+scheduler_type: two_cycle_cosine
+lr_cycle_restart_epoch: 40
+lr_cycle_first_min: 1.0e-5
+lr_cycle_restart_peak: 3.0e-5
+lr_cycle_final_min: 2.0e-6
+
+quick_eval_enabled: true
+quick_eval_images: 32
+quick_eval_seed: 42
+quick_eval_noise_fractions: [0.25, 0.5, 1.0]
+quick_eval_steps: [1, 2, 3]

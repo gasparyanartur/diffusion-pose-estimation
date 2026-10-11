@@ -24,6 +24,40 @@ from src.models.pipelines.pose_estimators.diffusionregpose.evaluation import (
 from src.models.pipelines.pose_estimators.diffusionregpose import DiffusionRegPosePipelineConfig
 
 
+@pytest.mark.parametrize("probabilities", [
+    [[0.2, 0.001], [0.8, 0.001], [0.4, 0.001]],
+    [[0.9, 0.8], [0.7, 0.01], [0.1, 0.02]],
+])
+@pytest.mark.parametrize("kept_candidates", [[2, 0], []])
+def test_pose_nms_preserves_query_score_geometry_association(
+    monkeypatch, probabilities, kept_candidates,
+) -> None:
+    from src.models.pipelines.pose_estimators.diffusionregpose import evaluation
+
+    probabilities = torch.tensor(probabilities)
+    probabilities = torch.stack((probabilities, probabilities.flip(0)))
+    centers = torch.tensor([0.15, 0.5, 0.85])
+    boxes = torch.stack((centers, centers, torch.full_like(centers, 0.1),
+                         torch.full_like(centers, 0.1)), dim=-1)
+    outputs = {
+        "pred_logits": torch.logit(probabilities),
+        "pred_boxes": boxes[None].expand(2, -1, -1),
+        "pred_keypoints": torch.stack((centers, centers, torch.ones_like(centers)), -1)[None].expand(2, -1, -1),
+    }
+    monkeypatch.setattr(evaluation, "_crowdpose_pose_nms_keep", lambda points, scores, count:
+                        torch.tensor(kept_candidates, device=scores.device, dtype=torch.long))
+    results = postprocess_crowdpose(outputs, torch.ones(2, 2), num_body_points=1)
+    for batch_index, result in enumerate(results):
+        assert len(result["scores"]) == len(kept_candidates)
+        for score, label, box, keypoint in zip(
+            result["scores"], result["labels"], result["boxes"], result["keypoints"],
+        ):
+            center = (box[0] + box[2]) / 2
+            query_index = (centers - center).abs().argmin()
+            torch.testing.assert_close(score, probabilities[batch_index, query_index, label])
+            torch.testing.assert_close(keypoint[:2], centers[query_index].expand(2))
+
+
 def test_postprocess_crowdpose_selects_top_class_scores_and_scales_coordinates() -> None:
     outputs = {
         "pred_logits": torch.tensor([[[0.0, 4.0], [5.0, -2.0]]]),

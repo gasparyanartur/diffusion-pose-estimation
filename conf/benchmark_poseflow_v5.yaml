@@ -12,6 +12,9 @@ skip_training: false
 data:
   batch_size: 4
 
+pipeline:
+  solution_feature_diagnostics: true
+
 training:
   accumulate_grad_batches: 2
 

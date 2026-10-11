@@ -1,0 +1,13 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV11PipelineConfig
+
+defaults:
+  - poseflow_v5
+  - _self_
+
+# Box-only coarse latent, then [existence, center, size, 14 joints].
+hidden_dim: 256
+feedforward_dim: 2048
+corner_order_loss_weight: 0.0
+center_loss_factor: 0.0
+decoder_loss_mode: all
+sampling_joint_conditioning: false

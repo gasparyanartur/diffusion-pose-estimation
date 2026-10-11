@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v10_tiny
+  - override pipeline: poseflow_v10_tiny_v5lr
+  - _self_
+
+run_name: poseflow_v10_tiny_v5lr_training
+out_dir: results/poseflow_v10_tiny_v5lr_training

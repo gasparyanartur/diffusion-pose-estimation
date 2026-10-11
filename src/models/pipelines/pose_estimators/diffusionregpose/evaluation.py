@@ -16,6 +16,8 @@ from torchvision.ops import batched_nms
 from torchvision.transforms import InterpolationMode
 from torch import Tensor
 
+CROWDPOSE_POSE_NMS_SCORE_THRESHOLD = 0.05
+
 
 class DiffusionRegPoseAPMetric:
     """Accumulate predictions with the external CrowdPose AP contract.
@@ -252,7 +254,9 @@ def _crowdpose_pose_nms_keep(keypoints: Tensor, scores: Tensor, num_body_points:
     pairwise_distance = (coordinates[:, None] - coordinates[None]).square().sum(-1).sqrt()
     threshold = 0.04 * pose_area[:, None, None].sqrt()
     nearby_joint_count = (pairwise_distance < threshold).sum(-1)
-    suppress = (nearby_joint_count > 10) & (scores[None] > 0.05)
+    suppress = (nearby_joint_count > 10) & (
+        scores[None] > CROWDPOSE_POSE_NMS_SCORE_THRESHOLD
+    )
 
     ignored: set[int] = set()
     keep: list[int] = []
@@ -277,7 +281,7 @@ def _select_crowdpose_candidates(
     *,
     num_body_points: int,
     nms_target_sizes: Tensor | None,
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Select one class-expanded candidate per query before pose suppression."""
     logits = outputs["pred_logits"]
     boxes = outputs["pred_boxes"]
@@ -335,7 +339,7 @@ def _select_crowdpose_candidates(
     )
     nms_coordinates = selected_keypoints[..., : num_body_points * 2] * nms_coordinate_scale[:, None]
     nms_keypoints = torch.cat((nms_coordinates, visibility), dim=-1)
-    return scores, labels, selected_boxes, serialized_keypoints, nms_keypoints
+    return scores, labels, selected_boxes, serialized_keypoints, nms_keypoints, query_indices
 
 
 @torch.no_grad()
@@ -349,7 +353,7 @@ def postprocess_crowdpose(
 ) -> list[dict[str, Tensor]]:
     """Convert normalized model predictions into CrowdPose result records."""
     logits = outputs["pred_logits"]
-    scores, labels, boxes, serialized_keypoints, nms_keypoints = _select_crowdpose_candidates(
+    scores, labels, boxes, serialized_keypoints, nms_keypoints, query_indices = _select_crowdpose_candidates(
         outputs,
         target_sizes,
         num_body_points=num_body_points,
@@ -362,13 +366,8 @@ def postprocess_crowdpose(
             zip(scores, labels, boxes, serialized_keypoints, nms_keypoints)
         ):
             keep = _crowdpose_pose_nms_keep(nms_image_keypoints, image_scores, num_body_points)
-            # The reference first suppresses the class-expanded candidates,
-            # then runs its normal PostProcess top-k on the surviving raw
-            # query logits.
-            # The reference sampler keeps candidate boxes/keypoints from its
-            # first top-k selection, but indexes the raw query logits with the
-            # NMS candidate indices before the final PostProcess top-k.
-            kept_logits = logits[batch_index].index_select(0, keep)
+            kept_queries = query_indices[batch_index].index_select(0, keep)
+            kept_logits = logits[batch_index].index_select(0, kept_queries)
             kept_boxes = image_boxes.index_select(0, keep)
             kept_keypoints = image_keypoints.index_select(0, keep)
             second_count = kept_logits.shape[0]

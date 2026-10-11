@@ -530,7 +530,7 @@ def _pairwise_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
 def _diffusionregpose_pairwise_matching_cost(
     logits: Tensor,
     boxes: Tensor,
-    keypoints: Tensor,
+    keypoints: Tensor | None,
     target: dict[str, Tensor],
     *,
     num_body_points: int,
@@ -555,7 +555,7 @@ def _diffusionregpose_pairwise_matching_cost(
     )
 
     coordinate_count = num_body_points * 2
-    use_pose_costs = bool(keypoints[..., :coordinate_count].sum().item() > 0)
+    use_pose_costs = keypoints is not None and bool(keypoints[..., :coordinate_count].sum().item() > 0)
     if not use_pose_costs:
         box_cost = torch.cdist(boxes, target["boxes"], p=1)
         giou_cost = -_generalized_box_iou(
@@ -629,11 +629,13 @@ class DiffusionRegPoseMatcher(nn.Module):
         return sum(target["labels"].numel() for target in targets)
 
     @torch.no_grad()
-    def forward(self, outputs: dict[str, Tensor], targets: list[dict[str, Tensor]]) -> list[tuple[Tensor, Tensor]]:
+    def forward(self, outputs: dict[str, Tensor], targets: list[dict[str, Tensor]], *,
+                include_keypoints: bool = True) -> list[tuple[Tensor, Tensor]]:
         matches: list[tuple[Tensor, Tensor]] = []
-        for logits, boxes, keypoints, target in zip(
-            outputs["pred_logits"], outputs["pred_boxes"], outputs["pred_keypoints"], targets
-        ):
+        for batch_index, (logits, boxes, target) in enumerate(zip(
+            outputs["pred_logits"], outputs["pred_boxes"], targets
+        )):
+            keypoints = outputs["pred_keypoints"][batch_index] if include_keypoints else None
             target_labels = target["labels"]
             if target_labels.numel() == 0:
                 empty = torch.empty(0, dtype=torch.long, device=logits.device)
@@ -760,14 +762,13 @@ class DiffusionRegPoseOTAMatcher(DiffusionRegPoseMatcher):
         self,
         outputs: dict[str, Tensor],
         targets: list[dict[str, Tensor]],
+        *, include_keypoints: bool = True,
     ) -> list[tuple[Tensor, Tensor]]:
         matches: list[tuple[Tensor, Tensor]] = []
-        for logits, boxes, keypoints, target in zip(
-            outputs["pred_logits"],
-            outputs["pred_boxes"],
-            outputs["pred_keypoints"],
-            targets,
-        ):
+        for batch_index, (logits, boxes, target) in enumerate(zip(
+            outputs["pred_logits"], outputs["pred_boxes"], targets,
+        )):
+            keypoints = outputs["pred_keypoints"][batch_index] if include_keypoints else None
             target_count = target["labels"].numel()
             if target_count == 0:
                 empty = torch.empty(0, dtype=torch.long, device=logits.device)
@@ -873,7 +874,8 @@ class DiffusionRegPoseCriterion(nn.Module):
         include_keypoints: bool = True,
         include_classification_diagnostics: bool = False,
     ) -> dict[str, Tensor]:
-        matches = self.matcher(outputs, targets)
+        matches = (self.matcher(outputs, targets) if "pred_keypoints" in outputs
+                   else self.matcher(outputs, targets, include_keypoints=False))
         logits = outputs["pred_logits"]
         target_classes = torch.zeros_like(logits)
         matched_queries = torch.zeros(

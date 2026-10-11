@@ -1,0 +1,16 @@
+defaults:
+  - benchmark_poseflow_v13
+  - _self_
+
+run_name: poseflow_v13_reconstruction_decay
+out_dir: results/poseflow_v13_reconstruction_decay
+
+pipeline:
+  reconstruction_weight_start: 1.0
+  reconstruction_weight_end: 0.01
+  reconstruction_decay_epochs: 40
+  optimization_diagnostics_enabled: true
+
+training:
+  grad_clip: 2.0
+  resume: null

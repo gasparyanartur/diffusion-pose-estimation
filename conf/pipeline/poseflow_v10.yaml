@@ -1,0 +1,12 @@
+defaults:
+  - poseflow_v5
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV10PipelineConfig
+decoder_loss_mode: all
+scheduler_type: cosine
+lr: 1.0e-4
+lr_backbone: 1.0e-5
+lr_main_warmup_epochs: 1
+lr_backbone_warmup_epochs: 10
+lr_min_frac: 1.0e-2

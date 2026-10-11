@@ -15,6 +15,10 @@ from .training import (
     PoseFlowV7PipelineConfig,
     PoseFlowV8Pipeline,
     PoseFlowV8PipelineConfig,
+    PoseFlowV9Pipeline,
+    PoseFlowV9PipelineConfig,
+    PoseFlowV10Pipeline,
+    PoseFlowV10PipelineConfig,
     build_poseflow_targets,
     build_poseflow_v3_targets,
     build_poseflow_v5_targets,
@@ -31,12 +35,37 @@ from .model import (
     PoseFlowV6Model,
     PoseFlowV7Model,
     PoseFlowV8Model,
+    PoseFlowV9Model,
+    PoseFlowV10Model,
     PoseFlowDINOv3ConvNeXtBackbone,
     PoseFlowDINODecoderFusion,
     PoseHypothesisCodebook,
 )
 
+from .model_v11 import PoseFlowV11Model, PoseFlowV11DecoderLayer
+from .model_v12 import PoseFlowV12Model, PoseFlowV12DecoderLayer
+from .model_v13 import PoseFlowV13Model
+from .training_v13 import PoseFlowV13Pipeline, PoseFlowV13PipelineConfig
+from .training_v12 import PoseFlowV12Pipeline, PoseFlowV12PipelineConfig
+from .training_v11 import (
+    PoseFlowV11Pipeline, PoseFlowV11PipelineConfig,
+    build_poseflow_v11_targets, flow_sample_poseflow_v11_states,
+)
+
 __all__ = [
+    "PoseFlowV13Model",
+    "PoseFlowV13Pipeline",
+    "PoseFlowV13PipelineConfig",
+    "PoseFlowV12Model",
+    "PoseFlowV12DecoderLayer",
+    "PoseFlowV12Pipeline",
+    "PoseFlowV12PipelineConfig",
+    "PoseFlowV11Model",
+    "PoseFlowV11DecoderLayer",
+    "PoseFlowV11Pipeline",
+    "PoseFlowV11PipelineConfig",
+    "build_poseflow_v11_targets",
+    "flow_sample_poseflow_v11_states",
     "PoseFlowPipeline",
     "PoseFlowPipelineConfig",
     "PoseFlowV3Pipeline",
@@ -51,6 +80,8 @@ __all__ = [
     "PoseFlowV7PipelineConfig",
     "PoseFlowV8Pipeline",
     "PoseFlowV8PipelineConfig",
+    "PoseFlowV9Pipeline",
+    "PoseFlowV9PipelineConfig",
     "PoseFlowModel",
     "PoseFlowV3Model",
     "PoseFlowV4Model",
@@ -58,6 +89,10 @@ __all__ = [
     "PoseFlowV6Model",
     "PoseFlowV7Model",
     "PoseFlowV8Model",
+    "PoseFlowV9Model",
+    "PoseFlowV10Model",
+    "PoseFlowV10Pipeline",
+    "PoseFlowV10PipelineConfig",
     "PoseFlowDINOv3ConvNeXtBackbone",
     "PoseFlowDINODecoderFusion",
     "PoseHypothesisCodebook",

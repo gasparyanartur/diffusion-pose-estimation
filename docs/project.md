@@ -91,8 +91,57 @@ Visible-mask: `visible = visibility == 2`.
   `AP .75`, `AP (E/M/H)`, and `AR (E/M/H)`. The Lightning test step records
   losses only; the standalone DiffusionRegPose evaluator is the canonical
   full-test AP path and emits both pose and bbox metrics.
+- Native pose postprocessing retains each selected candidate's original query ID
+  through pose NMS, so its confidence and geometry come from the same query.
+  Historical AP using the old candidate-index-to-raw-logit mapping remains
+  legacy scoring; it is not directly interchangeable with corrected scores.
 
 ## Model families
+
+- PoseFlow V13 retains V12's latent-only fixed-group architecture, but each
+  decoder layer independently matches predictions to real people (Hungarian by default).
+  Its latent and geometry losses use the same assignment within a layer;
+  unmatched slots have existence-zero classification and existence-token MSE,
+  without geometry denoising supervision. Clean reconstruction remains paired
+  and covers empty geometry. Decoder focal classification is normalized by
+  matched-person count (clamped to one), while clean reconstruction retains
+  all-slot averaging. Matching never reorders sampler states. V13 has
+  its own config/checkpoint namespace and starts fresh for comparison with V12.
+  Every epoch also evaluates 32 fixed test images across noise variance fractions
+  25/50/100 percent and 1/2/3 DDIM calls. Partially noisy inputs use GT encodings;
+  these are conditional recovery diagnostics. Only 100 percent noise is
+  Gaussian-start generation. These preliminary test-subset metrics are distinct
+  from full validation/test AP and must not be presented as full-test results.
+
+  The separate `benchmark_poseflow_v13_reconstruction_decay` experiment keeps
+  V13's architecture, matcher, data and learning rates, but starts fresh with
+  reconstruction weight decaying geometrically from 1 at epoch 0 to 0.01 at
+  epoch 39, then holding. Its global gradient norm cap is 2.0. This is a combined
+  intervention; improvements cannot be attributed to either change alone.
+  Raw reconstruction losses remain comparable; weighted reconstruction enters
+  the total. Optional gradient probes report objective norms on the first
+  training microbatch each epoch and accumulated preclip norms on the first
+  and every 100th optimizer step. Ordinary V13 defaults keep weight 1 and probes
+  disabled. Resuming uses the restored absolute epoch for the schedule.
+
+  `benchmark_poseflow_v13_ota_reconstruction_decay` matches the fresh
+  reconstruction-decay experiment but selects Dynamic-K OTA with candidate
+  top-k 5. Multiple slots may target the same person; latent and geometry
+  supervision share each layer's assignment, and classification/geometry
+  normalize by positive assignments. Matcher choice does not change model
+  parameter keys or sampling. It uses a separate output namespace; OTA's
+  effects on confidence stability and duplicate predictions remain unproven.
+
+- PoseFlow V12 is a separate fixed-slot latent-diffusion family. Its default
+  50 groups carry 17 latent state tokens each; an additional global person token
+  gathers group information and queries the image inside the decoder. Clean
+  geometry is encoded and normalized before Gaussian corruption. Training keeps
+  each noisy slot aligned with its own clean target, including random enclosed
+  geometry for empty slots; it does not use proposal selection or matching.
+  Clean reconstruction trains the encoder, while detached clean latents supervise
+  layerwise denoising. Sampling uses latent DDIM; coordinate readouts never feed
+  back into sampling or decoder image attention. V12 requires a fresh checkpoint
+  and uses `benchmark_poseflow_v12` / `results/poseflow_v12_training`.
 
 - `BaselinePosePipeline` is the direct image-to-fixed-pose-slot model. It owns
   its CNN feature extractor, spatial-attention pooling, Hungarian matching loss, AP
@@ -117,6 +166,66 @@ Visible-mask: `visible = visibility == 2`.
   encoder/query features and four-level decoder deformable-attention features.
   The DINO backbone remains frozen by default; only the adapters and model
   heads train from their respective branches.
+- PoseFlow V11 is a separate center/size-flow checkpoint family. A 256-wide
+  coarse person latent conditioned on noisy boxes predicts existence and boxes,
+  without a pose head or pose matching costs. The top 50 of 200 candidates expand
+  into 17 learned roles: existence, center, size, and 14 CrowdPose joints. Noisy
+  joints condition their corresponding selected tokens during training and
+  direct conditional validation. Sampling defaults to
+  `sampling_joint_conditioning=false`, skipping this extra feature addition
+  while retaining noisy-box conditioning, timestep inputs, and state transport.
+  Set it to `true` to reproduce the previous sampling behavior. Existing V11
+  checkpoints restore strictly; missing config fields use the new default.
+  This is a checkpoint-tested inference mitigation, not a change to training.
+  Initial joint references
+  are decoded from these tokens. Each of three refiners performs image attention,
+  within-person attention, existence-only cross-person attention, then a 2048-wide
+  FFN. Self-attention uses latent Q/K/V without geometric position embeddings or
+  distance bias. One point MLP serves center/joints across stages, with separate
+  shared size/existence MLPs. DN examples use three tokens and box/class losses
+  with inherited isolation. Corner/order/midpoint and redundant center losses
+  are absent; classification, center/size L1, GIoU, joint L1 and OKS remain.
+  V11 retains V5's data, reusable EDPose initialization and two-cycle LR schedule;
+  new role/readout/existence-attention weights train from fresh initialization.
+  First-periodic-AP-batch diagnostics distinguish coarse box coverage from pose
+  refinement and record detached token-role/existence updates. A two-epoch
+  reduced-data smoke verifies wiring only; it does not establish model quality.
+- PoseFlow V10 retains V5's image-conditioned hypothesis initialization, including
+  learned slot identity, timestep and gated coordinate-state conditioning. Each
+  selected person remains one attention-width latent rather than expanding into
+  box/joint tokens. One shared absolute geometry MLP predicts both box corners,
+  auxiliary center and all joints at every stage; one shared classifier predicts
+  person scores. Decoder layers use decoded bbox references for 2D image sampling
+  and keep references differentiable across stages. Coordinate-flow sampling and
+  V5 losses are retained; the original V10 preset uses one cosine decay with main/backbone peak LRs
+  1e-4/1e-5, warmups of 1/10 epochs, and group-relative 1% minima. V10 requires
+  its own checkpoints. Auxiliary DN
+  queries retain noisy label embeddings with a learned noisy-box conditioning MLP
+  and bbox/class supervision, without joint targets. Future V10 processes also
+  collect first-periodic-AP-validation-batch solution diagnostics for proposal
+  coverage, fixed-pair refinement, flow turnover and score/NMS coverage; optional
+  feature interventions preserve baseline RNG. These are bounded diagnostics,
+  not full-validation AP. V10 additionally records clean-person latent updates,
+  person spread, geometry saturation/movement and tiny boxes on that same batch,
+  plus main/backbone effective LR each epoch. Existing processes keep their
+  loaded instrumentation.
+- PoseFlow V10-tiny is a separate V10 preset with attention/model width 128 and
+  transformer FFN width 256. It keeps V10's data, depth, queries, losses, and
+  schedule. The same EDPose checkpoint initializes the ResNet backbone exactly;
+  most width-dependent transformer, projection, and head weights are retrained
+  because their 256-wide checkpoint shapes do not fit. Its checkpoints are not
+  interchangeable with 256-wide V10 checkpoints.
+- The V10-tiny V5-LR preset selects V5's two-cycle cosine schedule through the
+  shared V5-derived optimizer path: main/backbone start at 1e-4/5e-5, both
+  restart at 3e-5 at epoch 40, and both finish at 2e-6. It has no warmup and
+  starts a fresh optimizer state in a distinct output directory.
+- PoseFlow V9 branches from V5 and retains its ResNet image features, flow
+  state, optimizer, losses, and evaluator. In each expanded person group, its
+  joint-query self-attention adds one learned per-refiner-layer logit bias,
+  initialized to `-5`, only for nonneighbor joint pairs under the CrowdPose
+  skeleton. It preserves self, skeleton-edge, and box-token interactions, plus
+  the existing person-group and denoising isolation masks. Bias `0` recovers
+  V5 attention for otherwise identical weights and input.
 - `DiffusionRegPosePipeline` is the native checkpoint-compatible set-prediction
   pose model. Its training criterion defaults to the reference Hungarian
   assignment and supports opt-in DiffusionDet-style Dynamic-K OTA while
@@ -185,7 +294,9 @@ Visible-mask: `visible = visibility == 2`.
   Its `debug/{train,val}/` metrics are detached observations only; the
   TensorBoard run label identifies the PoseFlow version:
   gate/context/image-update/hypothesis RMS, selected initial confidence,
-  initial-to-final box/pose movement, and named per-stage losses. They do not
+  and initial-to-final box/pose movement. Canonical loss tags already include
+  every stage; future runs omit duplicate debug loss aliases and the gate mean
+  that is fixed at half the flow time. These activity metrics do not
   alter optimization, matching, sampling, or prove a causal state effect.
 - PoseFlowV5Pipeline is a separate V4-derived checkpoint family for a changed
   optimization/source treatment. It uses two 40-epoch cosine cycles: main and

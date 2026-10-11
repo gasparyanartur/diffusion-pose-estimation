@@ -16,6 +16,8 @@ from src.models.pipelines.pose_estimators.poseflow import (
     PoseFlowV3Model,
     PoseFlowV4Model,
     PoseFlowV5Model,
+    PoseFlowV9Model,
+    PoseFlowV9PipelineConfig,
     PoseFlowV6Model,
     PoseFlowPipelineConfig,
     PoseFlowV3PipelineConfig,
@@ -30,6 +32,7 @@ from src.models.pipelines.pose_estimators.poseflow import (
     build_poseflow_v5_targets,
     flow_sample_keypoints,
     flow_sample_person_states,
+    flow_sample_poseflow_v5_states,
 )
 from src.models.pipelines.pose_estimators.poseflow.model import (
     PoseFlowDINOContext,
@@ -37,6 +40,7 @@ from src.models.pipelines.pose_estimators.poseflow.model import (
     PoseFlowDINOv3ConvNeXtBackbone,
     PoseFlowHypothesisStage,
 )
+from src.models.pipelines.pose_estimators.poseflow.training import PoseFlowV5Pipeline
 from src.models.pipelines.pose_estimators.poseflow.state import (
     blend_box_references,
     corners_to_cxcywh,
@@ -461,6 +465,7 @@ def test_v4_hypothesis_diagnostics_are_detached_and_preserve_disabled_outputs() 
     assert diagnostics is not None
     assert diagnostics["coordinate_gated_rms"].item() > 0.0
     assert diagnostics["flow_time_mean"].item() == 0.5
+    assert "coordinate_gate_mean" not in diagnostics
     assert all(value.ndim == 0 and not value.requires_grad and torch.isfinite(value) for value in diagnostics.values())
 
     with torch.no_grad():
@@ -725,7 +730,7 @@ def test_v4_training_loss_supervises_hypothesis_and_joint_refiners() -> None:
     assert "loss_corner_order" in losses
 
 
-def test_v4_pipeline_logs_activity_and_named_stage_diagnostics() -> None:
+def test_v4_pipeline_logs_activity_and_canonical_stage_losses() -> None:
     pipeline = PoseFlowV4PipelineConfig(
         backbone_pretrained=False,
         num_queries=4,
@@ -766,10 +771,11 @@ def test_v4_pipeline_logs_activity_and_named_stage_diagnostics() -> None:
     )
 
     assert "debug/train/coordinate_gated_rms" in logged_names
-    assert "debug/train/hypothesis/loss_ce" in logged_names
-    assert "debug/train/refiner_0/loss_keypoints" in logged_names
-    assert "debug/train/refiner_1/loss_oks" in logged_names
-    assert "debug/train/final_refiner/loss_bbox" in logged_names
+    assert "train/loss_ce_0" in logged_names
+    assert "train/loss_keypoints_1" in logged_names
+    assert "train/loss_oks_2" in logged_names
+    assert "train/loss_bbox" in logged_names
+    assert not any("/hypothesis/" in name or "/refiner_" in name or "/final_refiner/" in name for name in logged_names)
     assert not any("poseflow_v" in name for name in logged_names if name.startswith("debug/"))
 
 
@@ -809,8 +815,9 @@ def test_v5_pipeline_uses_common_diagnostic_tags() -> None:
     )
 
     assert "debug/val/coordinate_gated_rms" in logged_names
-    assert "debug/val/hypothesis/loss_center_direct" in logged_names
-    assert "debug/val/final_refiner/loss_center_midpoint" in logged_names
+    assert "val/loss_center_direct_0" in logged_names
+    assert "val/loss_center_midpoint" in logged_names
+    assert not any("/hypothesis/" in name or "/final_refiner/" in name for name in logged_names)
     assert not any("poseflow_v" in name for name in logged_names if name.startswith("debug/"))
 
 
@@ -839,6 +846,92 @@ def test_v4_sampler_recomputes_hypotheses_with_50_plus_fresh_coordinate_pool() -
     assert output["flow_person_state"].shape == (1, 2, 8)
     assert output["flow_person_source"].shape == (1, 2, 8)
     assert torch.isfinite(output["flow_person_state"]).all()
+
+
+def test_v5_step_probe_preserves_predictions_and_tracks_selected_sources() -> None:
+    model = PoseFlowV5Model(
+        backbone_pretrained=False,
+        num_queries=4,
+        num_proposals=2,
+        num_group=2,
+        num_encoder_layers=1,
+        num_decoder_layers=3,
+        num_feature_levels=3,
+        hidden_dim=32,
+        feedforward_dim=64,
+        num_heads=8,
+        num_body_points=2,
+        num_box_decoder_layers=1,
+        dn_number=0,
+        flow_sampling_steps=2,
+    ).eval()
+    images = torch.randn(1, 3, 64, 64)
+
+    with torch.no_grad():
+        plain = flow_sample_poseflow_v5_states(
+            model, images, sampling_steps=2,
+            generator=torch.Generator().manual_seed(31),
+        )
+        observed = flow_sample_poseflow_v5_states(
+            model, images, sampling_steps=2,
+            generator=torch.Generator().manual_seed(31),
+            collect_step_diagnostics=True,
+        )
+
+    for name in ("pred_logits", "pred_boxes", "pred_keypoints", "flow_person_state"):
+        torch.testing.assert_close(plain[name], observed[name])
+    steps = observed["flow_step_diagnostics"]
+    assert len(steps) == 2
+    assert steps[0]["selected_indices"].shape == (1, 2)
+    torch.testing.assert_close(steps[0]["selected_source"], torch.gather(
+        steps[0]["source"], 1,
+        steps[0]["selected_indices"][..., None].expand(-1, -1, 8),
+    ))
+    assert steps[0]["selected_from_fresh"].all()
+    torch.testing.assert_close(steps[-1]["pred_boxes"], observed["pred_boxes"])
+
+
+def test_v5_future_validation_feature_logs_preserve_baseline_sampling() -> None:
+    model = PoseFlowV5Model(
+        backbone_pretrained=False, num_queries=4, num_proposals=2, num_group=2,
+        num_encoder_layers=1, num_decoder_layers=2, num_feature_levels=3,
+        hidden_dim=32, feedforward_dim=64, num_heads=8, num_body_points=2,
+        num_box_decoder_layers=1, dn_number=0, flow_sampling_steps=2,
+    ).eval()
+    image = torch.randn(1, 3, 64, 64)
+    plain_generator = torch.Generator().manual_seed(19)
+    logged_generator = torch.Generator().manual_seed(19)
+    holder = SimpleNamespace(model=model, solution_feature_diagnostics=True)
+
+    with torch.no_grad():
+        plain = model.sample_keypoints(image, generator=plain_generator)
+        logged = PoseFlowV5Pipeline._validation_sample(
+            holder, image, None, logged_generator, collect_diagnostics=True,
+        )
+
+    for name in ("pred_logits", "pred_boxes", "pred_keypoints"):
+        torch.testing.assert_close(plain[name], logged[name])
+    torch.testing.assert_close(plain_generator.get_state(), logged_generator.get_state())
+    assert len(holder._validation_feature_outputs) == 4
+    assert len(logged["flow_step_diagnostics"]) == 2
+
+
+def test_v9_future_validation_captures_bias_scale_and_attention_mass() -> None:
+    model = PoseFlowV9Model(
+        backbone_pretrained=False, num_queries=4, num_proposals=2, num_group=2,
+        num_encoder_layers=1, num_decoder_layers=2, num_feature_levels=3,
+        hidden_dim=32, feedforward_dim=64, num_heads=8, num_body_points=14,
+        num_box_decoder_layers=1, dn_number=0, flow_sampling_steps=2,
+    ).eval()
+    holder = SimpleNamespace(model=model, solution_feature_diagnostics=False)
+    with torch.no_grad():
+        output = PoseFlowV5Pipeline._validation_sample(
+            holder, torch.randn(1, 3, 64, 64), None,
+            torch.Generator().manual_seed(19), collect_diagnostics=True,
+        )
+    assert len(output["flow_step_diagnostics"]) == 2
+    assert len(holder._validation_attention_rows) == 4
+    assert all(0 <= row["nonedge_attention_mass"] <= 1 for row in holder._validation_attention_rows)
 
 
 def test_v4_control_zeros_only_the_coordinate_prior_path() -> None:
@@ -970,6 +1063,75 @@ def test_v5_box_outputs_supervise_center_and_corner_midpoint() -> None:
     assert "loss_center_midpoint" in losses
     losses["total"].backward()
     assert pipeline.model.initial_coordinate_head.layers[-1].weight.grad is not None
+
+
+def test_v9_joint_attention_bias_preserves_skeleton_and_group_masks() -> None:
+    model = PoseFlowV9Model(
+        backbone_pretrained=False, num_queries=4, num_proposals=2, num_group=2,
+        num_encoder_layers=1, num_decoder_layers=2, num_feature_levels=3,
+        hidden_dim=32, feedforward_dim=64, num_heads=8, num_body_points=14,
+        num_box_decoder_layers=1, dn_number=2,
+    )
+    base_mask = model.training_attention_mask(
+        [{"labels": torch.tensor([1])}], 1, torch.device("cpu")
+    )
+    mask = model._refiner_attention_mask(base_mask, layer_index=0, dn_count=2, dtype=torch.float32)
+    box_index = 2
+    neck_index = box_index + 1 + 13
+    shoulder_index = box_index + 1
+    wrist_index = box_index + 1 + 4
+    next_person_neck = box_index + 15 + 1 + 13
+
+    assert model.off_edge_attention_bias.tolist() == [-5.0, -5.0]
+    assert mask[0, neck_index, shoulder_index] == 0  # skeleton edge
+    assert mask[0, shoulder_index, wrist_index] == -5  # nonedge
+    assert mask[0, shoulder_index, shoulder_index] == 0
+    assert mask[0, shoulder_index, box_index] == 0
+    assert torch.isneginf(mask[0, neck_index, next_person_neck])
+    assert torch.isneginf(mask[0, shoulder_index, 0])
+    assert mask[0, 0, 0] == 0
+    with torch.no_grad():
+        model.off_edge_attention_bias.zero_()
+    torch.testing.assert_close(
+        model._refiner_attention_mask(base_mask, 0, 2, torch.float32),
+        base_mask.float().masked_fill(base_mask, float("-inf")),
+    )
+    attention = model.transformer.decoder.layers[0].self_attn.eval()
+    query = torch.randn(mask.shape[-1], 1, 32)
+    v5_output = attention(query, query, query, attn_mask=base_mask, need_weights=False)[0]
+    v9_output = attention(
+        query, query, query,
+        attn_mask=model._refiner_attention_mask(base_mask, 0, 2, torch.float32),
+        need_weights=False,
+    )[0]
+    torch.testing.assert_close(v9_output, v5_output)
+
+    with torch.no_grad():
+        model.off_edge_attention_bias.fill_(-5)
+    biased_output = attention(
+        query, query, query,
+        attn_mask=model._refiner_attention_mask(base_mask, 0, 2, torch.float32),
+        need_weights=False,
+    )[0]
+    biased_output.square().sum().backward()
+    assert model.off_edge_attention_bias.grad is not None
+    assert model.off_edge_attention_bias.grad[0].abs() > 0
+
+
+def test_v9_config_builds_from_v5_initialization_and_uses_distinct_preset() -> None:
+    config_dir = Path(__file__).resolve().parents[1] / "conf"
+    with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+        preset = compose(config_name="benchmark_poseflow_v9")
+    assert preset.pipeline._target_.endswith("PoseFlowV9PipelineConfig")
+    assert preset.run_name != "poseflow_v5_training"
+    pipeline = PoseFlowV9PipelineConfig(
+        backbone_pretrained=False, num_queries=4, num_proposals=2, num_group=2,
+        num_encoder_layers=1, num_decoder_layers=2, num_feature_levels=3,
+        hidden_dim=32, feedforward_dim=64, num_heads=8, num_body_points=14,
+        num_box_decoder_layers=1, dn_number=0,
+    ).build(max_epochs=1)
+    assert isinstance(pipeline.model, PoseFlowV9Model)
+    assert pipeline.model.off_edge_attention_bias.tolist() == [-5.0, -5.0]
 
 
 def test_v5_first_last_objective_excludes_intermediate_gradients() -> None:

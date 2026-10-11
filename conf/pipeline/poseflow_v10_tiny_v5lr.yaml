@@ -1,0 +1,14 @@
+defaults:
+  - poseflow_v10_tiny
+  - _self_
+
+scheduler_type: two_cycle_cosine
+lr: 1.0e-4
+lr_backbone: 5.0e-5
+lr_warmup_epochs: 0
+lr_main_warmup_epochs: 0
+lr_backbone_warmup_epochs: 0
+lr_cycle_restart_epoch: 40
+lr_cycle_first_min: 1.0e-5
+lr_cycle_restart_peak: 3.0e-5
+lr_cycle_final_min: 2.0e-6

@@ -258,12 +258,41 @@ losses while zeroing the coordinate-prior path.
 When the V4 training wrapper requests diagnostics, the hypothesis stage records
 detached scalar RMS summaries for coordinate context, gated coordinate context,
 image tokens, image attention update, pre-attention query, and final hypothesis.
-The wrapper also records flow time/gate means, selected initial confidence, and
-selected initial-to-final box/pose movement, plus aliases for the already
-optimized hypothesis/refiner losses. V4 and V5 publish equivalent quantities
+The wrapper also records flow time, selected initial confidence, and
+selected initial-to-final box/pose movement. Canonical `train/` and `val/`
+tags retain hypothesis/refiner loss components; future runs no longer emit
+duplicate debug aliases or the fixed `0.5t` gate mean. V4 and V5 publish equivalent quantities
 under common `debug/{train,val}/...` tags; the TensorBoard run label identifies
 the model version. Collection performs no additional forward, matching, or
 sampling pass; these metrics show activity, not causal use.
+
+The standalone PoseFlow evaluator has opt-in checkpoint probes for V5 and V9.
+`--step-probe-dir` records each Euler call's selected predictions, carried/fresh
+slot lineage, and CrowdPose AP with the ordinary postprocessor. `--stage-probe-dir`
+compares all hypotheses, the selected set, each joint refiner, and final pose
+NMS with a fixed GT association and bbox-area OKS. It also evaluates final
+geometry with the hypothesis scores and with pose NMS disabled to separate
+ranking from suppression. `--feature-probe-dir` performs fixed-seed inference
+perturbations of coordinate, hypothesis-time, hypothesis-image, and refiner-image
+paths; these are checkpoint sensitivity tests, not retrained ablations.
+`--attention-probe-dir` additionally reports V9's learned bias, row-centered
+unbiased QK logit scale, and resulting nonedge mass per layer and flow call.
+
+Future V5/V9/V10 training processes record `debug/solution/val_first_batch/...`
+only on periodic AP validation epochs. The first validation batch supplies
+fixed GT denominators for hypothesis coverage, selected-person refiner quality,
+per-step flow turnover, and pre/post-NMS coverage; V9 also records each
+refiner layer's nonedge bias, unbiased logit scale, and nonedge attention mass.
+The pose-quality summaries use labeled-joint bbox-area OKS with one final-stage
+GT association held across refiners; they are diagnostic scalars, not AP.
+The development preset enables `solution_feature_diagnostics`, which replays
+that same batch with four feature paths disabled under the original sampling
+RNG state. These values describe one batch, not the full validation set; AP
+continues to use its normal complete validation pass. Existing training
+processes do not acquire these tags until restarted with the new code.
+The solution summaries skip ensemble mode because its postprocessor suppresses
+combined candidates from multiple calls; the logger emits `ensemble_skipped`
+instead of comparing those outputs against final-call-only candidates.
 
 PoseFlow V5 preserves V4's hypothesis, two-corner transport state, 50+150
 source-paired sampler, and OTA contract, but is a distinct checkpoint family.
@@ -281,6 +310,246 @@ The V5-only `decoder_loss_mode` selects either the original all-stage objective
 or a first-and-final ablation. In the latter, the hypothesis and final clean
 outputs, their center losses, final denoising losses, and the corner-order
 penalty are optimized; intermediate stage losses are retained for diagnostics.
+
+PoseFlow V11 transports `[cx, cy, width, height, joint XY]` in the existing
+scaled flow coordinate space. Source augmentation moves centers and scales sizes
+and joints coherently; flow sampling preserves selected-source associations and
+50 active plus 150 fresh slots. Sizes are positive at generation and projected
+to a minimum of `1e-6` normalized units after Euler updates.
+
+Its coarse hypothesis stage retains learned slot identity, timestep conditioning,
+and dense image-token attention, but conditions on only the four noisy box
+coordinates. Shared point/size/existence MLPs produce the initial box and logits.
+Coarse OTA uses classification, box L1 and GIoU costs without any keypoint tensor;
+only box/class losses supervise this stage. Top-score selection expands each of
+50 selected latents with 17 learned role embeddings: existence (0), center (1),
+size (2), and CrowdPose joints (3–16). Gated Fourier features of each selected
+noisy joint condition only its corresponding joint token during training and
+direct conditional validation. The V11 sampler passes an explicit forward
+control that skips this addition by default (`sampling_joint_conditioning=false`).
+Box conditioning and transported flow state remain active. Set the flag to
+`true` for historical sampling behavior. Conditioning modules and checkpoint
+keys remain unchanged, so existing checkpoints restore strictly. The default
+was validated against a joint-branch-zeroing intervention on 100 validation
+images; it is an inference mitigation, not proof of a training-distribution fix.
+Joint references before
+the first decoder layer come from the shared point readout of these tokens.
+
+Each V11 decoder layer gathers image evidence using deformable attention first,
+then applies self-attention within each person's tokens, followed by attention
+across existence tokens only and a token-wise FFN. Both self-attention operations
+use latent Q/K/V, without geometric query-position embeddings or distance bias.
+Image sampling uses `[token XY, person width/height]` references; existence and
+size tokens use the person center. Learned sampling offsets remain box-scaled.
+The point MLP reads the center and joint tokens, the size MLP reads the size token,
+and the existence MLP reads token 0. These same three MLPs are shared across all
+stages, including coarse predictions from the single latent. Updated references
+remain differentiable across refinement layers.
+
+DN examples expand into existence/center/size tokens and share all decoder blocks
+and readouts. Image queries are concatenated into one deformable-attention call
+per layer; within-person attention processes clean 17-token and DN 3-token groups
+separately. Only existence attention crosses persons, with the inherited clean-to-
+DN and DN-group isolation masks. DN retains box/class supervision and no pose
+loss. Every ordinary refiner receives box/class/keypoint/OKS losses; V11 emits no
+corner-order, midpoint or separate center loss.
+
+V11 uses model width 256 and FFN width 2048, keeps the three ResNet/encoder/decoder
+stages transferred from EDPose layers 2/4/6, and shares the V5 optimizer builder
+and two-cycle schedule. Compatible image-attention, within-person attention and
+FFN tensors transfer exactly. Role embeddings, conditioning/readout MLPs and
+cross-person existence attention are new parameters. Its own config/checkpoint
+namespace leaves V5/V10 unchanged. Validation solution summaries retain flow,
+score/NMS and optional RNG-preserving feature interventions; coarse-stage quality
+is box IoU rather than pose OKS. Token-role RMS/update RMS, decoded size, reference
+saturation and cross-person existence updates are detached and bounded to the
+first periodic AP-validation batch under `tokens/step_<s>/layer_<l>/`.
+
+PoseFlow V13 inherits V12's architecture and corruption/sampling recipe below,
+with per-layer set supervision. Each layer independently runs the existing
+pose-aware Hungarian matcher (classification, labeled-joint L1 and OKS costs;
+no latent cost), using binary class index zero. Matched predictions use that
+person's geometry and detached clean latent encoding. Unmatched predictions use
+existence zero; only their existence latent token receives denoising MSE. Within
+one layer, latent and decoded losses share an assignment. Assignments may change
+across layers, without changing the order or identity of sampler states.
+
+Existence latent MSE averages all slots; center, size and joint latent MSE average
+matched slots. The four role families have equal weight, with differentiable
+zero geometry terms for empty images. Encoded unlabeled joints retain the 0.5
+placeholder; decoded joint losses remain masked. Clean reconstruction is still
+paired with its source and includes empty-slot random geometry. The total is
+mean layerwise latent MSE plus mean weighted layerwise prediction loss plus
+clean reconstruction. Weights remain 2/5/2/10/4 for focal/box/GIoU/joint/OKS.
+Decoder focal classification sums all slot contributions and divides by matched
+person count (clamped to one), restoring the earlier criterion scaling. Clean
+reconstruction retains all-slot averaging. The initial V13 launch used slot-mean
+decoder classification; its normalization correction is recorded in the run
+objective-change artifact and begins in the resumed logging segment.
+Final-layer loss charts use unsuffixed names, layers use `_0`, `_1`, `_2`, and
+layer averages use `_mean`. In particular `loss_latent` logs the final layer;
+`loss_latent_mean` is the term used in the total.
+
+V13 optionally multiplies reconstruction by an epoch-dependent weight. The
+default start/end weights are both 1, preserving the objective. The isolated
+reconstruction-decay experiment interpolates the logarithm of the weight from
+1 at epoch 0 to 0.01 at epoch 39 and holds thereafter; the codec continues
+learning. `loss_reconstruction` remains raw and `loss_reconstruction_weighted`
+is added to the total once. The schedule uses the absolute restored epoch.
+Its training configuration sets the global gradient norm cap to 2.0.
+
+Opt-in `debug/optimization/` probes use `autograd.grad` on the first training
+microbatch each epoch to measure latent, prediction and raw/weighted
+reconstruction gradients without modifying accumulated parameter gradients.
+`on_before_optimizer_step` records accumulated preclip global/component norms,
+the expected clipping factor/postclip norm and optimizer learning rates on the
+first and every 100th update. Expected postclip values are calculated, not
+measurements taken after clipping. Diagnostics are rank-zero and bounded;
+they add no forward calls or persistent graphs. Quick-test JSONs also record
+the reconstruction weight and configured clipping threshold.
+
+V13 also supports `matching_strategy=ota` through the existing Dynamic-K
+matcher. Hungarian remains the default. OTA assigns each selected slot one
+person but can assign several slots to the same person; aligned clean latent
+targets are repeated accordingly. Classification and geometry normalize by
+positive assignments; latent role means use all positive slots for geometry
+and all slots for existence. Matching stays independent per decoder layer and
+never reorders sampler states. The isolated OTA reconstruction-decay recipe
+changes only matching relative to the fresh Hungarian reconstruction-decay
+recipe. Quick-test provenance records matcher and candidate top-k.
+Per-layer/final/mean loss logging also reports `positive_assignments`,
+`target_people` and `assignments_per_person` to show whether Dynamic-K is
+actually assigning several slots per person. These are unweighted metrics.
+
+V13 also runs a bounded test-subset diagnostic after validation each epoch,
+independently of full-validation AP cadence. A seed-42 manifest persists 32
+sampled test image IDs across resumes. Deterministic per-image generators
+(seed plus image ID) separately construct target slots and Gaussian noise.
+The codec is recomputed at the current weights. Noise variance p=0.25/0.5/1
+means sqrt(1-p)*clean + sqrt(p)*noise, with its inverse cosine timestep. Each
+condition uses 1/2/3 DDIM calls at evenly spaced descending times to zero.
+Image memory is cached once per image; all call counts share starting states.
+The last call's readouts are scored, without a further decoder call at zero.
+
+`quick-test/noise_var_{25,50,100}/steps_{1,2,3}/` charts report pose AP/AP50/AP75/AR,
+bbox AP, oracle OKS and raw OKS75 coverage. Corrected native postprocessing and
+crowdposetools score all GT in the manifest, including overflow beyond 50. JSON
+summaries/predictions live under the run's `quick_test/epochNNN/`, with the manifest
+in `quick_test/subset.json`. Epoch/global step, seeds, image IDs, transforms and
+noise/sampler/evaluator contracts accompany the results. Model modes and RNG
+states are restored even on failure. Sanity/repeated epoch hooks are skipped;
+only rank zero performs the diagnostic. The 25/50 percent cases are GT-conditioned
+recovery checks; the 100 percent case is generation. None is full-test AP.
+
+PoseFlow V12 uses fixed person groups: 50 inputs and 50 outputs, with no
+proposal stage, selection, replacement, or auxiliary DN groups. Each group has
+17 sampled state tokens (existence, center, size, 14 joints) and one unsampled
+global person token. Clean-state MLPs and role embeddings encode target geometry;
+non-affine feature LayerNorm fixes each clean token's scale before corruption.
+Real targets are randomly assigned to slots and keep that assignment throughout
+the pass. Empty slots have existence zero, uniform random joints, and a center
+and box enclosing those joints. Overflow selects 50 targets reproducibly and is
+logged; evaluation retains all ground truth.
+
+V12 retains the ResNet/four-level, 256-wide, three-encoder/three-decoder recipe,
+but its image encoder is independent of diffusion time. Each decoder layer
+gathers information with self-attention over the group's 18 tokens, lets global
+tokens query image memory through dense cross-attention, communicates between
+the 50 global tokens, distributes information with a second within-group
+self-attention, then applies the FFN. A shared learned global token is reset
+each denoising call; no group-index embeddings are used. Image masks and position
+embeddings remain active. Coordinates never define decoder attention references.
+
+Every layer predicts clean latent tokens and decodes binary existence,
+center/size boxes, and joints. Clean reconstruction trains the encoder/readouts,
+while detached clean latents are used in both corruption and denoising targets.
+The objective adds equally weighted latent MSE, decoded task loss, and clean
+reconstruction, averaged over decoder layers. Latent MSE balances existence,
+center, size, and joints equally. Decoder geometry loss covers real people only;
+clean reconstruction covers all slots, with labeled-joint masks on real people.
+The usual focal/box/GIoU/joint/OKS weights are retained, without matching.
+
+For normalized time `t`, training uses `z_t = sqrt(alpha(t))*z_clean +
+sqrt(1-alpha(t))*epsilon`; the cosine schedule has exact clean/noise endpoints
+`alpha(0)=1`, `alpha(1)=0`, with 1,000 training timesteps. Sampling starts from
+Gaussian `[B,50,17,256]` tokens and uses deterministic DDIM at times `1-i/K`,
+with three calls by default. Only latents enter the next call; readouts never
+feed back. Image memory is computed once per sequence. No sampler state
+normalization, clipping, renewal, or ensemble is applied. The sole existence
+class is mapped to CrowdPose category 1 after corrected native postprocessing.
+
+V12 initializes compatible image modules and decoder self-attention/FFNs from
+the selected EDPose layers. New codec, image/person attention, and latent heads
+initialize freshly. Initialization reports retained/copied tensor counts and
+separate fresh components; this is not whole-model pretrained coverage. The
+family has its own checkpoint/config namespace. Bounded first-batch logs keep
+clean reconstruction, conditional denoising, Gaussian-start sampling quality,
+latent scale/update statistics, existence counts, and overflow separate.
+
+PoseFlow V10 replaces V5's expanded box/joint refiners with one latent per
+person at the decoder attention width (256 in the development preset). The
+unchanged V5 hypothesis stage creates image-conditioned candidates from learned
+slots, timestep and gated noisy-coordinate conditioning. Top-person selection
+retains whole-person vectors. The same three-layer geometry MLP and classifier
+read the initial hypothesis and every normalized decoder output. Geometry is
+absolute: sigmoid outputs give two corners, auxiliary center and joint XY;
+there is no addition to previous coordinate logits. Corner-derived cxcywh boxes
+supply deformable image-attention sampling references. Latents and references
+remain differentiable between layers. Person tokens may attend to other person
+tokens; ordinary queries cannot read DN queries, and DN groups retain their
+isolation. DN label embeddings receive learned noisy-box conditioning and use
+the shared readouts for class/box losses. The coordinate-flow sampler, source
+augmentation, independent stage matching and center losses remain V5-compatible.
+The original V10 preset uses a single group-warmed cosine decay: main peak LR 1e-4 and backbone
+peak LR 1e-5, with 1/10-epoch warmups and separate 1% minima (1e-6/1e-7).
+The peak is active at the beginning of the final warmup epoch, following the
+existing V6 schedule convention; backbone starts at approximately 1e-6.
+The V10 benchmark enables all-stage losses and has a distinct output directory.
+The V10-tiny benchmark changes the projected image-feature, hypothesis and
+transformer width to 128 and each transformer FFN's inner width to 256, while
+retaining eight attention heads and the V10 training contract. EDPose ResNet
+weights load unchanged; width-dependent transformer/projection/head weights do
+not. V10-tiny therefore retrains those components from random initialization
+and writes separate checkpoints. Its reduced width also changes initialization,
+so quality differences cannot be attributed solely to compute or capacity.
+V5-derived V10 pipelines select the LR schedule from `scheduler_type` through
+the common AdamW builder. The original V10 preset retains group-warmed cosine;
+the separate V10-tiny V5-LR preset selects V5's two-cycle cosine with zero
+warmup. The V5 schedule restarts both main and backbone groups at the same
+absolute LR of 3e-5 at epoch 40.
+V10 also emits the prediction-based first-AP-validation-batch solution summaries
+and optional feature interventions described above. V9 skeleton-bias attention
+measurements remain exclusive to V9. Stage losses and ordinary V4-derived
+activity summaries remain available. Quality requires a
+matched training/evaluation experiment, not just structural tests.
+
+V10 latent summaries use `debug/solution/val_first_batch/latent/step_<s>/layer_<l>/`.
+They observe the baseline sampling calls only, not the four feature replays or
+DN queries. `person_count` includes all clean selected persons across the batch.
+`input_rms` and `update_rms` measure incoming decoder features and their actual
+layer update; `update_input_rms_ratio` divides by input RMS clamped to 1e-8.
+`person_centered_rms` centers outgoing vectors across persons within each image
+(one person yields zero spread). `geometry_logit_saturation_fraction` counts
+shared-head logits with absolute value above 5. `box_point_movement_l1` and
+`pose_movement_l1` compare normalized decoded coordinates with the preceding
+stage for the same selected persons. `tiny_box_fraction` counts persons with
+either corner-derived size below 1e-3. All summaries are detached and require
+evaluation mode; hooks are removed on exit. `debug/lr/main` and
+`debug/lr/backbone` record effective optimizer-group LR each training epoch.
+These observations complement fixed-GT quality logs, rather than establish
+that latent movement improves predictions.
+
+PoseFlow V9 is a V5-derived checkpoint family using the same ResNet feature
+path and EDPose initialization. It changes only expanded joint-query
+self-attention: a V9 mask builder uses the 14-joint CrowdPose skeleton to add
+a learned `-5` initial logit bias to nonneighbor joint-to-joint pairs within
+each person. Each refiner layer has one bias shared across heads and people.
+Self and skeleton-neighbor joint pairs, all interactions involving a box token,
+and denoising queries keep V5 weights and mask behavior. The existing
+`nn.MultiheadAttention` projections remain; this is graph-biased dense
+attention, not a sparse graph operator. A bias of `0` recovers V5 attention.
+The V9 development benchmark inherits V5's data, optimizer, schedule, and
+evaluator settings and uses a distinct run directory.
 
 PoseFlow V6 is a separate V5-derived checkpoint family. It retains V5's source
 sampling, coordinate state, OTA losses, center supervision, schedule, and
@@ -517,6 +786,14 @@ pose-NMS result. They call
 `crowdposetools.COCOeval` with `iou_type="keypoints"` and `iou_type="bbox"`,
 respectively. The generic `KeypointAPMetric` remains available to other pose
 pipelines.
+
+Native single-call pose postprocessing carries original query IDs through the
+class-expanded candidate selection and pose NMS. Surviving candidate indices
+are mapped to those query IDs before gathering logits for the final class
+top-k. This preserves confidence-to-box/joint association even when candidate
+order changes or multiple classes select the same query. Historical scores
+using candidate indices directly against raw logits retain the legacy label.
+Cross-step ensembles already retain candidate scores with their geometry.
 
 The DiffusionRegPose criterion logs its optimized clean focal classification
 loss as `loss_ce`, together with diagnostic positive/negative focal

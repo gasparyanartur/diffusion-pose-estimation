@@ -1,0 +1,10 @@
+defaults:
+  - benchmark_poseflow_v13_reconstruction_decay
+  - _self_
+
+run_name: poseflow_v13_ota_reconstruction_decay
+out_dir: results/poseflow_v13_ota_reconstruction_decay
+
+pipeline:
+  matching_strategy: ota
+  ota_candidate_topk: 5

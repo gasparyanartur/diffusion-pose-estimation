@@ -1,0 +1,8 @@
+defaults:
+  - poseflow_v10
+  - _self_
+
+# Narrow V10 while retaining the same EDPose ResNet initialization.
+hidden_dim: 128
+feedforward_dim: 256
+pretrained_minimum_critical_coverage: null
