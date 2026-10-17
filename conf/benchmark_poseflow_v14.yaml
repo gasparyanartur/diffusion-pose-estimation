@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v13_ota_reconstruction_decay
+  - override pipeline: poseflow_v14
+  - _self_
+
+run_name: poseflow_v14_training
+out_dir: results/poseflow_v14_training

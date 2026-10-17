@@ -98,6 +98,85 @@ Visible-mask: `visible = visibility == 2`.
 
 ## Model families
 
+- V19 replaces learned latent geometry with 32 coordinate logits per candidate:
+  box center/size and 14 joint XY pairs. Fifty candidates have 15 geometry features
+  plus their own persistent hypothesis in 16-token local attention; there is no
+  global token. Separate decoder image attention, local attention/FFNs, reference
+  position encoding, coordinate-correction heads and person-class weights initialize
+  from compatible EDPose components. The shared hypothesis-bank block and coordinate
+  adapters initialize freshly. Coordinate DDIM and hypotheses remain differentiable
+  across rollout calls. The objective averages independent OTA geometry/confidence
+  losses across iterations/calls; no learned codec, latent MSE or reconstruction
+  loss is used. `benchmark_poseflow_v19` retains the 80-epoch rollout recipe in a
+  separate checkpoint namespace. Transfer auditing distinguishes exact checkpoint
+  tensors from tensors merely copied out of the initialized source model.
+
+- V18 isolates pre-image representation processing: each decoder iteration applies
+  a separate normalization/residual FFN/normalization block to V17's 16 nonmemory
+  representations before decoding image-sampling references and reading evidence.
+  Tied memory, global hypothesis attention, ungated updates and the rollout recipe
+  stay unchanged. It uses fresh initialization and a separate namespace alongside
+  V17; the old all-bank memory reader is not restored.
+
+- V17 ties each candidate to its own persistent hypothesis token inside a 17-token
+  local self-attention block (box, 14 joints, global, hypothesis). A shared
+  hypothesis self-attention block exchanges context across candidates before local
+  image evidence and local coordination. The local output directly updates memory;
+  separate memory reading/writing and retention gating are removed. The existing
+  rollout recipe and geometry codec/DDIM remain unchanged in a fresh namespace.
+  Candidate memory can follow a candidate that changes its matched person; no
+  identity-tracking guarantee or new identity supervision is introduced.
+
+- `poseflow_v15_rollout` changes training only, retaining V15's architecture and
+  inference model-state schema. Half the batches retain random-time single-call
+  training; half draw two or three calls, starting from Gaussian latents at t=1
+  with independent per-image descending distinct timestep indices. DDIM latents
+  and hypothesis memory remain differentiable between calls; each image is encoded
+  once and hidden globals reset per call. All calls/layers are supervised with
+  independent OTA matching, losses average equally across calls, and reconstruction
+  is computed once. Conditional validation remains single-call for comparison.
+  It starts fresh alongside V15, with the same optimizer/data/schedule. Improvement
+  is judged by persistent/reset multi-call gaps, not one-call AP alone.
+
+- `poseflow_v15_rollout_query_norm` isolates writer-query normalization in a
+  fresh rollout run. Non-affine LayerNorm transforms only the hypothesis queries;
+  the original memory enters the retention interpolation unchanged. Parameter
+  count and state keys match V15, so restoration must use this experiment's
+  configuration to recover its behavior. Image initialization, rollout mixture,
+  losses and schedule remain unchanged; no path dropout or decoder transfer is used.
+
+- PoseFlow V15 retains V14's 15 box/joint diffusion tokens and adds a carried
+  hidden global token to each candidate's decoder representations. Each iteration
+  reads hypotheses, estimates sampling geometry, updates box/joint features directly
+  from deformable image evidence, then coordinates all 16 tokens within the person.
+  Global summaries update the persistent 50-slot memory through normalized attention
+  evidence and a learned scalar interpolation gate initialized to retention 0.9.
+  Global tokens reset per call; hypotheses reset per sampling invocation. There is
+  no post-interpolation normalization, FFN, candidate-slot pairing or diversity loss.
+  `benchmark_poseflow_v15` is a fresh family with V14's OTA/optimizer/data recipe;
+  compatible image components transfer and revised decoder blocks initialize fresh.
+  Single-call training is retained. Advanced SSM updates and rollout training are deferred.
+
+- PoseFlow V14 uses 50 fixed candidates with 15 sampled latent tokens each:
+  one box token and 14 joint tokens. The box token decodes center, size and
+  confidence; confidence has no separately diffused token. Each denoising call
+  creates one hidden global token per candidate, while 50 independent hypothesis
+  slots persist between sampling calls. Global tokens persist only within a call.
+  Each iteration gathers geometry-guided deformable image evidence, aggregates
+  it within each person including the global token, lets hypothesis queries read
+  global summaries, then lets all representation tokens read hypotheses.
+  Evidence extraction and hypothesis updating share weights across iterations;
+  hypotheses have no required correspondence to person slots.
+  `benchmark_poseflow_v14` starts a fresh checkpoint family with the V13 OTA
+  reconstruction-decay recipe (top-k 5, gradient cap 2.0). Box and labeled-joint
+  latent losses supervise matched slots only; unmatched confidence remains
+  supervised. Single-call training exercises recurrent memory within the decoder;
+  cross-step carry-over is evaluated empirically, without training rollouts.
+  Quick-test diagnostics pair persistent/reset memory with identical image/noise
+  inputs, reporting raw box coverage, excess duplicates and confidence quality
+  alongside pose/bbox AP and per-step/per-layer evidence-memory summaries.
+  These are bounded subset diagnostics, not full-test results.
+
 - PoseFlow V13 retains V12's latent-only fixed-group architecture, but each
   decoder layer independently matches predictions to real people (Hungarian by default).
   Its latent and geometry losses use the same assignment within a layer;
@@ -405,3 +484,29 @@ Visible-mask: `visible = visibility == 2`.
 The root default is the cache-free fixed-slot baseline configuration. It accepts
 image tensors and returns canonical keypoints plus slot and keypoint confidence
 scores.
+
+Quick-test comparison metrics use the same TensorBoard tags across V13/V14.
+V14 persistent memory uses `quick-test/`, reset controls use `quick-test-reset/`,
+and extra diagnostics use `debug/quick-test/`. JSON condition names retain memory
+mode provenance. Existing trainers can use a separate live comparison event view;
+source event files and training processes remain unchanged.
+
+- PoseFlow V16 separates V15's box role into confidence, center and size,
+  retaining 14 joint roles and the hidden global token (17 diffused/18 decoder
+  tokens). The baseline remains single-call training with the V15 recipe,
+  OTA5 and unchanged geometry/classification weights. Matched box-family latent
+  supervision averages its three roles before equal weighting with joints;
+  unmatched confidence classification and invisible-joint masking are retained.
+  Use `benchmark_poseflow_v16` and its separate output namespace. Existing
+  rollout runs remain independent. Bone loss is the next deferred iteration.
+- CrowdPose validation overlaps trainval training and is an in-sample fit
+  diagnostic. Generalization comparisons use the disjoint test split; fixed32
+  test probes are bounded diagnostics rather than full-test AP.
+
+- `poseflow_v15_rollout_path_dropout` is a separate V15 rollout experiment with
+  .25 independent probabilities for dropping joint image and self-attention
+  messages. Box/global receiving rows, direct hypothesis reads and joint
+  representations remain active. Survival scaling preserves mean message size;
+  evaluation disables path dropout. Parameters and strict model-state layout
+  match V15. A batch-local generator keeps masks fresh despite fixed attention
+  seeds. Existing V15 rollout/V16 jobs remain independent; bone loss is deferred.

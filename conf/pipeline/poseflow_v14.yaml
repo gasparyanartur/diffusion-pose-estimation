@@ -1,0 +1,12 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV14PipelineConfig
+
+defaults:
+  - poseflow_v13
+  - _self_
+
+matching_strategy: ota
+ota_candidate_topk: 5
+reconstruction_weight_start: 1.0
+reconstruction_weight_end: 0.01
+reconstruction_decay_epochs: 40
+optimization_diagnostics_enabled: true

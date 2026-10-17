@@ -1,0 +1,8 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowPathDropoutPipelineConfig
+
+defaults:
+  - poseflow_v15_rollout
+  - _self_
+
+joint_image_path_dropout_probability: 0.25
+joint_self_attention_path_dropout_probability: 0.25

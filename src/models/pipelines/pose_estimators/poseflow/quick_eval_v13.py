@@ -117,7 +117,7 @@ def raw_pose_quality(output, batch, sigmas):
 
 
 def evaluate_quick_grid(model, batches, config, directory, annotations, image_ids,
-                        *, metric_evaluator=evaluate_records):
+                        *, metric_evaluator=evaluate_records, hypothesis_modes=None):
     directory = Path(directory)
     directory.mkdir(parents=True,exist_ok=True)
     conditions = {}
@@ -125,10 +125,17 @@ def evaluate_quick_grid(model, batches, config, directory, annotations, image_id
         for steps in config.quick_eval_steps:
             name = f'noise_var_{fraction*100:g}/steps_{steps}'
             start_time = noise_fraction_time(fraction)
-            conditions[name] = {'noise_variance':fraction,'steps':steps,
+            base = {'noise_variance':fraction,'steps':steps,
                 'times':[start_time*(1-index/steps) for index in range(steps)],
                 'next_times':[start_time*(1-(index+1)/steps) for index in range(steps)],
-                'records':[],'oks_sum':0.,'covered':0.,'gt_people':0}
+                'oks_sum':0.,'covered':0.,'gt_people':0}
+            for mode in hypothesis_modes or (None,):
+                if mode not in (None, 'persistent', 'reset'):
+                    raise ValueError('Unknown hypothesis memory evaluation mode')
+                key = name if mode is None else f'{name}/memory_{mode}'
+                conditions[key] = {**base, 'records':[]}
+                if mode is not None:
+                    conditions[key].update(hypothesis_mode=mode, box_quality=[], steps_quality=[])
     seen_ids, overflow = [], 0
     with evaluation_context(model):
         for batch in batches:
@@ -149,9 +156,13 @@ def evaluate_quick_grid(model, batches, config, directory, annotations, image_id
             for condition in conditions.values():
                 fraction = condition['noise_variance']
                 initial = noise if fraction == 1 else math.sqrt(1-fraction)*clean+math.sqrt(fraction)*noise
+                sampler_options = {}
+                if hypothesis_modes:
+                    sampler_options = {'persist_hypotheses': condition['hypothesis_mode'] == 'persistent',
+                                       'collect_step_diagnostics': True}
                 output = model.sample_keypoints(image,padding_mask=batch.get('padding_mask'),
                     initial_latents=initial,start_time=condition['times'][0],
-                    sampling_steps=condition['steps'],encoded_image=memory)
+                    sampling_steps=condition['steps'],encoded_image=memory, **sampler_options)
                 original_sizes = batch.get('original_img_hw',batch['img_hw']).to(image)
                 results = model.postprocess(output,original_sizes,nms_target_sizes=batch['img_hw'].to(image))
                 condition['records'].extend(crowdpose_result_records(image_id,results))
@@ -159,6 +170,11 @@ def evaluate_quick_grid(model, batches, config, directory, annotations, image_id
                 condition['oks_sum'] += oks_sum
                 condition['covered'] += covered
                 condition['gt_people'] += people
+                if hypothesis_modes:
+                    from .quick_eval_v14 import box_quality, step_quality
+                    condition['box_quality'].append(box_quality(output, batch))
+                    condition['steps_quality'].append({'image_id': image_id,
+                        'steps': step_quality(output, batch, sigmas)})
     if seen_ids != image_ids:
         raise ValueError('Quick evaluation did not cover its exact fixed image manifest')
     for name,condition in conditions.items():
@@ -169,6 +185,9 @@ def evaluate_quick_grid(model, batches, config, directory, annotations, image_id
         count = condition['gt_people']
         metrics.update(oracle_oks=condition.pop('oks_sum')/max(count,1),
                        coverage75=condition.pop('covered')/max(count,1))
+        if hypothesis_modes:
+            from .quick_eval_v14 import aggregate_box_quality
+            metrics.update(aggregate_box_quality(condition.pop('box_quality')))
         condition['metrics'] = metrics
         condition['predictions'] = str(record_path)
     return {'image_ids':image_ids,'seed':config.quick_eval_seed,'per_image_seed':'seed + image_id',

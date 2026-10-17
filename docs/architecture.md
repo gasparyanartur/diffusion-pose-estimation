@@ -365,6 +365,228 @@ is box IoU rather than pose OKS. Token-role RMS/update RMS, decoded size, refere
 saturation and cross-person existence updates are detached and bounded to the
 first periodic AP-validation batch under `tokens/step_<s>/layer_<l>/`.
 
+### PoseFlow V19 coordinate refinement with tied memory
+
+V19's diffusion state is `[B,50,32]`: logits of normalized `(cx,cy,w,h)` followed
+by fourteen `(x,y)` joints. The parameter-free `CoordinateState` clamps clean
+training targets to `[1e-5,1-1e-5]` before logit conversion; sigmoid decodes
+geometry. It has no learned codec, normalization, reconstruction or latent loss.
+`pred_coordinates`/`coordinate_state` are the explicit output/sampling-state keys;
+`pred_latents`/`latent_state` remain compatibility aliases for coordinate logits.
+
+Each call initializes 15 geometry features from coordinate adapters, role features
+and time. Every iteration first exchanges information across the 50 hypotheses
+through the shared hypothesis self-attention/FFN block. Geometry tokens read image
+features with distinct per-layer pretrained deformable attention, residual and norm.
+A candidate-local self-attention/residual/norm and FFN operate on box +14 joints
++ own hypothesis: 16 tokens, with no global. This simultaneously reads/writes tied
+memory after current image evidence. A copied decoder normalization feeds separate
+box `(4)` and joint `(2)` correction heads. Corrections add directly to the current
+coordinate logits, supplying the next iteration's references. A copied person-class
+row produces confidence; class labels are remapped for the CrowdPose evaluator.
+Zero correction heads preserve coordinates exactly, including across iterations.
+Learned preservation near clean time remains an empirical training diagnostic.
+
+All box and joint image reads use 4D references and valid-ratio scaling/padding masks.
+Joint XY comes from the coordinate state; auxiliary joint widths/heights initialize
+from the pretrained joint extents times box size and refine with copied extent heads.
+Those extents are call-local, receive no diffusion target, and are excluded from DDIM.
+Reference-position encoding is copied from the pretrained decoder. Image attention,
+local attention, FFN/norms and heads are distinct per iteration; only the fresh
+hypothesis-bank block is shared. Geometry features carry between iterations;
+coordinates and hypotheses carry between diffusion calls. Memory resets only for
+independent invocations. Fixed50 candidates remain index-tied, not identity-tracked.
+There is no V5 200-query proposal stage, refill, DN, extra pre-image FFN or ensemble.
+
+Initialization remaps compatible EDPose encoder/decoder layers 2/4/6, then copies
+components into this revised flow. This is not function-preserving EDPose inference.
+`initialization_v19.py` verifies copied tensors against the remapped checkpoint,
+including the selected classification row, and separately reports exact checkpoint
+state/parameter coverage and fresh keys. Time conditioning copied from the source
+can still be fresh with respect to EDPose; source-copy fraction is not checkpoint
+coverage. Restoration uses the V19 configuration and strict model-state loading.
+
+Training retains the 50/50 single-call versus 2/3-call rollout mixture. Single-call
+states use GT-corrupted coordinate logits; rollouts start with Gaussian logits at1
+and use independent per-image descending schedules. Images encode once per batch;
+there are no state/memory detaches, teacher forcing or added trajectory noise.
+Every iteration/call gets independent OTA top5 assignments, matched geometry and
+positive-normalized confidence losses. Invisible joints and unmatched geometry are
+masked; unmatched confidence is supervised. Total loss averages iterations and calls.
+Validation uses the single-call loss. Fixed32 noise25/50/100 and1/2/3-call persistent/
+reset grids retain established comparison tags and identify coordinate DDIM provenance.
+
+### PoseFlow V18 pre-image refinement
+
+V18 adds a distinct per-iteration refinement block to V17's 16 box/joint/global
+representations, before sampling references are decoded and image evidence is read.
+The block applies `u = LayerNorm(x)`, then `LayerNorm(u + Dropout(FFN(u)))`.
+Its FFN is Linear → ReLU → Dropout → Linear, with width 256 and FFN width 2048.
+This restores V15's pre-image normalization/residual FFN without
+its separate memory cross-attention. The persistent hypothesis does not pass
+through this block. Shared hypothesis attention, local 17-token attention, memory
+carry and geometry-only DDIM remain unchanged. The first iteration still has no
+pre-image memory read; local memory affects the next iteration's geometry.
+
+V17's refinement hook defaults to identity and adds no state tensors. The separate
+V18 model installs three new blocks and uses its own configuration/checkpoint
+namespace and fresh rollout run. Pre/post-refinement RMS and sampling-reference
+size/spread diagnostics distinguish the proposed mechanism from learned AP gains.
+
+### PoseFlow V17 tied candidate memory
+
+V17 keeps 15 diffused box/joint tokens per candidate. Its decoder groups those
+tokens with a call-local global token and that candidate's persistent hypothesis,
+giving 17 tokens per local attention group. Each iteration first applies a shared
+self-attention/residual/norm/FFN block across all candidate hypotheses. It then
+decodes sampling references from the geometry representations, performs the shared
+local deformable image update, and runs a distinct per-iteration self-attention/FFN
+over each 17-token group. The final token is returned directly as updated memory;
+the other 16 outputs carry into the next iteration. Memory affects subsequent
+sampling geometry through those refined representations.
+
+The separate V15 memory reader, global-to-bank writer, QNorm and retention gate are
+absent. Cross-candidate communication occurs through hypothesis self-attention;
+local groups stay independent. Hypotheses initialize from distinct learned vectors
+once per invocation and stay paired to candidate indices. Globals reset per call;
+DDIM updates only the 15 geometry latents. Pairwise permutation tests permute both
+geometry and its memory; candidate identity does not guarantee GT-person identity.
+
+`benchmark_poseflow_v17` uses the existing 50/50 single-call versus two/three-call
+rollout recipe, independent OTA assignments and unchanged loss/optimizer/data
+settings. It starts fresh with compatible image initialization in its own checkpoint
+namespace. Standard attention residuals and norms replace gated memory dynamics.
+Diagnostics distinguish hypothesis-bank self-attention from local attention to/from
+the hypothesis; obsolete writer-entropy and retention fields are omitted.
+
+### PoseFlow V15 cross-call rollout training
+
+`PoseFlowV15RolloutPipeline` uses the unchanged V15 model. Training draws one
+batch-level branch (rollout probability0.5) and, for rollouts, a uniformly selected
+call count from[2,3]. Per-image schedules start at1, sample n-1 distinct indices
+from1..timesteps-2, sort descending, normalize bytimesteps-1, and end at0.
+The rollout starts with pure Gaussian latents and learned hypothesis slots,
+encodes the image once, and invokes differentiable denoise/DDIM transitions.
+There is no teacher forcing, intermediate noise or cross-call state detachment.
+Globals reset each call; memory remains invocation-local. Gradients from later
+calls train earlier predicted latents and memory updates.
+
+Each call receives independent OTA assignments and all three decoder iteration
+losses. Denoising losses are averaged equally across calls; codec reconstruction
+is evaluated once with the inherited epoch-dependent weight. The single-call
+branch and conditional validation use V15's original loss path. Inference and
+model-state checkpoints are unchanged; configuration/checkpoint directories and
+TensorBoard label V15-rollout distinguish the training experiment.
+
+Diagnostics report epoch branch/call-count frequencies and mean calls. Per-call
+schedules, latent changes, memory magnitude/diversity, gate and objectives are
+logged on the first rollout batch of each epoch; existing objective-gradient
+checks remain enabled. The fixed32 paired persistent/reset evaluation retains
+the shared metric tags and provenance. Full-batch three-call CUDA capacity must
+be checked with the existing V15 run active before parallel launch.
+
+### PoseFlow V15 local evidence and gated memory
+
+The separate `PoseFlowQueryNormModel` rollout experiment changes the writer to
+`E = LayerNorm(MHA(LayerNorm_nonaffine(S), G, G))`. Retention still uses the
+original `S`, with no normalization after interpolation. The default V15 writer
+uses an identity query transform. Non-affine normalization adds no parameters or
+state tensors; the experiment configuration is therefore essential when restoring
+a checkpoint. All sharing, local image reads, memory/global lifecycle and DDIM
+equations are inherited unchanged. Fresh training uses compatible image components
+only and the existing 50/50 single-call/two-or-three-call rollout recipe.
+
+V15 reuses the V14 codec, image bundle, matched role losses and latent DDIM
+sampler. Its sampled state remains `[B,50,15,256]`; its decoder representations
+contain 16 tokens per candidate including one uncorrupted hidden global token.
+All 16 tokens carry between layers; globals reset at the start of each call.
+The separate `[B,50,256]` hypothesis bank initializes from distinct learned
+vectors once per sampling invocation and carries explicitly between calls.
+
+Each of three iterations reads hypothesis context with residual attention/FFN,
+then uses the shared latent readout to estimate box/joint sampling geometry.
+Four-level deformable image attention uses positional/role-conditioned queries,
+4D box references and 2D joint references with valid ratios and padding masks.
+The sampled feature message enters each box/joint representation once through
+residual normalization and an FFN. Within-person attention/FFN coordinates all
+16 representations, retaining every output. Updated globals provide keys/values
+for hypothesis queries. Clean box/joint latents are read out for supervision;
+the earlier geometry proposal receives no separate loss.
+
+Memory evidence is `E = LayerNorm(MHA(S,G,G))`, followed by
+`S_next = sigmoid(a)*S + (1-sigmoid(a))*E`, with `a=log(9)` initially.
+There is no normalization or FFN after this interpolation. Local image updates,
+hypothesis updates and latent readout share weights across iterations; hypothesis
+reads and within-person coordination have separate per-layer parameters.
+Hypotheses are context rather than the only image-information path.
+
+V15 starts a fresh checkpoint family, using V14's image initialization and
+training recipe. Reports record retained image tensor/element counts and their
+fraction of total state elements. Final memory updates remain differentiable,
+but receive no separate memory loss: within-call supervision uses memory through
+subsequent decoder iterations. Cross-call training rollouts remain deferred.
+Bounded diagnostics report retention, global/memory magnitudes and diversity,
+normalized per-head and head-averaged attention entropy, and candidate geometry
+spread. Main quick-test tags match previous versions; reset controls remain
+under `quick-test-reset/` and extra diagnostics under `debug/quick-test/`.
+
+### PoseFlow V14 evidence memory
+
+V14 keeps the V13 image backbone/encoder and latent cosine-corruption/DDIM
+framework, but its state is `[B,50,15,256]`: one encoded 4D box and 14 encoded
+2D joints per person, with learned role embeddings and non-affine LayerNorm.
+Separate heads decode box center, size and confidence from the box latent;
+joint readouts decode XY. Confidence is supervised without an existence latent.
+The codec and new decoder modules initialize freshly; compatible image
+components retain their transferred weights and initialization provenance.
+
+One shared evidence extractor decodes the incoming noisy geometry before the
+first iteration, then uses each iteration's predicted-clean geometry for the
+next read. It queries encoded image memory using 4D box and 2D joint references,
+valid image ratios and padding masks. Four levels, eight heads and four sampled
+points per level/head are used in the default model. Evidence contains image
+features plus source representation, geometry embeddings and role embeddings.
+Each layer self-attends within a person's evidence and an uncorrupted hidden
+global token, with an FFN. Only the resulting global summaries enter the shared
+hypothesis updater as keys/values. Hypothesis queries update 50 global memory
+slots through residual attention and an FFN; distinct per-layer representation
+updates then let all box/joint tokens cross-attend to that memory. A shared
+latent head predicts clean states after every iteration. There is no candidate
+index embedding, slotwise candidate-memory addition or person correspondence
+constraint on hypothesis slots.
+
+`denoise(..., hypothesis_memory=None)` initializes memory from 50 distinct
+learned slot embeddings and returns `hypothesis_memory`. Every call initializes
+its person-global tokens from one shared learned embedding. Global tokens evolve
+within that call and are discarded afterward. The sampler passes returned
+hypotheses into the next call and applies DDIM only to box/joint latents.
+`persist_hypotheses=False` provides the diagnostic reset control. Encoded image
+memory and spatial metadata are cached once per image; neither memory state is
+stored as mutable model-global state. Gradients flow through all three decoder
+iterations during single-call training; sampling remains under no-grad.
+
+Independent OTA assignments at each layer align geometry and detached clean
+latents. Box latent MSE averages matched tokens; joint latent MSE averages
+matched labeled joints; their two means have equal weight. Empty masks produce
+differentiable zero losses. All unmatched latent geometry is masked, but
+unmatched confidence receives focal supervision. Classification and decoded
+geometry retain positive-assignment normalization. Clean reconstruction retains
+V13's all-slot geometry and slot-mean classification, including synthetic empty
+geometry. Because existence is not encoded separately, reconstruction confidence
+must be learned from geometry; its usefulness remains an empirical question.
+The baseline uses OTA top-k 5, reconstruction decay 1 to .01 over epochs 0-39,
+and gradient cap 2.0. Cross-step training rollouts are deferred.
+
+The bounded 32-image quick-test grid runs paired persistent/reset hypotheses
+at noise variance fractions .25/.5/1 and 1/2/3 calls with the same initial states.
+Artifacts record box coverage at IoU .5/.75, excess good-IoU candidates sharing
+the same best target, good/poor-box mean confidence, pose coverage, AP, and
+per-call/per-layer latent/memory diagnostics. Raw duplicate fraction uses excess
+candidates divided by all raw candidates; it is not a matching or post-NMS
+duplicate metric. Global/hypothesis RMS, update RMS, hypothesis slot variance
+and attention entropy are bounded detached logs. Random-init smoke tests verify
+wiring and evaluator contracts, not learned pose quality.
+
 PoseFlow V13 inherits V12's architecture and corruption/sampling recipe below,
 with per-layer set supervision. Each layer independently runs the existing
 pose-aware Hungarian matcher (classification, labeled-joint L1 and OKS costs;
@@ -893,3 +1115,51 @@ python scripts/training/train_box_diffusion.py \
 Note: `data=crowdpose_debug` cannot be used directly because it inherits
 `target_format=refinement` (no images in the batch). Use
 `data=crowdpose_set_prediction` with `+data.subset_frac=...` overrides.
+
+TensorBoard naming is handled separately from the evaluator condition contract.
+The optional `scripts.utils.quick_test_logging` bridge maps existing summaries
+into an independent dashboard directory while retaining step/time/value data.
+It carries no model state and does not modify training or sampling.
+
+### PoseFlow V16 separated box roles
+
+V16 keeps V15's local-evidence/gated-memory recurrence but diffuses 17 tokens
+per candidate: confidence, box center, box size, then 14 joints. Its hidden
+global token makes 18 decoder representations and still resets on each call.
+The codec has separate confidence/center/size encoders and heads; confidence
+contains the existence target, center/size contain their corresponding geometry.
+All three box-role queries use the assembled 4D box and its coordinate embedding,
+with separate role embeddings; joints use 2D references. Globals have no direct
+image read. The shared evidence residual, memory gate, per-layer coordination,
+latent normalization and DDIM are unchanged.
+
+Matched latent supervision averages confidence/center/size within the box
+family, then averages that family with labeled joints. Unmatched candidates
+receive confidence classification but no latent or geometry target. Per-role
+latent losses and RMS are logged separately. The V16 config uses single-call
+training to compare with V15 without confounding rollout training. Its fresh
+checkpoint namespace retains compatible image components only; decoder/codec
+weights initialize freshly. Bone loss is deferred to the next experiment.
+
+### V15 rollout with joint message dropout
+
+`PoseFlowPathDropoutModel` retains V15's 15-token state and parameter/checkpoint
+layout. Training independently drops each joint's local image-attention message
+and within-person self-attention receiving message, each with probability .25.
+Masks are sampled per image/candidate/joint, decoder iteration and denoising call;
+a whole width-256 message is dropped. Surviving messages scale by 1/(1-p).
+The p=1 diagnostic boundary zeros messages without division. Box and global
+receiving rows are exempt; joint keys/values remain available to global/other
+receivers. Latents, hypothesis reads, residual normalization and FFNs remain.
+Evaluation uses all paths, with no mask RNG draws or additional parameters.
+
+The inherited attention RNG is forked to a fixed seed. A separate batch-local
+mask generator is seeded before that fork, shared across mask draws within the
+batch and cleared in a finally block. Masks therefore vary across batches without
+changing the existing attention seed. Diagnostics log realized image/self/both
+drop fractions per layer/call alongside existing rollout/memory/loss metrics.
+`benchmark_poseflow_v15_rollout_path_dropout` keeps the V15 rollout mixture and
+training recipe, using a fresh output namespace. This isolates message dropout
+from V16's token split; bone loss remains a separate follow-up. Useful memory
+must be established by intact/reset/wrong-image memory controls under masked
+joint paths; retained latents and pose priors can still provide shortcuts.

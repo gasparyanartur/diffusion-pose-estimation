@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v15_rollout
+  - override pipeline: poseflow_v15_rollout_path_dropout
+  - _self_
+
+run_name: poseflow_v15_rollout_path_dropout_training
+out_dir: results/poseflow_v15_rollout_path_dropout_training

@@ -21,6 +21,9 @@ from src.training.optim import build_adamw_with_schedule
 
 
 class PoseFlowV12Pipeline(DiffusionRegPosePipeline):
+    latent_role_slices = [('existence', slice(0, 1)), ('center', slice(1, 2)),
+                          ('size', slice(2, 3)), ('joints', slice(3, None))]
+
     def __init__(self, model, *, config, **kwargs):
         super().__init__(model, nn.Identity(), **kwargs)
         self.v12_config = config
@@ -57,8 +60,7 @@ class PoseFlowV12Pipeline(DiffusionRegPosePipeline):
             'overflow_people': targets['overflow'].sum().detach().float(),
             'diffusion_time_mean': times.detach().mean(),
         }
-        for name, subset in [('existence', slice(0,1)), ('center', slice(1,2)),
-                             ('size', slice(2,3)), ('joints', slice(3,None))]:
+        for name, subset in self.latent_role_slices:
             values = clean[:, :, subset].detach().float()
             self._v12_diagnostics[f'clean/{name}_rms'] = values.square().mean().sqrt()
             self._v12_diagnostics[f'clean/{name}_variance'] = values.var(unbiased=False)

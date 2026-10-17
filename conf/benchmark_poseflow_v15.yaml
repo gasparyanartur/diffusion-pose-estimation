@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v14
+  - override pipeline: poseflow_v15
+  - _self_
+
+run_name: poseflow_v15_training
+out_dir: results/poseflow_v15_training

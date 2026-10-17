@@ -1,0 +1,16 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV19PipelineConfig
+
+defaults:
+  - poseflow_v12
+  - _self_
+
+matching_strategy: ota
+ota_candidate_topk: 5
+optimization_diagnostics_enabled: true
+quick_eval_enabled: true
+quick_eval_images: 32
+quick_eval_seed: 42
+quick_eval_noise_fractions: [0.25, 0.5, 1.0]
+quick_eval_steps: [1, 2, 3]
+rollout_probability: 0.5
+rollout_call_counts: [2, 3]

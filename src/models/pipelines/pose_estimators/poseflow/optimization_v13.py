@@ -26,7 +26,7 @@ def parameter_component(name: str) -> str:
         return 'backbone'
     if name.startswith(('encoder.', 'input_proj.', 'level_embed')):
         return 'image_encoder'
-    if '.latent_head.' in name:
+    if name.startswith('latent_head.') or '.latent_head.' in name:
         return 'latent_heads'
     return 'state_denoiser'
 

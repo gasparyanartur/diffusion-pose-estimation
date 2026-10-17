@@ -1,0 +1,5 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV18PipelineConfig
+
+defaults:
+  - poseflow_v17
+  - _self_

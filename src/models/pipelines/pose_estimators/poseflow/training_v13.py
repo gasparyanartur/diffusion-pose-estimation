@@ -15,6 +15,16 @@ from .optimization_v13 import gradient_norms, reconstruction_weight
 
 
 class PoseFlowV13Pipeline(PoseFlowV12Pipeline):
+    matched_loss = staticmethod(matched_layer_losses)
+
+    def _evaluate_quick_grid(self, *args):
+        from .quick_eval_v13 import evaluate_quick_grid
+        return evaluate_quick_grid(*args)
+
+    def _quick_architecture(self):
+        return {'hidden_dim': self.model.hidden_dim, 'state_tokens': self.model.num_body_points+3,
+                'decoder_layers': len(self.model.layers)}
+
     def __init__(self, model, *, config, **kwargs):
         super().__init__(model, config=config, **kwargs)
         matcher_arguments = {'num_body_points': model.num_body_points,
@@ -88,7 +98,7 @@ class PoseFlowV13Pipeline(PoseFlowV12Pipeline):
 
     def _denoising_losses(self, output, targets, clean, weights):
         stages = output['aux_outputs'] + [output]
-        stage_losses = [matched_layer_losses(stage, targets, clean, self.model.codec,
+        stage_losses = [self.matched_loss(stage, targets, clean, self.model.codec,
                                             self.matcher, weights) for stage in stages]
         losses = {}
         for name in stage_losses[0]:
@@ -110,7 +120,7 @@ class PoseFlowV13Pipeline(PoseFlowV12Pipeline):
         if (not config.quick_eval_enabled or trainer.sanity_checking
                 or not trainer.is_global_zero or self._quick_eval_epoch == self.current_epoch):
             return
-        from .quick_eval_v13 import select_test_images, evaluate_quick_grid
+        from .quick_eval_v13 import select_test_images
         from src.data.datasets import PoseDataset
 
         data = trainer.datamodule
@@ -121,26 +131,27 @@ class PoseFlowV13Pipeline(PoseFlowV12Pipeline):
         candidates = [int(sample['image_id']) for sample in self._quick_eval_dataset.samples]
         image_ids = select_test_images(candidates,root/'subset.json',
             count=config.quick_eval_images,seed=config.quick_eval_seed,annotations=data.test_ann_path)
-        report = evaluate_quick_grid(self.model,self._quick_test_batches(data,image_ids),config,
+        report = self._evaluate_quick_grid(self.model,self._quick_test_batches(data,image_ids),config,
             root/f'epoch{self.current_epoch:03d}',data.test_ann_path,image_ids)
         report.update(epoch=self.current_epoch,global_step=self.global_step,
             classification_normalization='focal sum / max(positive assignments,1)',
             matching_strategy=config.matching_strategy,
             ota_candidate_topk=config.ota_candidate_topk if config.matching_strategy == 'ota' else None,
             groups=self.model.num_proposals,resize_scale=data.eval_resize_scale,
-            resize_max_size=data.eval_max_size,model='PoseFlowV13',
-            architecture={'hidden_dim':self.model.hidden_dim,'state_tokens':self.model.num_body_points+3,
-                          'decoder_layers':len(self.model.layers)},
+            resize_max_size=data.eval_max_size,model=type(self.model).__name__.removesuffix('Model'),
+            architecture=self._quick_architecture(),
             weights_stage='post-training epoch, before next epoch updates')
         report['reconstruction_weight'] = reconstruction_weight(config.reconstruction_weight_start,
             config.reconstruction_weight_end, config.reconstruction_decay_epochs, self.current_epoch)
         report['gradient_clip_norm'] = trainer.gradient_clip_val
         (root/f'epoch{self.current_epoch:03d}'/'metrics.json').write_text(
             json.dumps(report,indent=2,allow_nan=False))
+        from scripts.utils.quick_test_logging import comparison_tag
+
         for condition,row in report['conditions'].items():
             for name,value in row['metrics'].items():
                 if value >= 0:
-                    self.log(f'quick-test/{condition}/{name}',value,
+                    self.log(comparison_tag(f'quick-test/{condition}/{name}'),value,
                              on_step=False,on_epoch=True,rank_zero_only=True)
         self._quick_eval_epoch = self.current_epoch
 
