@@ -1,594 +1,194 @@
 # pose-graph-diff
 
-A toolkit for image-conditioned 2D human pose estimation and object detection
-on [CrowdPose](https://github.com/Jeff-sjtu/CrowdPose). The shared pose model is
-always image → features → pose. The default is one-stage image-to-pose set
-prediction; graph pose and box diffusion are explicit pipeline variants. Pure
-box detection is a separate model family.
+Research code for image-conditioned, multi-person 2D human pose estimation on
+[CrowdPose](https://github.com/Jeff-sjtu/CrowdPose). The repository explores graph
+diffusion, coordinate flow, and latent diffusion with persistent hypothesis
+memory. It includes a native DiffusionRegPose implementation, fixed-slot pose
+baselines, and separate box-detection pipelines.
 
----
+This is an experimental research repository. Model versions use different state
+representations and checkpoint contracts. The [experiment diary](docs/experiments.md)
+contains historical recipes, ablations, and investigation notes; the
+[architecture guide](docs/architecture.md) describes the model internals.
 
-## Project layout
+## Models
 
-```
-conf/           ← Hydra config groups (pipeline, data, training, probe, hardware)
-data/           ← CrowdPose images and annotations
-checkpoints/    ← model weights
-external/       ← vendored dependencies (mmpose, mmdet) installed as editable packages
-scripts/        ← categorized CLI entry points (data, training, evaluation, investigation, utilities)
-src/            ← core library (data, models, training, evaluation)
-notebooks/      ← investigations, visualizations, and legacy notebooks
-results/        ← benchmark outputs, prediction caches, training runs
-tests/          ← unit tests
-```
+| Family | Purpose | Entry point or configuration |
+| --- | --- | --- |
+| Fixed-slot baseline | Direct image-to-pose set prediction | `scripts/training/train_pose_refinement.py` |
+| Graph pose | Joint box/keypoint diffusion with graph refinement | `scripts/training/train_graph_pipeline.py` |
+| DiffusionRegPose | Native implementation with reference-checkpoint evaluation | `scripts/training/train_diffusionregpose.py` |
+| PoseFlow | Coordinate-flow and latent-diffusion experiments | `scripts/training/train_poseflow.py`, `conf/benchmark_poseflow*.yaml` |
+| Box detection | Separate box/objectness models | `scripts/training/train_box_diffusion.py` |
 
----
-## 1. Install the complete environment
+Recent PoseFlow experiments include V15 rollout training, V17 candidate-tied
+hypothesis memory, V18 pre-image representation refinement, and V19 coordinate
+refinement with tied memory. These are distinct experiments, without an implied
+performance ranking. See the [diary](docs/experiments.md) for their commands and
+[project conventions](docs/project.md) for coordinate and evaluation contracts.
 
-The repository uses one environment for the root project and
-`external/DiffusionRegPose`. The setup includes the mandatory CrowdPose APIs,
-Detectron2, MMPose 1.3.2, and MMDetection 3.3.0.
+## Environment
 
-Prerequisites:
+The development stack uses Python 3.10, PyTorch 2.4.1 with CUDA 12.1,
+Torchvision 0.19.1, MMCV 2.2.0, MMEngine 0.10.7, MMPose 1.3.2, and
+MMDetection 3.3.0. CUDA extension builds require a complete toolkit with `nvcc`
+and a compatible NVIDIA driver. The shared environment also uses the CrowdPose
+API and Detectron2. Dependency snapshots are in [requirements.txt](requirements.txt)
+and [requirements.lock.txt](requirements.lock.txt).
 
-- Python 3.10
-- `pyenv` (recommended for installing the exact Python version)
-- `uv`
-- A complete CUDA toolkit with `nvcc`
-- NVIDIA driver and a CUDA-capable GPU
+**A fresh clone needs additional setup.** The `external/`, `data/`, `checkpoints/`,
+and `results/` directories are excluded from Git. Existing experiments assume
+local external source trees, datasets, and pretrained weights.
 
-If Python 3.10.20 is not already available, install and select it with pyenv:
+The [shared environment script](scripts/utils/setup_shared_env.sh) documents the
+development installation procedure, but currently resolves its root to `scripts/`
+rather than the repository root. It also expects local `external/mmpose`,
+`external/mmdet`, and `external/DiffusionRegPose` trees, including a local
+MMDetection compatibility patch for MMCV 2.2.0. It is therefore not a working
+one-command installer for a fresh public clone. The external patch and exact
+source revisions must be supplied to reproduce that environment; installing the
+requirements file alone does not provision those components.
 
-```bash
-pyenv install 3.10.20
-pyenv local 3.10.20
-```
-
-Do not use the system Python directly. The setup script creates the project
-environment from the selected Python 3.10 interpreter.
-
-From the repository root, run:
-
-```bash
-./scripts/utils/setup_shared_env.sh
-source venv/bin/activate
-```
-
-To test in a separate environment, pass its path:
+Use an isolated environment. After the dependencies are available, install this
+project from the repository root and run commands there:
 
 ```bash
-./scripts/utils/setup_shared_env.sh /tmp/pose-graph-diff-venv
+python -m pip install --no-deps -e .
 ```
 
-The script installs the tested Torch 2.4.1 + CUDA 12.1 wheel, MMCV 2.2.0,
-MMEngine 0.10.7, local editable MMPose/MMDetection packages, CrowdPose,
-Detectron2, and the DiffusionRegPose CUDA operator. It does not install the
-legacy external requirements file wholesale because its broad Torch ranges can
-replace the repository's pinned Torch pair.
+The commands below assume that environment is active. Optional DINO-based
+experiments require their corresponding backbone weights as well.
 
-### CUDA note
+## CrowdPose data and pretrained weights
 
-The preferred setup is a CUDA 12.1 toolkit matching the Torch wheel. On systems
-with the available CUDA 13.0 toolkit, the script uses the validated build
-workaround for the extension's strict PyTorch CUDA-version check. The extension
-compiled and imported successfully in that configuration, but a matching
-CUDA/Torch pair remains preferable.
+Obtain images and annotations from the
+[CrowdPose release](https://github.com/Jeff-sjtu/CrowdPose) under its applicable
+terms. Place the images flat in `data/crowdpose/images/`. Training configurations
+expect the following annotation layout:
 
-The script uses `CUDA_HOME` when set. Otherwise it uses the toolkit detected by
-PyTorch. To select a toolkit explicitly, set `CUDA_HOME` before running it.
-It also registers the compiled DiffusionRegPose extension in the target
-environment and links it against that environment's Torch libraries, so no
-manual `PYTHONPATH` export or import-order workaround is required.
-
-### MMPose and MMDetection
-
-The checked-in `external/mmpose` and `external/mmdet` trees are installed
-editable by the setup script. The local MMDetection tree contains the required
-MMCV compatibility patch for the pinned `mmcv==2.2.0` stack.
-
----
-
-## 2. Dataset setup — CrowdPose
-
-### 2a. Images
-
-Download the CrowdPose images from the [official release](https://github.com/Jeff-sjtu/CrowdPose)
-and place them flat in `data/crowdpose/images/`:
-
-```
-data/crowdpose/images/107498.jpg
-data/crowdpose/images/107499.jpg
-...
+```text
+data/crowdpose/
+├── images/
+│   ├── 100000.jpg
+│   └── ...
+└── annotations/
+    ├── crowdpose_train.json
+    ├── crowdpose_val.json
+    ├── crowdpose_trainval.json
+    └── crowdpose_test.json
 ```
 
-### 2b. Annotations
-
-Run the prepare script to download MMPose-formatted annotations and pre-generated detector boxes:
+The [annotation helper](scripts/data/prepare_crowdpose.py) downloads the
+OpenMMLab annotation archive and detector boxes:
 
 ```bash
-python scripts/data/prepare_crowdpose.py
+PROJECT_DIR="$PWD" python -m scripts.data.prepare_crowdpose
 ```
 
----
+The explicit `PROJECT_DIR` selects the repository root for this helper. The
+archive uses `mmpose_crowdpose_{train,val,test}.json` filenames. Copy the split
+files to the names above, and provide a combined train+validation annotation file
+for configurations using `crowdpose_trainval.json`; the helper does not create
+that merge. Alternatively, override `data.train_ann`, `data.val_ann`, and
+`data.test_ann` to point to prepared files. Detector boxes are for top-down
+baselines; the one-stage pose pipelines do not require prediction caches.
 
-## 3. One-stage pose smoke run
+DiffusionRegPose and PoseFlow training presets initialize from an ED-Pose
+checkpoint. The default path is
+`external/DiffusionRegPose/pretrain_models/edpose_r50_crowdpose.pth`;
+set `pipeline.pretrained_checkpoint` to use another location. Obtain pretrained
+weights from their original authors and follow the applicable terms. Training
+initialization weights and trained model-family checkpoints serve different roles.
 
-The default pose workflow does not require prediction caches or precomputed
-DINO features. The smallest end-to-end smoke run uses the one-stage graph
-diffusion pipeline and a tiny CrowdPose subset:
+## Training
+
+Inspect a resolved configuration without starting training:
 
 ```bash
-python scripts/training/train_graph_pipeline.py \
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19 --cfg job
+```
+
+Train a selected experiment in its own output directory:
+
+```bash
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19 training.resume=null
+```
+
+For a small graph-pose wiring check after preparing the environment and data:
+
+```bash
+python -m scripts.training.train_graph_pipeline \
     data=crowdpose_set_prediction_debug \
-    training.max_epochs=2 \
-    hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
-```
-
-The root configuration selects the CNN fixed-slot baseline pose pipeline by
-default. The graph pipeline is an explicit one-stage variant selected by
-`conf/benchmark_graph_pipeline.yaml`.
-
-## 4. Data API
-
-See [`src/data/datasets.py`](src/data/datasets.py) for `PoseDataset`,
-`PredictionDataset`, `SceneGraphSampler`, and `prepare_pose_graph_batch`.
-
----
-
-## 5. Training pose models
-
-Config is managed by [Hydra](https://hydra.cc). All hyperparameters live in
-`conf/` as composable YAML groups. Run from the project root so relative data
-paths resolve correctly.
-
-### One-stage pose models
-
-The canonical runnable one-stage graph-pipeline command is
-`scripts/training/train_graph_pipeline.py`:
-
-```bash
-python scripts/training/train_graph_pipeline.py
-```
-
-The root config defaults to the CNN fixed-slot baseline pose model:
-`pipeline=baseline_pose` and `data=crowdpose_set_prediction`.
-
-`scripts/training/train_pose_refinement.py` trains the canonical fixed-slot baseline
-through `pipeline=baseline_pose`.
-
-Checkpoints and logs are written to
-`results/diffusion_training/<run-name>/<timestamp>/`.  
-Hydra also saves the fully-resolved config to `.hydra/config.yaml` in that
-directory for complete reproducibility.
-
-### Selecting pipelines and overriding values
-
-```bash
-# Select the graph-pose pipeline
-python scripts/training/train_graph_pipeline.py pipeline=graph_pose
-
-# Select the tensor-native box-diffusion pipeline
-python scripts/training/train_box_diffusion.py pipeline=box_diffusion
-
-# Train the native DiffusionRegPose implementation
-python scripts/training/train_diffusionregpose.py
-
-# Train PoseFlow. It retains the ED-Pose/DiffusionRegPose architecture and
-# task losses, uses pose-aware OTA by default, and transports only keypoint XY
-# with continuous endpoint flow. It is a new training path: do not evaluate a
-# DiffusionRegPose checkpoint as though it were a trained PoseFlow model.
-python scripts/training/train_poseflow.py
-
-# Train PoseFlow V3: each state carries two signed box corners plus pose XY.
-# It runs a 200-slot pool, carries 50 selected slots, and refills 150 fresh
-# slots at each later Euler call. Its fixed gate is image/state = 1/0 at t=0
-# and 0.5/0.5 at t=1. Checkpoints are incompatible with V1.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v3
-
-# Matched V3 control: identical pool/refill/loss setup with state conditioning off.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v3_control
-
-# Train PoseFlow V4: all encoder locations are position-aware image tokens;
-# every call independently constructs 200 timestep-conditioned hypotheses from
-# image evidence and the Fourier-encoded coordinate flow state, selects 50,
-# and refines box and pose at every decoder layer.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4
-
-# Matched V4 control: same tokens, pool, losses, and timestep path with only
-# the Fourier coordinate-prior path disabled.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v4_control
-
-# V4 additionally logs detached activity diagnostics under
-# debug/{train,val}/ (the TensorBoard run label identifies the model):
-# coordinate/image/hypothesis RMS, initial score, and initial-to-final
-# movement. Canonical train/ and val/ tags contain every stage loss.
-
-# Train PoseFlow V5: V4 hypotheses with a two-cycle cosine schedule,
-# augmented/interpolated GT-state training sources, and auxiliary box-center
-# supervision. It is a distinct checkpoint family; do not resume V4 weights.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v5
-
-# Train PoseFlow V13: independently matched latent/geometry supervision.
-# Start fresh; every epoch also evaluates 32 fixed test images at noise
-# variance 25/50/100 percent with 1/2/3 DDIM calls.
-python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13
-
-# V13 reconstruction/gradient experiment: weight 1 -> 0.01 over epochs 0-39,
-# then hold; gradient norm cap 2.0. Fresh run with bounded gradient diagnostics.
-python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13_reconstruction_decay
-
-# Matched OTA experiment: same reconstruction schedule and cap; change matcher.
-python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v13_ota_reconstruction_decay
-
-# TensorBoard: quick-test/noise_var_100/steps_3/pose_AP, etc.
-# The 25/50 percent conditions use GT-derived inputs; 100 percent starts
-# from Gaussian noise. These are preliminary subset metrics, not full-test AP.
-# Disable the bounded diagnostic with pipeline.quick_eval_enabled=false.
-# Summary/prediction JSONs: <run>/quick_test/epochNNN/; fixed IDs: subset.json.
-# V13 uses the same standalone evaluate_poseflow CLI and --flow-sampling-steps.
-# V13 decoder classification uses focal sum / matched-person count; clean
-# reconstruction keeps slot-mean classification.
-# Individual loss layers use _0/_1/_2; unsuffixed tags show the final layer;
-# *_mean tags show layer averages. loss_latent_mean enters the total loss.
-# loss_reconstruction stays raw; loss_reconstruction_weighted enters the total.
-# debug/optimization/ shows objective gradients, accumulated preclip norms,
-# clip_factor, expected_postclip_norm, learning rates and reconstruction weight.
-
-# Train PoseFlow V12: fifty fixed groups, 17 Gaussian latent states plus a
-# global helper token per group. Coordinates are readouts, never sampler inputs.
-# Separate checkpoint family; this command starts a fresh full training run.
-python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v12
-
-# V12 evaluation uses the existing evaluate_poseflow CLI. Its
-# --flow-sampling-steps option controls latent DDIM calls (eta=0), not Euler
-# coordinate updates. Renewal and ensemble flags are rejected for V12.
-# Bounded debug/latent logs separate conditional losses from sampled quality.
-
-# Train PoseFlow V11: box/existence coarse latent, then 17 structured tokens.
-# Refine with image -> within-person -> existence-only cross-person attention.
-# Center/size flow, shared point/size/existence MLPs, and V5 LR schedule.
-# Requires a new V11 checkpoint; no corner or auxiliary center losses.
-# V11 sampling skips the extra noisy-joint feature addition by default;
-# training and conditional validation retain it. Existing V11 checkpoints load
-# unchanged. For historical sampling, set pipeline.sampling_joint_conditioning
-# to true in the config passed to the evaluator. Box conditioning stays active.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v11
-
-# Attach to the launched full V11 run; the training pane shows live progress.
-tmux attach -t poseflow-v11-training
-# TensorBoard compares V11 with V5 and earlier V10 runs:
-# http://100.64.110.119:6012/ (bound to 0.0.0.0).
-
-# Two-epoch wiring smoke: full architecture, 12 train / 2 validation images.
-# Restart at epoch 1 only to exercise both LR cycles during the smoke.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v11 \
-    run_name=poseflow_v11_smoke out_dir=results/poseflow_v11_smoke \
-    data.subset_frac=0.001 data.num_workers=0 data.ap_batch_size=2 \
     training.max_epochs=2 training.test_after_fit=false \
-    pipeline.lr_cycle_restart_epoch=1 pipeline.val_ap_every_n_epochs=1
-
-# Train PoseFlow V10: one person latent and shared absolute pose/bbox readout.
-# Retains V5 initialization/losses; uses single cosine decay with main/backbone
-# peak LR 1e-4/1e-5, warmups 1/10 epochs and group-relative 1% minima.
-# Use a distinct V10 checkpoint family.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10
-
-# Train V10-tiny with model width 128 and transformer FFN width 256.
-# It retains the same EDPose ResNet weights; width-dependent layers retrain.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10_tiny
-
-# Retry V10-tiny with V5's two-cycle LR schedule in a separate run.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v10_tiny_v5lr
-
-# The tmux launch keeps the progress bar visible; attach to its training session.
-tmux attach -t poseflow-v10-tiny-v5lr-training
-
-# Train PoseFlow V9: V5 with learned skeleton-biased joint attention
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v9
-
-# The standalone PoseFlow evaluator accepts optional --step-probe-dir,
-# --stage-probe-dir, --feature-probe-dir, and (V9 only) --attention-probe-dir.
-# Use --flow-seed to pair source draws, --limit for a fixed diagnostic subset,
-# and separate output directories.
-
-# Future V5/V9/V10/V11 runs log `debug/solution/val_first_batch/...` on periodic AP
-# epochs. The fixed first validation batch records proposal/refiner GT quality,
-# flow-slot turnover, score/NMS counts, and (V9) per-layer attention behavior.
-# `pipeline.solution_feature_diagnostics=true` also runs four paired feature
-# interventions on that batch; set it to false to avoid the extra forwards.
-# Existing processes retain their loaded instrumentation; these additions
-# apply to subsequent processes. V9 skeleton-bias attention remains V9-only.
-# V10 also records latent update/spread, readout saturation, decoded movement
-# and tiny boxes under the first-batch latent/step_<s>/layer_<l>/ tags.
-# V11 reports coarse box coverage (no coarse pose metrics) and role/update RMS,
-# decoded width/height, reference saturation, and cross-person existence updates
-# under first-batch tokens/step_<s>/layer_<l>/ tags.
-# debug/lr/{main,backbone} records each epoch's effective learning rates.
-
-# The preset uses the external-compatible variable-size multi-scale training
-# transforms, batch size 1 with gradient accumulation 8 (effective batch size
-# 8), and reference trainable parameter set (49,304,924 parameters).
-# The paper-compatible schedule runs for 80 epochs, initializes from the
-# EDPose checkpoint, clips gradients at 0.1, uses keypoint loss
-# weight 10, and applies reference LR milestones [31, 61]. It includes 100
-# denoising queries and uses FP32. Validation loss runs every epoch and
-# validation AP is calculated every 10 epochs. Sanity validation is disabled,
-# and validation preserves the training RNG state.
-# CrowdPose person targets use category label 1, matching the annotations and
-# the external implementation; retrain native checkpoints created before this
-# label-contract correction.
-# Checkpoints include the latest completed training epoch as `last.ckpt`.
-
-# Train PoseFlow V6: V5's flow/source/loss contract with frozen DINOv3
-# ConvNeXt-Small stages 2/3/4 read by separate deformable attention modules
-# after image attention at every configured decoder layer.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v6
-
-# V6 is a distinct checkpoint family. DINO stage features are sampled at
-# each layer's current references, concatenated with the decoder query, and
-# fused through an MLP and zero-initialized residual gate. The DINO backbone
-# weights must be available through Hugging Face before building the model.
-# V6 uses LR 1e-4 for model parameters and 1e-5 for ResNet parameters. Their
-# warmups (1 and 10 epochs) and cosine decay starts are independent; the
-# ResNet reaches 1e-5 at the start of epoch 10.
-
-# Train PoseFlow V7: frozen DINOv3 ConvNeXt-Tiny stages 2/4 plus the first
-# two ResNet maps (internal layers 2/3). DINO stage 2 shares stride 8 with
-# ResNet layer 2; DINO stage 4 adds stride-32 context.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v7
-
-# V7 uses two ResNet feature levels and two separately attended DINO maps at
-# every decoder layer. It is a separate checkpoint family from V5/V6.
-# Its measured model count is 67,266,675 total parameters: 39,224,147
-# trainable and 28,042,528 frozen. The frozen Tiny backbone means total
-# parameters are not matched to the DINO-free V5 baseline.
-
-# Train PoseFlow V8: frozen DINOv3 ConvNeXt-Tiny, stages 2-4 for coarse
-# encoder/query generation and all four stages for fine decoder attention.
-python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v8
-
-# V8 removes the ResNet path and V7's per-decoder DINO fusion. At the reduced
-# setup it has 42,384,848 total / 14,564,720 trainable / 27,820,128 frozen
-# parameters. Encoder deformable attention uses 3 levels; decoder attention
-# uses all 4. V8 is a distinct checkpoint family from V7.
-
-# Fast checkpoint-compatible validation loop (full architecture, tiny data and
-# resolution; this is an AP smoke test, not a paper benchmark). The lower LR
-# avoids destroying the downloaded checkpoint on the tiny subset.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_fast \
-    run_name=diffusionregpose_fast_full_lr \
-    out_dir=results/diffusionregpose_fast_full_lr \
-    training.max_epochs=20 pipeline.lr=1.0e-5 pipeline.lr_backbone=5.0e-6
-# Evaluate its checkpoint on the matching subset using the run config:
-#   python scripts/evaluation/evaluate_diffusionregpose.py \
-#       --checkpoint results/diffusionregpose_fast_full_lr/.../checkpoints/last.ckpt \
-#       --config results/diffusionregpose_fast_full_lr/.../.hydra/config.yaml \
-#       --annotations data/crowdpose/annotations/crowdpose_test.json \
-#       --image-root data/crowdpose/images \
-#       --shortest-side 256 --max-size 384 \
-#       --output /tmp/diffusionregpose-fast/predictions.json \
-#       --limit 26 --metrics /tmp/diffusionregpose-fast/metrics.json
-
-# The reduced benchmark_diffusionregpose_debug preset is reserved for wiring
-# and tensor-contract smoke tests. Its reduced decoder is not a valid submodel
-# of the downloaded checkpoint and should not be used as an AP gate.
-
-# Historical runtime-only compact model. Its 256-pixel full-data run remained
-# near zero AP, so this preset must not be used as a learning-quality gate.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development
-
-# EDPose-compatible 256-pixel development learning gate: 49.5M parameters,
-# all pretrained encoder and pose-refinement layers, 200 initial queries,
-# 50 proposal groups, batch 8, and deterministic AP every 10 epochs.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256
-
-# Assignment-only OTA comparison at the same compatible 256-pixel resolution.
-# This keeps model tensors, EDPose initialization, data, optimizer, schedule,
-# denoising queries, sampling, and evaluation identical to the Hungarian gate.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256_ota
-
-# Same checkpoint-compatible development architecture at 128/192-pixel
-# resolution. This is a full-data learning gate with batch size 8, no
-# gradient accumulation, validation loss every epoch, and AP every 10 epochs.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_128 \
-    run_name=dev128-compatible-full \
-    out_dir=results/diffusionregpose_development_compatible_128
-
-# Controlled 256-pixel comparison with every ResNet parameter frozen. This
-# preserves the 49.5M-parameter architecture but leaves approximately 26.1M
-# trainable parameters.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256_freeze_backbone
-
-# Diagnostic head-only comparison: initialize from EDPose and freeze the
-# backbone, input projections, label embedding, and transformer computation.
-# Only prediction/refinement heads train (approximately 1.6M parameters), so
-# this is a runtime/transfer experiment rather than a paper-scale recipe.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256_head_only
-
-# Reduced three-layer transfer model. It explicitly initializes local encoder
-# and decoder layers from EDPose checkpoint layers 2, 4, and 6. This is useful
-# for architecture iteration, but is not an exact full-checkpoint evaluator.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256_keep_layers
-
-# OTA counterpart to the selected-layer fast run. It keeps the 3E/3D,
-# EDPose-layer-2/4/6, 256/427, batch-4/accumulation-2 setup and changes only
-# the clean-query assignment strategy.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_development_compatible_256_keep_layers_ota
-
-# Reproduce the CPU/static and CUDA profiling artifacts described in
-# reports/diffusionregpose-runtime-audit.md. Runtime profiling exits before CUDA
-# allocation when less than 18 GiB is free.
-python scripts/investigation/profile_diffusionregpose_runtime.py \
-    --runtime-config benchmark_diffusionregpose_development \
-    --output reports/diffusionregpose_runtime/runtime_development_preset.json
-
-# Full-data low-resolution learning gate. This keeps the full model structure
-# but uses 128/192-pixel train and validation resizing, batch size 8 with no
-# accumulation, and AP every 10 epochs. Its 80 epochs and `[31, 61]` LR
-# milestones match the paper recipe's effective batch and optimizer-update
-# schedule. It remains a diagnostic run, not the paper benchmark, because it
-# uses lower image resolution. The training AP uses the same crowdposetools
-# evaluator as the standalone evaluation script.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_lowres \
-    run_name=diffusionregpose_lowres out_dir=results/diffusionregpose_lowres
-
-# Continue the 128/192 diagnostic to 80 total epochs from its latest checkpoint.
-python scripts/training/train_diffusionregpose.py \
-    --config-name benchmark_diffusionregpose_lowres \
-    training.max_epochs=80 \
-    training.resume=results/diffusionregpose_lowres128_b16/diffusionregpose_lowres128_b16/20260822_195135/checkpoints/last.ckpt \
-    run_name=diffusionregpose_lowres80 out_dir=results/diffusionregpose_lowres80
-
-# Reduced CPU wiring smoke run
-python scripts/training/train_diffusionregpose.py \
-    data.subset_frac=0.00005 data.batch_size=1 data.num_workers=0 data.max_size=128 \
-    pipeline.backbone_pretrained=false pipeline.num_queries=30 \
-    pipeline.num_proposals=2 pipeline.num_group=2 \
-    pipeline.num_encoder_layers=1 pipeline.num_decoder_layers=3 \
-    pipeline.num_box_decoder_layers=1 \
-    training.max_epochs=1 training.test_after_fit=false \
     hardware.accelerator=cpu hardware.devices=1 hardware.precision=32
-
-# Override hardware and training settings
-python scripts/training/train_pose_refinement.py \
-    training.max_epochs=100 hardware.accelerator=gpu hardware.devices=1
 ```
 
-### Overriding individual values
+This checks execution on a tiny subset; it does not measure benchmark quality.
 
-Any leaf key can be overridden from the command line using dot notation:
+Configuration uses [Hydra](https://hydra.cc/), with groups under `conf/`.
+Override individual settings with `data.batch_size=4` or
+`training.max_epochs=80`. Resume a compatible run with
+`training.resume=path/to/run/checkpoints/last.ckpt` and its original configuration.
+Outputs are controlled by `out_dir` and `run_name`; runs save the resolved config
+in `.hydra/config.yaml` alongside checkpoints and logs.
 
-```bash
-python scripts/training/train_pose_refinement.py \
-    run_name=exp_large \
-    pipeline.lr=3e-4 \
-    training.max_epochs=200 \
-    pipeline.cosine_lr=true \
-    hardware=gpu
-```
+## Evaluation
 
-### Resuming from a checkpoint
+Evaluate a trained PoseFlow checkpoint with its saved run configuration:
 
 ```bash
-python scripts/training/train_pose_refinement.py \
-    training.resume=results/pose_estimator_training/my_run/checkpoints/last.ckpt
-```
-
-Config groups (`pipeline`, `data`, `probe`, `hardware`) live in `conf/`.
-To inspect the full resolved config without launching training:
-
-```bash
-python scripts/training/train_pose_refinement.py --cfg job
-```
-
-### Losses and metrics
-
-The canonical pose pipelines use model-family-specific pose, box, visibility,
-and diffusion losses. DiffusionRegPose defaults to reference-compatible
-Hungarian matching and supports opt-in Dynamic-K OTA through
-`pipeline.matching_strategy=ota`. Evaluation reports CrowdPose AP and AR
-metrics through `src.eval.metrics`; box diffusion reports COCO bbox AP.
-
----
-
-## 7. Running benchmarks
-
-### DiffusionRegPose evaluation
-
-The native evaluator loads the original DiffusionRegPose checkpoint format,
-performs deterministic DDIM keypoint sampling, writes CrowdPose-compatible
-pose-and-box predictions, and can calculate keypoint AP/AP-E/AP-M/AP-H plus
-COCO bbox AP when `crowdposetools` is installed:
-
-```bash
-python scripts/evaluation/evaluate_diffusionregpose.py \
-    --checkpoint path/to/diffusionregpose_checkpoint.pth \
+python -m scripts.evaluation.evaluate_poseflow \
+    --checkpoint path/to/run/checkpoints/last.ckpt \
+    --config path/to/run/.hydra/config.yaml \
     --annotations data/crowdpose/annotations/crowdpose_test.json \
     --image-root data/crowdpose/images \
-    --output results/diffusionregpose/test_results.json \
-    --metrics results/diffusionregpose/metrics.json
+    --flow-sampling-steps 3 --flow-seed 42 \
+    --output results/evaluation/predictions.json \
+    --metrics results/evaluation/metrics.json
 ```
 
-Use `--limit` for a smoke run and `--sampling-timesteps` to select the DDIM
-schedule. The default seed and one-step schedule match the reference
-evaluation path used for checkpoint parity.
+Use `--limit` for a subset diagnostic. Sampling-step semantics depend on the
+version: earlier coordinate-flow models use Euler steps; latent-diffusion
+families and V19 use DDIM calls. Keep the checkpoint and configuration paired.
+The separate [DiffusionRegPose evaluator](scripts/evaluation/evaluate_diffusionregpose.py)
+supports reference-checkpoint evaluation; use its `--help` for arguments.
 
-On CUDA, the evaluator and trainer lazily build the vendored DINOv3
-multi-scale deformable-attention CUDA operator in PyTorch's extension cache.
-The imported source is pinned to DINOv3 revision
-`6876159a11b4df116f30f667f8c9888617df0751` and retains its DINOv3 and
-Deformable DETR/SenseTime attribution. The applicable license and source
-provenance are recorded in
-`src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/`.
-If the native kernel cannot be built, the differentiable PyTorch sampler
-remains available as a functional fallback.
+CrowdPose metrics require `crowdposetools`. Native DiffusionRegPose/PoseFlow image
+attention can use the vendored deformable-attention CUDA operator, built lazily
+in PyTorch's extension cache. A differentiable PyTorch fallback is available;
+record the execution path when comparing runtime.
 
-```bash
-# List available configurations
-python scripts/evaluation/benchmark_mmpose.py --list
+When interpreting results:
 
-# Run a benchmark (checkpoint downloaded automatically on first run)
-python scripts/evaluation/benchmark_mmpose.py <model-name>
-```
+- Several presets train on `trainval` while reporting validation on `val`.
+  Those validation numbers measure in-sample fit; use the disjoint test split
+  for generalization comparisons.
+- Fixed32 quick tests and `--limit` evaluations are subset diagnostics.
+  Quick-test noise fractions of 25% and 50% use GT-derived inputs; 100% starts
+  from Gaussian noise.
+- Compare metrics with the checkpoint, split/image coverage, resize policy,
+  matcher, seed, sampling steps, and evaluator recorded. Smoke tests and
+  GT-assisted diagnostics do not establish learned full-test AP.
 
-Metrics are written to `results/<name>/metrics.yaml`.
-See `python scripts/evaluation/benchmark_mmpose.py --help` for all options.
+## Repository guide
 
----
+| Path | Contents |
+| --- | --- |
+| `conf/` | Hydra model, data, hardware, and training presets |
+| `src/` | Data loading, models, training, and evaluation |
+| `scripts/` | Training, evaluation, data, investigation, and utility entry points |
+| `tests/` | Focused unit and regression tests |
+| `docs/` | [Architecture](docs/architecture.md), [conventions](docs/project.md), and [experiment diary](docs/experiments.md) |
+| `notebooks/`, `reports/` | Research investigations and recorded evidence |
 
-## 8. Results
+Run focused tests from the configured environment with
+`python -m pytest tests/<test_file>.py`. Follow [AGENTS.md](AGENTS.md) and
+[STYLE.md](STYLE.md) when contributing changes.
 
-Benchmark metrics are written under `results/`. Training outputs include
-resolved Hydra configs, logs, checkpoints, and test results under the pipeline
-run directory. See each script's `--help` output and its Hydra root config for
-available options.
+## Acknowledgments and third-party code
 
-## 9. 3D-prior research
-
-The [depth and segmentation compatibility report](reports/3d-prior/depth-segmentation-compatibility.md)
-compares pretrained models and identifies which feature backbones their heads
-expect. The [point-cloud notebook](reports/3d-prior/pointcloud-exploration.ipynb)
-uses Depth Anything 3 Base on three CrowdPose images and saves aligned RGBD
-arrays, RGB-colored point-cloud figures, colored PLY files, and DA3's GLB
-exports under `reports/3d-prior/assets/`. The notebook checks its projection
-against DA3's exporter and records DA3's estimated intrinsics. Install the
-[official DA3 package](https://github.com/ByteDance-Seed/Depth-Anything-3)
-in a separate environment, then open the notebook from the repository root.
-It explicitly runs on CPU with two threads to avoid the training GPU. Its
-single-image clouds have relative scale and show only visible surfaces.
-On the three inspected CrowdPose examples, their person geometry was too
-incomplete for a 3D skeletal prior; the notebook records this negative result.
-The [SHARP feasibility pilot](reports/3d-prior/sharp-feasibility.md) compares
-SHARP's two depth layers and a sampled Gaussian scene on one of those images.
-The [executed SHARP RGBD notebook](reports/3d-prior/sharp-rgbd-pointcloud.ipynb)
-projects final Gaussian centers into a sparse depth raster, combines valid
-pixels with source RGB, and shows interactive scene and person-box point
-clouds plus fixed top and side views. The first depth layer is an intermediate
-visible-surface estimate; the center-derived raster is an approximation to
-final rendered depth. The inspected depth-based geometry is too unreliable for
-the intended skeletal prior, so this route is closed and no 3D prior was
-integrated into the pose model. Future work in this thread will use DINO image
-features; the notebooks remain as evidence for the decision.
-
-The [DiffusionRegPose DINO multi-stage investigation](reports/diffusionregpose-dino-multistage-investigation.md)
-traces the existing deformable-attention memory, compares DINO fusion options,
-and includes the prior simple-head backbone benchmark: frozen DINOv3
-ConvNeXt-Small stage 4 scored 0.008 AP, versus 0.049/0.050 for trainable
-ResNet-18/34. The [executed backbone sweep notebook](notebooks/visualization/visualize_backbone_sweep.ipynb)
-contains the full results table and visualizations. The DINO analysis explains
-the feature-grid and freeze-policy caveats, compares ConvNeXt stage taps with
-ViT block taps, and treats four ResNet levels plus DINO stages 2–4 (seven
-shared levels) as the direct full-fusion experiment. A separate
-query-conditioned decoder branch remains an optional lower-cost diagnostic.
-Runtime effects for DiffusionRegPose remain unmeasured pending a matched
-profile.
+This work builds on CrowdPose, ED-Pose, DiffusionRegPose, OpenMMLab, and DINOv3.
+The vendored deformable-attention source retains its
+[provenance and attribution](src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/NOTICE.md)
+and [DINOv3 license](src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/DINOv3-LICENSE.md).
+External code, datasets, and pretrained weights retain their respective terms.
