@@ -102,6 +102,19 @@ initialization weights and trained model-family checkpoints serve different role
 
 ## Training
 
+Experiment-specific configurations and auxiliary objectives, including V19
+evidence ranking and the gated dense hypothesis image read
+(`benchmark_poseflow_v19_dense_read`), are documented in
+[the experiment diary](docs/experiments.md).
+
+V20 (`benchmark_poseflow_v20`) adds training-only GFPose guidance to the dense-read
+model. Obtain the official U3D `best_model.pth` linked by the
+[GFPose authors](https://github.com/Embracing/GFPose) and place it at
+`checkpoints/gfpose/best_model.pth`, or set `pipeline.gfpose_checkpoint`.
+The configuration pins its SHA256. V20 evaluation needs only its own student
+checkpoint/configuration; it does not load GFPose. See the diary for the auxiliary
+objective and its coordinate-transfer limitations.
+
 Inspect a resolved configuration without starting training:
 
 ```bash

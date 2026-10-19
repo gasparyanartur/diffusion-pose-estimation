@@ -1,0 +1,5 @@
+defaults:
+  - poseflow_v19
+  - _self_
+
+detach_sampling_references: true

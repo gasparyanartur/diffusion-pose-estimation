@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v19_dense_read
+  - override pipeline: poseflow_v20
+  - _self_
+
+run_name: poseflow_v20_training
+out_dir: results/poseflow_v20_training

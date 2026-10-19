@@ -14,3 +14,5 @@ quick_eval_noise_fractions: [0.25, 0.5, 1.0]
 quick_eval_steps: [1, 2, 3]
 rollout_probability: 0.5
 rollout_call_counts: [2, 3]
+detach_decoder_geometry: false
+detach_sampling_references: false

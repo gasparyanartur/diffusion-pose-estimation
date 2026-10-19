@@ -1,0 +1,5 @@
+defaults:
+  - poseflow_v19_detached
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV19DenseReadPipelineConfig

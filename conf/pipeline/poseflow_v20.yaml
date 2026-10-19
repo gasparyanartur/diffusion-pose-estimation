@@ -1,0 +1,13 @@
+defaults:
+  - poseflow_v19_dense_read
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV20PipelineConfig
+
+pose3d_projection_weight: 1.0
+pose3d_prior_weight: 1.0
+pose3d_noise_min: 0.1
+pose3d_noise_max: 0.6
+pose3d_noise_seed: 42
+gfpose_checkpoint: checkpoints/gfpose/best_model.pth
+gfpose_sha256: 742a37757f3ccc0c96989462576112d4dcac0e3eeb83d071e8012df06726cbc6

@@ -20,7 +20,7 @@ from .training_v15_rollout import sample_rollout_schedule
 class PoseFlowV19Pipeline(PoseFlowV13Pipeline):
     def _denoising_losses(self, output, targets):
         weights = self.v12_config.weights.to_dataclass()
-        stages = [matched_coordinate_loss(stage, targets, self.matcher, weights)
+        stages = [self._stage_losses(stage, targets, weights)
                   for stage in output['aux_outputs']+[output]]
         losses = {}
         for name in stages[0]:
@@ -33,6 +33,12 @@ class PoseFlowV19Pipeline(PoseFlowV13Pipeline):
         losses['loss_prediction'] = torch.stack([stage['total'] for stage in stages]).mean()
         losses['total'] = losses['loss_prediction']
         return losses
+
+    def _stage_losses(self, stage, targets, weights):
+        return matched_coordinate_loss(stage, targets, self.matcher, weights)
+
+    def _call_loss_diagnostics(self, losses):
+        return {}
 
     def _losses_for_batch(self, batch):
         image, config = batch['image'], self.v12_config
@@ -73,7 +79,10 @@ class PoseFlowV19Pipeline(PoseFlowV13Pipeline):
                 hypothesis_memory=memory, collect_diagnostics=True)
             values = self._denoising_losses(output, targets)
             losses.append(values)
-            updated = ddim_update(state, output['pred_coordinates'], schedule[:, index], schedule[:, index+1])
+            if index + 1 < schedule.shape[1] - 1:
+                updated = ddim_update(state, output['pred_coordinates'], schedule[:, index], schedule[:, index+1])
+            else:
+                updated = output['pred_coordinates']
             memory = output['hypothesis_memory']
             prefix = f'rollout/call{index}'
             diagnostics.update({f'{prefix}/time_mean': schedule[:, index].mean(),
@@ -82,12 +91,22 @@ class PoseFlowV19Pipeline(PoseFlowV13Pipeline):
                 f'{prefix}/coordinate_update_rms': tensor_rms(updated-state),
                 f'{prefix}/incoming_memory_rms': tensor_rms(incoming),
                 f'{prefix}/outgoing_memory_rms': tensor_rms(memory)})
+            diagnostics.update({f'{prefix}/{name}': value.detach()
+                                for name, value in self._call_loss_diagnostics(values).items()})
             for row in output['latent_diagnostics']:
                 diagnostics.update({f'{prefix}/layer{row["layer"]}/{name}':value
                                     for name,value in row.items() if name != 'layer'})
             state = updated
         self._v12_diagnostics = diagnostics
-        return {name:torch.stack([loss[name] for loss in losses]).mean() for name in losses[0]}
+        averaged = {name:torch.stack([loss[name] for loss in losses]).mean() for name in losses[0]}
+        auxiliary = self._trajectory_auxiliary_losses(output, targets, batch)
+        if auxiliary:
+            averaged.update(auxiliary)
+            averaged['total'] = averaged['total']+auxiliary['loss_auxiliary']
+        return averaged
+
+    def _trajectory_auxiliary_losses(self, output, targets, batch):
+        return {}
 
     def _log_latent_diagnostics(self, prefix, batch_size):
         for name, value in self._v12_diagnostics.items():
@@ -124,7 +143,12 @@ class PoseFlowV19Pipeline(PoseFlowV13Pipeline):
         return report
 
     def _quick_architecture(self):
-        return {'training_variant': 'V19-coordinates', 'hidden_dim': self.model.hidden_dim,
+        variant = 'V19-detached-geometry' if self.model.detach_decoder_geometry else 'V19-coordinates'
+        if self.model.detach_sampling_references:
+            variant = 'V19-sampling-detach'
+        return {'training_variant': variant, 'hidden_dim': self.model.hidden_dim,
+                'detach_decoder_geometry': self.model.detach_decoder_geometry,
+                'detach_sampling_references': self.model.detach_sampling_references,
                 'coordinate_values': self.model.codec.width, 'state_space': 'coordinate logits',
                 'decoder_representation_tokens': self.model.num_body_points+2,
                 'global_tokens': 0, 'learned_codec': False, 'reconstruction_loss': False,
@@ -180,9 +204,19 @@ class PoseFlowV19PipelineConfig(PoseFlowV12PipelineConfig):
     optimization_diagnostics_enabled: bool = True
     rollout_probability: float = Field(default=.5, ge=0, le=1)
     rollout_call_counts: list[int] = Field(default_factory=lambda:[2,3])
+    detach_decoder_geometry: bool = False
+    detach_sampling_references: bool = False
+
+    def _build_poseflow_model(self):
+        model = super()._build_poseflow_model()
+        model.detach_decoder_geometry = self.detach_decoder_geometry
+        model.detach_sampling_references = self.detach_sampling_references
+        return model
 
     def build(self, **kwargs):
         pipeline = super().build(**kwargs)
+        pipeline.model.detach_decoder_geometry = self.detach_decoder_geometry
+        pipeline.model.detach_sampling_references = self.detach_sampling_references
         if self.pretrained_checkpoint and kwargs.get('load_pretrained_checkpoint', True):
             from .initialization_v19 import checkpoint_transfer_coverage
             report = checkpoint_transfer_coverage(pipeline.model, self)
@@ -194,6 +228,8 @@ class PoseFlowV19PipelineConfig(PoseFlowV12PipelineConfig):
 
     @model_validator(mode='after')
     def _validate_coordinate_rollouts(self):
+        if self.detach_decoder_geometry and self.detach_sampling_references:
+            raise ValueError('Full geometry and sampling-reference detachment are mutually exclusive')
         if (not self.rollout_call_counts or len(set(self.rollout_call_counts)) != len(self.rollout_call_counts)
                 or min(self.rollout_call_counts) < 2 or self.timesteps < max(self.rollout_call_counts)+1):
             raise ValueError('V19 needs distinct rollout call counts and sufficient timestep indices')

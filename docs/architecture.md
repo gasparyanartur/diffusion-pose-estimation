@@ -415,6 +415,113 @@ positive-normalized confidence losses. Invisible joints and unmatched geometry a
 masked; unmatched confidence is supervised. Total loss averages iterations and calls.
 Validation uses the single-call loss. Fixed32 noise25/50/100 and1/2/3-call persistent/
 reset grids retain established comparison tags and identify coordinate DDIM provenance.
+Training applies DDIM only between supervised calls. The final call uses its clean
+prediction directly, including valid single-call examples sampled at time zero.
+
+The optional `detach_decoder_geometry` flag defaults to false. The separate
+`benchmark_poseflow_v19_detached` experiment enables it: each intermediate
+prediction retains its own supervision graph, then coordinate logits and joint
+extents detach before the next decoder layer. Feature/hypothesis recurrence stays
+attached. The final prediction is never detached, preserving cross-call coordinate
+DDIM and memory gradients. Extent heads have no direct loss and therefore lose their
+later-layer training signal in this variant, as in V5's detached reference handoff.
+Forward values, parameter count and state-dict keys are unchanged. Training and
+strict evaluator construction restore the flag from configuration; quick-test
+architecture metadata identifies `V19-detached-geometry` with unchanged metric tags.
+
+`benchmark_poseflow_v19_sampling_detach` instead enables
+`detach_sampling_references` (default false). For decoder layers after the first,
+it detaches the constructed box/joint references before both positional encoding
+and deformable image attention. Coordinates themselves remain attached through
+all residual additions; features, memory, initial references and cross-call DDIM
+also remain attached. Auxiliary extents are part of the detached references and
+their unsupervised heads lose later-layer gradients in this variant too. Both
+variants therefore share that extent-gradient boundary. Configurations reject
+enabling both flags together. Model weights/forward values stay compatible;
+strict evaluator construction restores the gradient flag from the saved config,
+and metadata/dashboard use `V19-sampling-detach` with existing comparison tags.
+
+### V20 hypothesis guidance from a frozen 3D pose model
+
+`PoseFlowV20Model` inherits V19 dense-read unchanged and adds one shared linear
+readout from the final candidate hypothesis to 17 triples. The readout is used
+only for the training auxiliary; inference follows the same image reads, memory
+carry, coordinate heads and DDIM transitions. All baseline student trainability
+and full geometry-detach boundaries remain intact.
+
+The head emits normalized image-plane XY plus depth, scaled by 30 to match the
+released GFPose U3D checkpoint. For XY, projecting back is `(Z_xy/30+1)/2` in
+the unpadded image's normalized coordinates. This is equivalent to applying the
+upstream 1000-pixel normalization to a virtual square image; it is a source-frame
+transfer assumption, not a calibrated metric camera. Twelve shoulder/elbow/wrist/
+hip/knee/ankle joints map to Human3.6M indices
+`[11,14,12,15,13,16,4,1,5,2,6,3]`. CrowdPose head/neck receive no auxiliary
+projection loss. The remaining teacher joints and depth have no fabricated GT.
+
+Only the final layer of the final training call receives auxiliaries, with the
+same final-prediction OTA assignment as the task objective. Projected L1 sums
+over labeled common XY joints and divides by positive assignments, weight 1.
+The prior perturbs each matched pose at an independently sampled teacher time
+`tau ~ U(.1,.6)`: `a=exp(-(.1*tau+9.95*tau^2)/2)`,
+`sigma=1-exp(-(.1*tau+9.95*tau^2))`, `Z_tau=a*Z+sigma*epsilon`.
+The frozen teacher supplies `epsilon_hat=-sigma*score`. The surrogate
+`mean(Z * stop_gradient(epsilon_hat-epsilon))`, weight `1`, injects the
+score-distillation gradient without a teacher Jacobian. Its scalar value is not
+a pose-quality metric. The implied noise-smoothed KL weight is `sigma/a`.
+Noise comes from a checkpointed independent CPU generator, so fixed attention
+seeding neither repeats it nor changes the sampler RNG. Empty assignments yield
+differentiable zero and never load the teacher. Labeled occluded joints remain
+supervised; unlabeled coordinates are masked in projection.
+
+`gfpose/` contains an attributed Apache-2.0 adapter for frozen U3D evaluation.
+It restores EMA weights strictly, checks the configured SHA256, uses the explicit
+null mask and converts raw model output to the score with `-raw/sigma`. Teacher
+evaluation is FP32 and its parameters never enter student state or optimization.
+Validation/sampling require no teacher file. The `benchmark_poseflow_v20` family
+has separate strict checkpoints and inherits dense-read's training recipe.
+Useful structural memory must be measured with task AP and intact/reset-memory
+controls; an auxiliary pose head alone can be ignored by the detector. Source
+framing bias, pose collapse and depth-only corrections remain experimental risks.
+
+### V19 dense hypothesis image read
+
+`PoseFlowV19DenseReadModel` extends the full geometry-detach V19 baseline without
+confidence ranking. Once per denoising call, before the existing decoder loop,
+all 50 hypothesis queries attend densely to every unpadded encoded image token:
+
+```
+E = MHA(LayerNorm(H), F + P, F)
+H_dense = H + gamma * (.1 + .9 * (1 - t)) * E
+```
+
+`P` retains the encoder's spatial sine positions plus feature-level embeddings;
+the encoded-image bundle adds optional position metadata without changing old
+state-dict keys or callers. Dense reads require these positions and at least one
+valid image token per image. The scalar `gamma` is shared across hypotheses and
+calls and starts at zero. Its attention output projection has ordinary nonzero
+initialization, allowing a gate gradient on the first update. Dense attention
+weights begin receiving objective gradients after the gate moves away from zero.
+No FFN or normalization follows the residual, so the initial baseline computation
+and baseline-path gradients are preserved. The query-only LayerNorm does not
+normalize the retained hypothesis state. Dense attention uses dropout zero.
+
+The time multiplier ranges from .1 at pure noise (`t=1`) to 1 at the clean endpoint.
+The learned gate is an unconstrained signed scalar; the multiplier controls its
+magnitude by time rather than treating it as a probability. All existing bank
+attention, per-candidate local attention, coordinate heads and detach boundaries
+remain unchanged. The dense hypothesis still reaches geometry features after the
+first local image read; this addition does not directly change that read's sampling
+geometry. The updated hypothesis carries through the existing differentiable
+rollout and inference interfaces. Images encode once per invocation.
+
+Diagnostics on the first layer of each call record the gate, time strength,
+message/update and incoming/outgoing memory RMS, and separately labeled per-head
+dense attention entropy. `benchmark_poseflow_v19_dense_read` uses the same rollout
+recipe and loss as the full-detach baseline. Its quick-grid metadata identifies
+`V19-dense-read`, retaining existing comparison tags. New checkpoint keys live under
+`dense_read.*`; `load_baseline_state_dict` accepts exactly a compatible V19 model
+state, reports copied state coverage/new keys, and rejects ranking or variant
+states. Ordinary evaluator restoration remains strict for the new family.
 
 ### PoseFlow V18 pre-image refinement
 
@@ -1163,3 +1270,32 @@ training recipe, using a fresh output namespace. This isolates message dropout
 from V16's token split; bone loss remains a separate follow-up. Useful memory
 must be established by intact/reset/wrong-image memory controls under masked
 joint paths; retained latents and pose priors can still provide shortcuts.
+
+### V19 evidence-ranking auxiliary objective
+
+`PoseFlowV19EvidenceRankModel` extends the full-geometry-detach V19 baseline.
+Image encoding and each layer's deformable read run once. From identical incoming
+features, positions and bank-updated hypotheses, the candidate-local update runs
+on three messages `E + sigma * rms(E).detach() * epsilon`, with sigma
+`[0, .25, .5]`, per-token channel RMS (floor `1e-6`), and one shared Gaussian
+direction per triplet. Only the clean branch's features and hypotheses continue
+to later layers/calls; all three branches receive auxiliary gradients. Decoder
+dropout is zero. Corruption seeds are drawn before the inherited fixed attention
+RNG fork, vary between batches and are reproducible from the run seed.
+
+One shared bias-free linear head maps each updated hypothesis to an unbounded
+ordinal score. For each OTA-positive candidate and each pair `i < j`, the hinge
+is `relu(m * (sigma_j^2 - sigma_i^2) / sigma_max^2 - C_i + C_j)`.
+Average over the three pairs and positive candidates, then equally across
+layers and denoising calls. Default `m=1`, loss weight `.1`; no positive assignments
+gives differentiable zero. Existing pose losses, independent OTA assignments,
+geometry detach and cross-call gradients remain intact. No pose-output quality,
+OKS, absolute score or noise-variance regression label supervises the head.
+
+Validation and sampling omit noisy branches and auxiliary losses. The score does
+not change inference confidence or detection ranking. It measures a controlled
+corruption ordering; success alone establishes neither calibrated uncertainty nor
+natural-image confidence. Diagnostics separate level scores, pair gaps/violations,
+evidence/hypothesis RMS by layer and call, plus weighted ranking-versus-pose
+gradient norms/cosine. The new head adds exactly `hidden_dim` parameters and
+requires the separate strict checkpoint/config family.

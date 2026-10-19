@@ -147,3 +147,18 @@ from .model_v19 import PoseFlowV19Model
 from .training_v19 import PoseFlowV19Pipeline, PoseFlowV19PipelineConfig
 
 __all__ += ['PoseFlowV19Model', 'PoseFlowV19Pipeline', 'PoseFlowV19PipelineConfig']
+
+from .evidence_rank_v19 import PoseFlowV19EvidenceRankModel
+from .training_evidence_rank_v19 import PoseFlowV19EvidenceRankPipeline, PoseFlowV19EvidenceRankPipelineConfig
+
+__all__ += ['PoseFlowV19EvidenceRankModel', 'PoseFlowV19EvidenceRankPipeline', 'PoseFlowV19EvidenceRankPipelineConfig']
+
+from .dense_read_v19 import PoseFlowV19DenseReadModel
+from .training_dense_read_v19 import PoseFlowV19DenseReadPipeline, PoseFlowV19DenseReadPipelineConfig
+
+__all__ += ['PoseFlowV19DenseReadModel', 'PoseFlowV19DenseReadPipeline', 'PoseFlowV19DenseReadPipelineConfig']
+
+from .model_v20 import PoseFlowV20Model
+from .training_v20 import PoseFlowV20Pipeline, PoseFlowV20PipelineConfig
+
+__all__ += ['PoseFlowV20Model', 'PoseFlowV20Pipeline', 'PoseFlowV20PipelineConfig']

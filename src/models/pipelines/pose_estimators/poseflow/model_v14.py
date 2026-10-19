@@ -21,6 +21,7 @@ class V14EncodedImage:
     spatial_shapes: Tensor
     level_start_index: Tensor
     valid_ratios: Tensor
+    position: Tensor | None = None
 
 
 class V14AttentionUpdate(nn.Module):
@@ -142,7 +143,7 @@ class PoseFlowV14Model(PoseFlowV12Model):
         memory = self.encoder(inputs.memory, position, inputs.spatial_shapes,
                               inputs.level_start_index, inputs.valid_ratios, inputs.padding_mask)
         return V14EncodedImage(memory, inputs.padding_mask, inputs.spatial_shapes,
-                               inputs.level_start_index, inputs.valid_ratios)
+                               inputs.level_start_index, inputs.valid_ratios, position)
 
     def denoise(self, noisy_latents: Tensor, timesteps: Tensor, encoded_image: V14EncodedImage,
                 *, hypothesis_memory: Tensor | None = None, collect_diagnostics: bool = False) -> dict:

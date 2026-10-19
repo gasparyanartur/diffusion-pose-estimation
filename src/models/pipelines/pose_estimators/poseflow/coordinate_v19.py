@@ -20,11 +20,12 @@ class CoordinateState(nn.Module):
                 'pred_keypoints': torch.cat((points, torch.ones_like(points[..., :self.joints])), -1)}
 
 
-def matched_coordinate_loss(output, targets, matcher, weights):
+def matched_coordinate_loss(output, targets, matcher, weights, *, matches=None):
     from .latent_v12 import prediction_loss
     from .losses_v13 import real_person_targets
 
-    matches = matcher(output, real_person_targets(targets))
+    if matches is None:
+        matches = matcher(output, real_person_targets(targets))
     aligned = {name:value.clone() for name,value in targets.items()}
     for name in ('real', 'existence', 'labeled'):
         aligned[name].zero_()

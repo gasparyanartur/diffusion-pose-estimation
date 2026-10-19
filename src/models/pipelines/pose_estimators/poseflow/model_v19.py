@@ -24,13 +24,21 @@ class CoordinateDecoderLayer(nn.Module):
             self.class_head.bias.copy_(class_head.bias[person_class:person_class+1])
 
     def forward(self, features, hypotheses, references, positions, image, *, collect_weights=False):
-        # B = images, N = candidates, T = box+joint roles, D = feature width.
-        batch, candidates, roles, width = features.shape
+        evidence = self.read_image(features, references, positions, image)
+        return self.update_from_evidence(features, hypotheses, positions, evidence,
+                                         collect_weights=collect_weights)
+
+    def read_image(self, features, references, positions, image):
         ratios = torch.cat((image.valid_ratios, image.valid_ratios), -1)
         scaled = references.flatten(1, 2)[:, :, None]*ratios[:, None]
         crossed = self.block.cross_attn((features+positions).flatten(1, 2), scaled,
             image.memory, image.spatial_shapes, image.level_start_index, image.padding_mask)
-        features = self.block.norm1(features+self.block.dropout1(crossed.reshape_as(features)))
+        return crossed.reshape_as(features)
+
+    def update_from_evidence(self, features, hypotheses, positions, evidence, *, collect_weights=False):
+        # B = images, N = candidates, T = box+joint roles, D = feature width.
+        batch, candidates, roles, width = features.shape
+        features = self.block.norm1(features+self.block.dropout1(evidence))
         tokens = torch.cat((features, hypotheses[:, :, None]), 2).flatten(0, 1).transpose(0, 1)
         position = torch.cat((positions, torch.zeros_like(hypotheses[:, :, None])), 2)
         position = position.flatten(0, 1).transpose(0, 1)
@@ -57,6 +65,8 @@ class PoseFlowV19Model(PoseFlowV14Model):
         self.num_proposals = self.num_queries = self.num_hypotheses = image_model.num_proposals
         self.num_feature_levels = image_model.num_feature_levels
         self.flow_sampling_steps = sampling_steps
+        self.detach_decoder_geometry = False
+        self.detach_sampling_references = False
         self.flow_renewal = self.flow_ensemble = False
         self.flow_renewal_score_threshold = .5
         self.codec = CoordinateState(self.num_body_points)
@@ -127,6 +137,14 @@ class PoseFlowV19Model(PoseFlowV14Model):
         return self.reference_position(sine_embedding_for_position(scaled,
             num_pos_feats=self.hidden_dim//2))
 
+    def _decoder_update(self, layer, features, memory, references, positions, image, collect_weights):
+        features, memory, weights = layer(features, memory, references, positions, image,
+                                         collect_weights=collect_weights)
+        return features, memory, weights, {}
+
+    def _read_hypothesis_image(self, memory, timesteps, image, collect_diagnostics):
+        return memory, {}
+
     def denoise(self, noisy_latents, timesteps, encoded_image, *, hypothesis_memory=None,
                 collect_diagnostics=False):
         coordinates = noisy_latents
@@ -143,6 +161,8 @@ class PoseFlowV19Model(PoseFlowV14Model):
                 or memory.device != coordinates.device or memory.dtype != coordinates.dtype
                 or not torch.isfinite(memory).all()):
             raise ValueError('V19 hypothesis memory must match batch/candidates/device/dtype')
+        memory, image_read_diagnostics = self._read_hypothesis_image(
+            memory, timesteps, encoded_image, collect_diagnostics)
         geometry = self.codec.decode(coordinates)
         points = geometry['pred_keypoints'][..., :2*self.num_body_points].reshape(*expected[:2], self.num_body_points, 2)
         box = self.box_conditioning(geometry['pred_boxes'])[:, :, None]+self.box_embedding
@@ -154,8 +174,10 @@ class PoseFlowV19Model(PoseFlowV14Model):
             previous_memory, previous_coordinates = memory, coordinates
             memory, bank_weights = self.hypothesis_attention(memory, memory, collect_weights=collect_diagnostics)
             references = self._references(coordinates, extents)
-            features, memory, local_weights = layer(features, memory, references,
-                self._positions(references, encoded_image), encoded_image, collect_weights=collect_diagnostics)
+            if self.detach_sampling_references and index > 0:
+                references = references.detach()
+            features, memory, local_weights, auxiliary = self._decoder_update(layer, features, memory,
+                references, self._positions(references, encoded_image), encoded_image, collect_diagnostics)
             readout = self.readout_norm(features)
             delta = torch.cat((layer.box_head(readout[:, :, 0]),
                                layer.joint_head(readout[:, :, 1:]).flatten(-2)), -1)
@@ -163,7 +185,7 @@ class PoseFlowV19Model(PoseFlowV14Model):
             extents = (torch.logit(extents.clamp(self.codec.epsilon, 1-self.codec.epsilon))
                        +layer.extent_head(readout[:, :, 1:])).sigmoid()
             predictions.append({'pred_coordinates': coordinates, 'pred_latents': coordinates,
-                'pred_logits': layer.class_head(readout[:, :, 0]), **self.codec.decode(coordinates)})
+                'pred_logits': layer.class_head(readout[:, :, 0]), **self.codec.decode(coordinates), **auxiliary})
             if collect_diagnostics:
                 diagnostics.append({'layer': index, 'coordinate_update_rms': tensor_rms(delta),
                     'reference_coordinate_rms': tensor_rms(previous_coordinates),
@@ -176,6 +198,11 @@ class PoseFlowV19Model(PoseFlowV14Model):
                     'joint_candidate_std': predictions[-1]['pred_keypoints'][..., :2*self.num_body_points].detach().std(1, unbiased=False).mean(),
                     'box_candidate_std': predictions[-1]['pred_boxes'].detach().std(1, unbiased=False).mean(),
                     'sampling_box_size_mean': references[:, :, 0, 2:].detach().mean()})
+                if index == 0:
+                    diagnostics[-1].update(image_read_diagnostics)
+            if self.detach_decoder_geometry and index + 1 < len(self.layers):
+                coordinates = coordinates.detach()
+                extents = extents.detach()
         return {**predictions[-1], 'aux_outputs': predictions[:-1],
                 'hypothesis_memory': memory, 'latent_diagnostics': diagnostics}
 

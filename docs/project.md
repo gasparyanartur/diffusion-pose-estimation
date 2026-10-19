@@ -98,6 +98,18 @@ Visible-mask: `visible = visibility == 2`.
 
 ## Model families
 
+- V20 extends V19 dense-read with a shared auxiliary `H -> 17x3` pose head.
+  The student retains the dense image read, geometry-detach boundary and DDIM
+  sampler, and trains its hypothesis/geometry interaction under the original
+  losses plus final-call projected-pose supervision and frozen GFPose score
+  distillation. GFPose's released state is image-plane XY plus scaled depth,
+  not metric XYZ. Twelve common limb joints receive 2D supervision; head/neck
+  definitions are excluded and teacher-private joints remain latent. The teacher
+  is lazy, training-only, hash-pinned and excluded from student checkpoints and
+  optimizers. A separate checkpointed noise generator preserves the student's
+  RNG stream. This adds a structural training signal, not a calibrated 3D
+  posterior, identity guarantee or established AP improvement.
+
 - V19 replaces learned latent geometry with 32 coordinate logits per candidate:
   box center/size and 14 joint XY pairs. Fifty candidates have 15 geometry features
   plus their own persistent hypothesis in 16-token local attention; there is no
@@ -110,6 +122,24 @@ Visible-mask: `visible = visibility == 2`.
   loss is used. `benchmark_poseflow_v19` retains the 80-epoch rollout recipe in a
   separate checkpoint namespace. Transfer auditing distinguishes exact checkpoint
   tensors from tensors merely copied out of the initialized source model.
+  `benchmark_poseflow_v19_detached` isolates a training gradient boundary:
+  coordinates and joint extents detach between decoder layers, while features,
+  hypotheses, final predictions and cross-call DDIM remain differentiable.
+  It uses the same parameter count/recipe in a separate output namespace.
+  `benchmark_poseflow_v19_sampling_detach` stops only later-layer sampling and
+  positional reference gradients, retaining coordinate-residual gradients. The
+  two detach flags are mutually exclusive; existing variants default to false
+  for the new flag. This isolates the gradient routes without changing inference.
+  `benchmark_poseflow_v19_dense_read` extends the full geometry-detach baseline
+  with one dense image read into the 50 hypotheses at the start of every denoising
+  call. Its residual is scaled by a learned scalar initialized at zero and by
+  `.1+.9*(1-t)`, preserving the baseline initially while allowing a smaller update
+  at high noise. Encoded images retain spatial/level positions for dense keys and
+  padding masks. Local refinement, coordinate DDIM, rollout supervision and memory
+  carry remain unchanged; confidence-ranking supervision is absent. It has a
+  separate configuration/checkpoint namespace. Explicit baseline-state import
+  reports copied coverage and new dense-read keys; variant checkpoints restore
+  strictly. Implementation verification does not imply a training launch.
 
 - V18 isolates pre-image representation processing: each decoder iteration applies
   a separate normalization/residual FFN/normalization block to V17's 16 nonmemory
@@ -510,3 +540,15 @@ source event files and training processes remain unchanged.
   evaluation disables path dropout. Parameters and strict model-state layout
   match V15. A batch-local generator keeps masks fresh despite fixed attention
   seeds. Existing V15 rollout/V16 jobs remain independent; bone loss is deferred.
+
+- `benchmark_poseflow_v19_evidence_rank` is a separate full-detach V19-derived
+  auxiliary-supervision family. Three RMS-relative Gaussian evidence levels
+  `[0, .25, .5]` update copies of the same hypothesis prior; a shared linear
+  ordinal head ranks them with variance-scaled margins. OTA positives select
+  people, without using predicted pose quality as the confidence target. Only
+  clean updates carry forward. Validation/inference stay clean-only. This adds
+  256 parameters at width256 and changes strict checkpoint keys; old checkpoints
+  and existing runs stay separate. Auxiliary corruption varies across training
+  batches despite the inherited fixed attention RNG fork. The approved full run
+  starts fresh from the same compatible source initialization as V19; it does not
+  resume an existing V19 model or optimizer.

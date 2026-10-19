@@ -197,3 +197,25 @@ def test_transfer_audit_distinguishes_checkpoint_from_fresh_parameters(tmp_path)
     with torch.no_grad():model.layers[0].box_head.layers[0].weight.add_(1)
     with pytest.raises(ValueError,match='transfer mismatch'):
         checkpoint_transfer_coverage(model,cfg)
+
+
+@pytest.mark.parametrize('time', [0.0, 0.5])
+def test_single_call_terminal_readout_needs_no_ddim(monkeypatch, time):
+    from tests.test_poseflow import _batch
+    from src.models.pipelines.pose_estimators.poseflow.latent_v12 import build_v12_targets
+    from src.models.pipelines.pose_estimators.poseflow import training_v19
+
+    pipeline = configuration().build(max_epochs=2)
+    batch = _batch() | {'image': torch.randn(1, 3, 64, 64)}
+    targets = build_v12_targets(batch, groups=3)
+    state = pipeline.model.codec.encode(targets)
+    schedule = torch.tensor([[time, 0.0]])
+
+    def unexpected_transition(*args):
+        pytest.fail('A terminal prediction needs no DDIM transition')
+
+    monkeypatch.setattr(training_v19, 'ddim_update', unexpected_transition)
+    losses = pipeline._trajectory_losses(batch, targets, state, schedule)
+    assert torch.isfinite(losses['total'])
+    losses['total'].backward()
+    assert pipeline.model.hypothesis_slots.grad is not None

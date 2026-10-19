@@ -428,3 +428,166 @@ venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_posef
 ```
 
 See [architecture details](architecture.md#poseflow-v19-coordinate-refinement-with-tied-memory).
+
+### V19 detached geometry
+
+Run the controlled inter-layer geometry-gradient comparison with:
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19_detached
+```
+
+This fresh experiment keeps V19's architecture, parameter count, seed, image
+initialization and rollout recipe. Only coordinate logits and auxiliary joint
+extents detach between decoder layers. Feature and hypothesis recurrence, final
+predictions and cross-call DDIM gradients stay attached. Intermediate predictions
+retain their losses; unsupervised extent heads lose inter-layer gradients. Use the
+saved detached configuration for strict restoration and the separate
+`V19-detached-geometry` dashboard label for comparison. Forward values for identical
+weights are unchanged; AP improvement is an experimental outcome.
+
+### V19 sampling-reference-only detach
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19_sampling_detach
+```
+
+This fresh controlled comparison retains gradients through coordinate residual
+additions while detaching box/joint sampling references before later decoder
+layers' positional embeddings and image attention. Initial references, hidden
+features, hypothesis memory and cross-call DDIM stay differentiable. Sampling
+references include auxiliary extents, so their unsupervised heads lose later-layer
+gradients as in full-detach. Both detach flags cannot be enabled together. The
+parameter count, forward computation and training recipe are unchanged. Use the
+saved configuration for strict restoration and the `V19-sampling-detach` label for
+matched-age comparisons with `V19-detached-geometry`; inference parity alone does
+not establish learned AP improvement.
+
+### V19 evidence-ranking supervision
+
+The separate `benchmark_poseflow_v19_evidence_rank` configuration derives from
+full geometry detachment, with the same coordinate/rollout recipe. It adds
+training-only noisy evidence branches at RMS-relative levels `[0, .25, .5]` and
+one shared bias-free linear hypothesis-confidence head. The OTA-positive
+three-pair hinge uses variance-scaled margins, margin1 and weight0.1. Validation
+and inference use clean evidence, with no confidence reranking change. A zero
+`pipeline.evidence_rank_weight` disables the auxiliary branches and loss.
+
+Inspect the resolved recipe without starting training:
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19_evidence_rank --cfg job
+```
+
+Use the saved configuration for strict evaluator restoration. Identify this
+family as `V19-evidence-ranking` in comparisons. The extra head adds256 parameters;
+image reads are shared, while local updates run three times during training.
+Implementation smokes and fixed-image evaluator checks do not establish learned
+AP or confidence quality. Full-run launch is recorded below. Future confidence
+controls should include independent noise
+directions and unseen strengths, since ranking synthetic noise can be a shortcut.
+
+The fresh V19 evidence-ranking run was launched on 2026-10-19 with the inherited
+80-epoch recipe, batch4/accumulation2, OTA5 and the 50/50 single-call/rollout mixture.
+It uses the compatible pretrained-source initialization with fresh new components,
+not a resumed V19 optimizer/checkpoint. Ranking weight remains0.1. The full-detach
+reference continues independently; assess the new objective at matched training
+ages and distinguish synthetic ranking success from pose-confidence quality.
+
+### V19 dense hypothesis image read
+
+`benchmark_poseflow_v19_dense_read` extends the V19 full geometry-detach baseline.
+Once at the start of each denoising call, the 50 hypotheses read all valid encoded
+image tokens through dense cross-attention. Keys include spatial and level
+positions; values contain encoded image features. The residual update is
+`H + gamma * (.1 + .9 * (1-t)) * MHA(LayerNorm(H), F+P, F)`.
+The shared scalar `gamma` starts at zero; no normalization or FFN follows the
+addition. The time multiplier remains .1 at pure noise and reaches 1 at the clean
+endpoint. Attention projections initialize normally, allowing the gate to learn
+first and attention weights to receive gradients after it opens.
+
+Coordinate diffusion, full between-layer geometry detachment, existing local
+refinement, hypothesis-bank attention, and the 50/50 single-call versus 2/3-call
+rollout objective stay unchanged. There is no confidence-ranking head or loss.
+The inherited recipe remains 80 epochs, batch4/accumulation2, OTA top5 and gradient
+cap2. The dense hypothesis enters geometry features through the existing local
+attention after the first deformable read; the added read does not directly change
+that first read's sampling coordinates.
+
+```bash
+python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v19_dense_read
+```
+
+The configuration has its own `poseflow_v19_dense_read_training` output namespace.
+Use its saved configuration for strict evaluator restoration. Deliberate import of
+compatible V19 model weights uses `model.load_baseline_state_dict(baseline_state)`;
+it reports copied state coverage and new `dense_read.*` keys, and rejects ranking
+or already-extended states. This import does not restore optimizer state or select
+a fine-tuning schedule.
+
+The user authorized a fresh full run on 2026-10-19. It uses the compatible pretrained
+source initialization with new dense-read components and `resume=null`, keeping the
+80-epoch recipe. The confidence-ranking training run was cancelled gracefully;
+its completed epoch44 and last checkpoints and logs were retained. TensorBoard
+identifies the replacement as `V19-dense-read` alongside the historical comparisons.
+
+The dense read adds263,681 parameters at width256, bringing V19 from42,008,567 to
+42,272,248 parameters. Initial zero-gate predictions and baseline-path gradients
+are tested for parity. Diagnostics record gate/time strength, message/update and
+memory RMS, plus separately labeled per-head attention entropy. Small optimizer
+smokes and fixed-image grids verify implementation and evaluator wiring; they do
+not establish an AP improvement.
+
+## PoseFlow V20: 3D guidance for dense-read hypothesis memory
+
+V20 retains V19 dense-read's image-conditioned hypothesis update and coordinate
+DDIM. It adds a shared linear 17-joint pose readout from persistent memory and
+trains the student interaction alongside two final-call auxiliary terms:
+projected masked 2D L1 (weight 1) and frozen GFPose score distillation (weight 1).
+Only OTA-positive candidates receive these terms. The head/neck correspondence
+is excluded; the twelve shared limb joints receive the available 2D labels,
+including labeled occluded joints. No metric 3D labels are invented.
+
+GFPose's U3D state is normalized image-plane XY plus scaled depth. V20 transfers
+normalized image XY through the release's virtual 1000-pixel frame and scale 30;
+this may introduce source-dataset framing bias and is not a calibrated camera.
+The auxiliary head does not alter sampling. It could be ignored by the detector,
+so evaluate native AP and intact/reset-memory controls rather than treating the
+auxiliary poses or score-surrogate values as performance evidence.
+
+The teacher uses strictly restored EMA weights and an explicit null mask. It is
+frozen, evaluated in FP32 and loaded lazily only during positive training batches.
+Teacher time is uniform in [.1,.6], independent of student time. The injected
+noise-residual gradient uses no teacher backward. Guidance RNG state is saved in
+student training checkpoints separately from attention/sampling RNG.
+The normal evaluator and sampler do not need the teacher weights.
+
+```bash
+python scripts/training/train_poseflow.py --config-name benchmark_poseflow_v20
+```
+
+This is a separate checkpoint family; use its resolved configuration when
+restoring. Defaults preserve the dense-read initialization, OTA, rollout,
+optimizer and 80-epoch schedule. This command documents usage, not a training
+launch. Comparing prior weight zero while retaining projected supervision can
+separate the learned prior from the extra 2D objective; disabling both provides
+exact dense-read task/sampling parity after importing the same baseline state.
+
+Implementation verification (2026-10-19): 36 focused V20/V19 regressions passed,
+including all eight V20 tests; final-weight V20 checks were repeated. The adapted
+teacher exactly matches upstream EMA score outputs at three noise levels.
+Reduced CPU and full-width CUDA real-data checks each passed two optimizer
+updates, including strict evaluator restoration. BF16 training and sampling were
+finite with FP32 teacher execution. The student has 42,285,355 parameters; the
+teacher is excluded from its optimizer/checkpoint and inference path.
+
+The provisional prior weight .01 produced a very small memory gradient in a
+bounded preflight. The selected starting weight 1 produced a prior gradient
+about 14% of the task gradient on first-call outgoing memory in one batch after
+two smoke updates (about 1.6% on initial hypothesis slots). These are gradient
+scale diagnostics, not an optimal weight or evidence of improved localization.
+The full 80-epoch V20 run was launched on 2026-10-19 with fresh EDPose
+initialization, seed 42, batch size 4 and accumulation 2, retaining the verified
+dense-read recipe and projection/prior weights 1/1. The V19 dense-read reference
+continues in parallel. Initial optimizer updates and 3D guidance diagnostics are
+finite; learned performance and AP improvement remain unestablished.

@@ -1,0 +1,12 @@
+GFPose: Learning 3D Human Pose Prior with Gradient Fields (CVPR 2023)
+Hai Ci, Mingdong Wu, Wentao Zhu, Xiaoxuan Ma, Hao Dong, Fangwei Zhong, Yizhou Wang.
+Source: https://github.com/Embracing/GFPose
+Audited upstream tree: d645375a27bd1b6e874c96205745c02df9e94b65
+Upstream code is licensed under Apache-2.0; see LICENSE.
+
+network.py adapts the released ScoreModelFC_Adv architecture and timestep
+embedding from lib/algorithms/advanced/model.py for frozen, null-conditioned
+evaluation only. Unused imports, training masks and unsupported model options
+are removed; checkpoint tensor names and evaluation arithmetic are preserved.
+teacher.py implements strict EMA restoration and the released subVP score wrapper.
+No upstream checkpoint weights are distributed with this source.
