@@ -552,3 +552,58 @@ source event files and training processes remain unchanged.
   batches despite the inherited fixed attention RNG fork. The approved full run
   starts fresh from the same compatible source initialization as V19; it does not
   resume an existing V19 model or optimizer.
+
+- V21 uses V1's joint-coordinate flow and detector recipe with a time-conditioned
+  hypothesis-derived initial proposal stage. It requires equal query/proposal/group
+  counts (50 in the preset), keeps candidate order through pose expansion, and
+  carries one additional H per candidate. Its memory is context, not a diffused
+  target or a ground-truth identity. DN and geometric outputs exclude H. The
+  original V1 feature/reference seed detach boundaries remain, while the H branch
+  stays attached to detector gradients. Default training remains single-call;
+  no V20 rollout/3D objective or optimizer schedule is inherited. Source-copy
+  initialization checks and wiring smokes do not establish AP improvement.
+
+V21 quick-test monitoring uses the same fixed 32 held-out CrowdPose test images
+(seed 42), native Gaussian-start Euler sampling at 1/2/3 calls, and persistent
+versus reset hypotheses. It does not use ground-truth coordinates to initialize
+sampling. These repeatedly used subset diagnostics are not full-test AP.
+Monitoring adds no model state or training objective. The epoch-end hook restores
+RNG, module modes and sampling call count. An existing trainer can receive the
+same metrics from a separate checkpoint monitor without losing optimizer state.
+
+The current V21 preset updates H before geometry in each decoder layer. Geometry
+reads the fully updated H and returns that exact state for carry, so the current
+criterion supervises the final returned H. Older saved configurations missing
+`hypothesis_update_order` retain `parallel`; the current preset explicitly selects
+`h_then_g`. This changes the graph without adding parameters or rollout training.
+It does not establish that carried H generalizes across sampling calls.
+
+V22 adds explicit FiLM/AdaLN timestep conditioning to V21 H-first while retaining
+H influence on initial proposals and later box/pose representations. Time is
+scaled only at embedding (default999), not in physical flow interpolation or
+Euler updates. New modulation heads initialize to identity. The existing
+coordinate-reference detach boundary is retained for inherited geometry weights;
+only new coordinate-conditioner outputs retain a loss path into pose refinement.
+Old V21 checkpoints keep their architecture and embedding convention. V22 uses
+its own config/model/checkpoint namespace and the same fixed-slot pairing and
+held-out quick-test protocol. More conditioning does not by itself prove stable
+recurrent reuse or improved test AP.
+
+The current V22 preset explicitly uses `coordinate_batch_layout: per_image`.
+Noisy coordinates arrive as[group,batch,joint,XY]; batch moves to the leading
+axis before flattening candidate/joint tokens. This prevents cross-image state
+mixing and keeps each image's coordinates aligned with its own timestep and
+reference coordinates. Missing layout fields in historical V22 saved configs
+retain `legacy` for reproducible restoration. Single-image sampling is identical
+between layouts; the correction changes batched training semantics.
+
+V23 retains corrected V22 architecture and changes training to a50/50 mixture of
+supervising the first or second of two ordered iid uniform flow times. The mixture
+has uniform marginal supervised time. First-step batches make one training call;
+second-step batches make an eval/no-grad warm-up without DN targets, carry its
+detached H, advance coordinates with the native fixed-source endpoint increment,
+and supervise only the later call. Every batch has one criterion and one
+gradient-bearing forward; average compute is higher due to warm-ups. A private
+checkpointed schedule RNG is independent of deterministic-forward RNG resets.
+Validation and native held-out sampling are unchanged. This is detached recurrent
+input exposure, not backpropagation through a multi-step trajectory.

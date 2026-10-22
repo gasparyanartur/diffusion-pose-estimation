@@ -1299,3 +1299,140 @@ natural-image confidence. Diagnostics separate level scores, pair gaps/violation
 evidence/hypothesis RMS by layer and call, plus weighted ranking-versus-pose
 gradient norms/cosine. The new head adds exactly `hidden_dim` parameters and
 requires the separate strict checkpoint/config family.
+
+### V21 fixed-slot hypothesis initialization on the V1 detector
+
+`PoseFlowV21Model` retains the reduced V1 image encoder, one box decoder stage,
+then two pose stages, original coordinate-attention fusion, and joint-XY endpoint
+Euler sampler. Queries, proposals, groups and persistent hypotheses all number 50.
+There is no score-based selection or reordering at expansion: candidate indices
+stay aligned across box/joint features, flow state and hypothesis memory. This is
+candidate-slot continuity, not tracked ground-truth person identity.
+
+The 50 learned initial hypothesis vectors read the time-conditioned encoder image:
+`E = MHA(LN(H), F_t + P, F_t)` and
+`H_read = H + gamma * (.1 + .9*t) * E`. The scalar `gamma` starts at zero.
+V1 flow time increases from source 0 to endpoint 1, so this multiplier preserves
+V20's weak-at-noise/strong-near-clean convention. V1's encoder-output projection
+and normalization feed existing class and absolute sigmoid box heads, without
+spatial proposal anchors. These initial predictions retain intermediate detection
+supervision. Initial box features/references detach as in V1; the separate H
+branch remains differentiable.
+
+Decoder attention includes one additional H per candidate. The current preset
+uses `hypothesis_update_order: h_then_g`: each layer first updates H from its input
+geometry/H using attention, residual normalization and FFN. Geometry then attends
+to the fully updated H before its original geometric image cross-attention and
+FFN. That exact H is returned for carry; no additional H write follows the read.
+Consequently the current prediction loss reaches the final returned H without
+an extra network call or rollout training. Existing attention/FFN parameters are
+reused; model parameter keys and counts do not change.
+
+Box rows retain cross-person box communication and can read their own H; joint
+and H rows stay within their person group. H has no geometric image sampling
+reference. Only box/joint/DN features enter prediction heads. Rectangular H/G
+query masks preserve DN isolation. Missing `hypothesis_update_order` in older
+saved configurations defaults to `parallel`, retaining the original simultaneous
+update semantics for strict historical evaluation. Parameter-key compatibility
+alone does not distinguish these computation graphs; use the saved configuration.
+
+`hypothesis_memory` is an optional `[B,50,256]` forward input and output. The sampler
+carries it separately from its `[B,50,28]` joint state. `persist_hypotheses=False`
+resets memory each call with the same source-noise contract. Independent image
+invocations initialize memory anew. All 50 slots continue directly; there is no
+200-slot bank, gather/scatter, refill or noisy box diffusion.
+
+The separate V21 pipeline/config keeps V1's single-call sources, OTA, two classes,
+DN50, summed stage/intermediate/DN losses, learning rates `2e-4/1e-4`, multistep
+milestones 31/61 and clip norm `.1`. No 3D teacher, learned codec or reconstruction
+loss is included. Reducing initial candidates from V1's 200 to 50 and replacing
+spatially anchored proposals are deliberate changes; V21 is not functionally
+identical to V1. Rollout training and structural supervision require separate
+matched experiments. Strict evaluation restoration uses V21's saved configuration.
+
+V21's separate `quick_eval_v21.py` adapter evaluates native endpoint Euler
+sampling rather than V20's coordinate-logit DDIM path. Defaults are 32 fixed test
+images, seed 42 plus image ID, and call counts 1/2/3 with persistent/reset H.
+Only the pure Gaussian source condition (`noise_var_100`) is implemented.
+The pipeline runs this after validation, skipping sanity checks and nonzero ranks,
+with RNG/mode/step restoration and exact image coverage checks. Predictions and
+provenance are saved under `quick_test/epochNNN/`; standard comparison tags use
+`quick-test/` and `quick-test-reset/`. Existing trainers use the same helper via
+`scripts.evaluation.watch_poseflow_v21_quick_test`, strict checkpoint restoration,
+and TensorBoard logging at the checkpoint's global step. Completed reports and
+logging markers avoid re-evaluating completed epochs. The sidecar handles the
+current trainer; the hook applies to newly constructed trainers.
+
+### V22 explicit flow-time conditioning
+
+V22 preserves V21's H-derived proposal/class/box heads, rich per-slot H,
+H-first decoder order, fixed50 H/XY pairs, single-call training and native Euler
+solver. It adds explicit time conditioning at the formerly unconditioned reads:
+
+- FiLM on embedded Q/K in noisy-XY self-attention and XY/reference fusion. Raw
+  coordinate values retain their geometric units; no coordinate LayerNorm or
+  timestep scaling is applied to XY.
+- Per-decoder-layer FiLM on H and geometry attention features, retaining geometric
+  positional embeddings and raw attention values. H completes its update before
+  geometry reads the same returned state.
+- AdaLN through featurewise modulation of existing normalization outputs: dense
+  H query, proposal H projection, H/G post-attention and post-FFN normalization,
+  and geometry post-image-attention normalization.
+
+The source time MLP is shared by encoder and new conditioners. Physical flow time
+stays in0..1; only its embedding input is multiplied by `time_embedding_scale=999`,
+matching the inherited1000-step sampler range. A shared width-D bottleneck feeds
+zero-initialized scale/shift heads. Identity initialization is exact for the
+conditioning operation, while encoder time rescaling is a deliberate additional
+change. This makes V22 a new strict checkpoint/config family.
+
+Expanded coordinate references were detached in V21, which would leave new
+coordinate conditioners untrainable. V22 preserves the new conditioned joint-XY
+gradient into the first pose layer while retaining detached input coordinates,
+reference inputs, inherited coordinate-projection weights, box/WH/DN reference
+branches, and subsequent reference updates. Frozen inherited projections can
+choose slightly different floating-point kernels; isolated identity-coordinate
+checks allow sub-micro precision differences. Forward geometry math is unchanged
+at identity modulation. No auxiliary loss or rollout is added.
+
+V21's forward gains small overridable hooks for hypothesis preparation,
+coordinate fusion and reference detachment, plus explicit timestep keywords.
+Its default computations and strict checkpoint keys remain unchanged. V22 records
+its embedding scale in held-out quick-test provenance, using the same fixed32
+manifest, seed42, K1/K2/K3 and persistent/reset conditions.
+
+V22's corrected preset selects `coordinate_batch_layout: per_image`. Coordinate
+fusion transposes[group,batch,joint,2] to[batch,group,joint,2] before flattening.
+Reference-coordinate layout was already correct. This correction retains all
+FiLM/AdaLN, gradient boundaries, H-derived proposals and fixed slot pairing.
+Parameter keys/counts are unchanged. The model/config default for missing saved
+fields remains `legacy`, preserving historical V22 semantics; older V1/V21
+implementations also retain their historical behavior. Explicit B2/B4 tests with
+different times and nonzero FiLM compare batched and individual execution and
+verify changing another image cannot change the first image's coordinate output.
+B1 and three-call single-image predictions must remain exactly identical.
+
+### V23 randomly supervised first or second call
+
+V23 reuses the corrected V22 model with no model-key/parameter change. Its new
+pipeline samples two uniform times per image and sorts them into t1<=t2, then
+chooses one supervision branch per batch with probability1/2. The original target
+builder accepts explicit t1 while preserving its default behavior for old callers.
+The initial state uses the same GT-interpolated training construction as before.
+
+The first branch applies the original criterion at t1. The second runs the model
+at t1 in eval/no-grad mode without target/DN inputs, computes endpoint e1, and
+forms x2=x1+(t2-t1)*(e1-source). Both x2 and H1 are detached. The only supervised
+call is model(image,x2,t2,targets,H1), with the original complete criterion. There
+is no warm-up loss, call-loss sum or trajectory backward. Physical coordinate
+updates retain the source from target construction and no extra clamp is added.
+The existing evaluation context preserves RNG/module modes during the warm-up.
+
+The private CPU schedule generator is stored in the pipeline buffer
+`two_step_rng_state` and strictly restored with training checkpoints. It advances
+outside the inherited deterministic-forward RNG fork. V23 adds only that pipeline
+state/config; evaluation restores the same V22 model. Validation loss stays on
+the inherited single-call path and does not advance schedule RNG. Quick-test
+artifacts explicitly identify the V23 training protocol while retaining all six
+K1/K2/K3 persistent/reset native sampling conditions. Branch and timestep metrics
+are logged under `debug/v23/`.

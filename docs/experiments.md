@@ -591,3 +591,173 @@ initialization, seed 42, batch size 4 and accumulation 2, retaining the verified
 dense-read recipe and projection/prior weights 1/1. The V19 dense-read reference
 continues in parallel. Initial optimizer updates and 3D guidance diagnostics are
 finite; learned performance and AP improvement remain unestablished.
+
+## V21: V1 detector with fixed-slot hypothesis-derived proposals
+
+V21 restores the reduced V1 coordinate-flow detector and training recipe while
+introducing persistent H as an additional decoder token. Its 50 hypotheses read
+image features densely with V20-style time scaling, predict initial boxes/classes,
+and remain aligned with the same 50 candidates through one box and two pose
+stages. There is no top-k reordering, 200-to-50 memory routing, box diffusion or
+3D guidance. The original coordinate fusion, DN50, two classes, stage-loss sum,
+multistep learning rates and `.1` gradient cap are retained. Candidate identity
+is not ground-truth identity. The smaller initial pool and replacement of the
+spatially anchored initializer are explicit differences from the V1 checkpoint.
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v21
+```
+
+This first experiment uses single-call V1 training. Persistent-versus-reset
+inference measures dependence on memory, not a matched trained ablation. A later
+rollout-training comparison must apply the same schedules and loss aggregation
+across its control arms. GFPose/projection objectives are deferred.
+
+Implementation verification (2026-10-21): 158 focused regressions passed.
+Reduced CPU and full CUDA real-data checks each completed two optimizer updates;
+H and dense-image attention gradients were finite/nonzero after gate opening.
+Strict evaluator restoration matched one/three-call predictions exactly; BF16
+sampling was finite. The student has 40,788,233 parameters. A fresh 80-epoch run
+was launched as 20261021_020829 with the verified V1 recipe and no resume.
+Initial optimizer progress is finite; no held-out AP improvement is established.
+
+V21 monitoring repair (2026-10-21): the initial trainer omitted V20-style quick
+test logging. The repair adds native V21 Euler diagnostics for the same fixed32
+held-out images at K1/K2/K3, with persistent and reset H. Sampling begins from
+Gaussian noise; V20's GT-conditioned 25/50-percent DDIM diagnostics are not
+transferred to this different sampler. The current run receives checkpoint-backed
+logging without a trainer restart or changes to its optimizer, loss or weights.
+For an existing V21 run, start the monitor with:
+
+```bash
+venv/bin/python -m scripts.evaluation.watch_poseflow_v21_quick_test --run /absolute/path/to/run
+```
+
+The monitor evaluates the latest completed epoch and subsequent checkpoints,
+records checkpoint/config hashes and writes six conditions to the existing
+`tb_logs` at the checkpoint global step. The default cadence assumes evaluation
+finishes before the next checkpoint; missed earlier checkpoints are not backfilled.
+Fixed32 AP is a development diagnostic, not a replacement for full held-out test
+evaluation. Newly constructed V21 trainers have the epoch-end hook enabled by
+default; `quick_eval_enabled: false` disables it for bounded wiring checks.
+
+The first repaired diagnostic uses `epoch021.ckpt` (22 completed epochs,
+step 33000), strictly restored with its saved configuration. On the fixed32 subset,
+pose AP at K1/K2/K3 was 32.79/12.74/10.72 with persistent H, versus
+32.79/31.56/33.43 with reset H. K1 prediction files were byte-identical, and
+image IDs exactly matched V19-detached's existing manifest. This suggests a
+repeated-call H failure to investigate; it is not full-test or causal evidence.
+Checkpoint hashes, original predictions, numerical flags and metrics are saved
+with the run. The dashboard retains only V5, V19-detached-geometry and V21-fixed-H.
+
+V21 H-first correction (2026-10-21): the original parallel decoder wrote its final
+H alongside geometry, leaving that returned H outside the current prediction's
+loss path. The new `h_then_g` preset completes each layer's H attention/FFN before
+geometry attends to it. The returned H is exactly the state consumed by geometry.
+This adds no parameters or extra image-encoder call and keeps single-call V1
+training, DN, OTA, losses, coordinate solver and optimizer recipe. Two attention
+query groups reuse the original weights. Legacy saved configurations without the
+new field retain parallel behavior. The replacement run starts fresh in its own
+namespace; old checkpoints/logs remain available. Gradient wiring and optimizer
+smokes are not evidence of improved AP.
+
+Verification: 203 focused/base regression checks passed. A full-width real-data
+CUDA smoke completed two optimizer updates, with finite nonzero gradients to the
+returned final H on all four backward passes (norms .0083–.1642). The native
+epoch-end quick-test hook ran at both smoke epochs (two held-out images, six
+conditions); strict evaluator K1/K3 predictions matched exactly, and BF16 sampling
+was finite. Parameter count remains 40,788,233. These are wiring checks only.
+
+The old parallel run was cancelled gracefully with epoch030 and last checkpoints
+preserved. Replacement H-first run: `20261021_113014`, under
+`poseflow_v21_h_then_g_training`, fresh80epochs with `training.resume=null`.
+The saved recipe differs only in H/G order and the previously approved quick-test
+fields; source initialization, data, optimizer and losses match the original run.
+Dashboard current-run entry is V21-H-first alongside V5 and V19-detached-geometry.
+
+### V22: explicit timestep conditioning on V21 H-first
+
+The model retains H-derived proposals, 50 fixed H/state pairs and the original
+single-call detector recipe. FiLM conditions coordinate self-attention/fusion and
+H/G decoder attention; AdaLN modulates the existing H/proposal and decoder
+normalizations/FFN paths. Time embeddings use physical flow time multiplied by999;
+flow-state geometry and solver times remain unchanged. New modulation heads start
+at identity. A selective new-adapter coordinate gradient path is needed because
+V21 detaches expanded references; inherited geometry projections remain detached.
+No ranking, matching, loss, teacher or rollout change is included.
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v22
+```
+
+The V21 checkpoint family remains separate for exact historical restoration.
+V22 reports the same fixed32 held-out K1/K2/K3 persistent/reset quick-test metrics.
+This is a combined conditioning-and-embedding-scale experiment; a gain cannot be
+attributed separately to FiLM, AdaLN or time scaling without further ablations.
+
+Verification (2026-10-21): 209 focused/base checks passed. Full-width CUDA
+real-data training completed two optimizer updates, with nonzero finite gradients
+to the coordinate conditioners and final returned H on all four backward passes.
+The two-image/six-condition native epoch-end hook ran at both smoke epochs;
+strict K1/K3 restoration matched exactly and BF16 sampling was finite. The model
+has 44,603,401 parameters. These checks establish wiring, not learned AP.
+
+The prior V21 H-first trainer was stopped gracefully with epoch009/last checkpoints
+and logs preserved. Fresh80epoch V22 run `20261021_143304` uses original source
+initialization and `resume=null`. Its resolved recipe changes only the pipeline
+family, embedding scale and output namespace. Dashboard retains V5/V19-detached
+and replaces the current entry with V22-time-conditioned.
+
+V22 batch-layout correction (2026-10-21): frozen probes found that the inherited
+coordinate helper flattened[group,batch,joint,XY] directly into a batch-leading
+shape. Batched training consequently mixed other images' states while retaining
+per-image reference coordinates and times. Earlier parity checks shared this
+reference defect, and B1 held-out evaluation hid it. The corrected preset now
+selects `coordinate_batch_layout: per_image`; missing fields in historical saved
+V22 configurations still mean `legacy`. No further conditioning, proposal,
+matching, loss or sampler changes are included. Corrected training starts fresh
+in its own namespace. The correction's learned AP effect is unmeasured at launch.
+
+Correction verification: 35 focused tests passed, including B2/B4 independent-image
+execution, other-image state/reference/timestep isolation under nonzero FiLM,
+legacy-config restoration, and exact B1/K3 sampling parity. Full-width real-data
+CUDA training completed two optimizer updates, with finite coordinate-conditioner
+and final-H gradients, strict checkpoint restoration, finite BF16 sampling and
+the native quick-test hook at both smoke epochs. Parameter count stays44,603,401.
+The prior run stopped gracefully with epoch002/last preserved. Fresh corrected
+run `20261021_153657` uses `coordinate_batch_layout: per_image`, original source
+initialization,80epochs and `resume=null`; remaining recipe unchanged.
+
+### V23: one supervised call with optional detached warm-up
+
+V23 tests whether initial layers can learn to read actual carried H. Two iid
+uniform times are ordered and the batch randomly supervises either the first or
+second with equal probability. First-step batches use one ordinary training call.
+Second-step batches use a no-grad/eval warm-up, carry detached H and the native
+advanced state, and supervise only the second call. The selected time remains
+uniform marginally. One gradient-bearing call/criterion per batch preserves the
+supervision budget; extra warm-up compute means runtime is not matched.
+Architecture, batch-layout fix, FiLM/AdaLN, H-derived proposals, OTA, DN, summed
+within-call losses, optimizer recipe and native held-out evaluator stay unchanged.
+
+```bash
+venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v23
+```
+
+Warm-ups start from the original interpolated flow training states and receive
+no targets/DN queries. This is not a pure-Gaussian inference rollout and does not
+supply temporal gradients to the warm-up. Full temporal credit assignment would
+be a separate experiment. Training RNG state is checkpointed; validation stays
+single-call and held-out quick tests use the native persistent/reset sampler.
+
+V23 verification: 184 focused/base checks passed, including both supervision
+branches, one criterion call per batch, no warm-up gradients/targets, exact source
+transport, uniform-time statistics, strict schedule-RNG continuation and unchanged
+validation. Full-width real-data CUDA training exercised both branches across two
+optimizer updates; final-H/coordinate gradients, strict K1/K3 restoration, BF16
+and two epochs of native quick-test hook passed. Parameters remain44,603,401.
+Fresh80epoch run `20261021_155200` starts from original source initialization with
+`resume=null`; the only recipe changes are training pipeline and schedule seed.
+The previous batch-fixed V22 run was stopped before its first completed epoch;
+its logs/config/source are retained but it had no epoch checkpoint. Dashboard
+current entry is V23-random-step alongside V5 and V19-detached-geometry.

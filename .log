@@ -3404,3 +3404,93 @@ Source logging now shares V13/V14 persistent tags under quick-test/, places rese
 [2026-10-19] Implemented approved V20 on V19 dense-read: shared H->17x3 auxiliary readout, final-call matched common12joint projection loss and frozen hash-pinned GFPose EMA score distillation. Dense image read/fullgeometrydetach/DDIM/student trainability retained; teacher lazy FP32/training-only, absent from optimizer/checkpoint/inference. Independent checkpointed guidance RNG, strict V20 config/checkpoint namespace and attributed Apache2 teacher adapter. 36 focused regressions pass (8 V20); upstream teacher EMA/score parity exact; realdata CPU/fullCUDA two-update smokes, strict evaluator parity and BF16 train/sample finite. 42,285,355 studentparams; verifiedsource92.183%state/92.163%parameters. Priorweight finalized1 after bounded gradients showed provisional.01 too small; final onebatch prior/task H gradient ratio13.96% (slots1.62%), diagnostic only. Docs/README/.plan updated; artifacts tmp/v20_guidance. No fulltraininglaunch, APclaim or active-run changes.
 
 [2026-10-19 23:47 CEST] Launched approved fresh V20 training20261019_234430/PID2178177/sessionposeflow-v20-training. Exact verified dense-read config, resume=null/80epochs/seed42/batch4accum2, projection/prior1/1 and pinnedteacherhash confirmed. Optimizer49loss38.20047 finite; teacherforce/score positive,15OTApositives, densegate opens. V19dense-readPID1910839 continues. Dashboard33329 preserves19oldlabels and addsV20-3D-guidance; runregistered/localfiniteeventsverified. Launch provenance/status tmp/v20_guidance/launch_recipe.json,launch_status.json. Diaryupdated; no model changes or APclaim.
+
+[2026-10-20] Read-only V5/DRP/V19dense/V20 performance-loss audit: full executed-path difference inventory and hypotheses in tmp/architecture_loss_audit/findings.md, resolvedconfigdiff/splitcheck/sourcehashes. DenseHread does notrestoreV5supervisedcoarsegeometry; V19alsochangeslocalorder/competition/supervision/noise/clip; V20finaloutgoingHsupervisiondoesnotdirectlyfeedfinal2Dprediction. Verifiedval/trainvaloverlap2000/2000; testoverlap0. UpstreamREADMErecipe80epochs/batch8; sourceforcest0/sigma0andEMAupdateinactive. PriorfulltestV19K3vsV5gap~.84AP; no newAPrun or production/jobchanges.
+
+[2026-10-20] Userauthorized cancellation: SIGINTV19densePID1910839/V20PID2178177; bothgone, checkpoints/logspreserved(epoch067/044 respectively). Launchedmatchedreducedfulltest stepqueues0/1 under tmp/reduced_step_experiments, K1/2/3/4/5/8 forHungarianDRP,OTADRP,V1,V3,V6,dense,V20; K3Hreset controlsforlasttwo; reusecorrectedV5/V19fulltest. Nativecachedpredictionparity exact/strictweights onpreflight; firstDRPfullsweepsadvance125+images. Temporarylauncher/postprocesspreflightissuescorrectedbeforeaffectedfullruns. Manifest/cancellation/provenance/progress/automatic summary saved. Trainingremainscancelled; resultsnotyetcomplete.
+
+[2026-10-21] Implemented approved fixed-slot V21: V1 detector/joint-XY Euler flow,
+time-conditioned H-derived proposals and additional H decoder token. No top-k,
+refill, box diffusion, teacher or rollout training. 158 focused regressions pass;
+CPU/full CUDA real-data two-update checks finite, gate opens, H/dense gradients
+nonzero, strict restore K1/K3 exact and BF16 sampling finite. 40,788,233 parameters;
+525 EDPose tensors verified exactly. Recipe/source/docs recorded in
+tmp/v21_implementation. Authorized fresh 80-epoch run 20261021_020829 launched;
+saved config matches verified recipe. Existing evaluation queues preserved.
+[2026-10-21] V21 launch verified: PID3694265/sessionposeflow-v21-training,
+run20261021_020829, exact saved config/resume=null. Finite optimizer49 loss65.32780
+and dense gate.003971. TensorBoard33329 V21-fixed-H registered, all20priorlabels
+retained. GPU6.7/24.6GB including preserved evaluation. Launch status/provenance
+in tmp/v21_implementation/launch_status.json; no AP claim.
+
+[2026-10-21] Per user trimmed TensorBoard33329 to V5, V19-detached-geometry and V21-fixed-H. HTTP logdir verified exactly three labels; only dashboard restarted. V21 trainerPID3694265 preserved; no logs/checkpoints removed.
+
+[2026-10-21] Fixed missing V21 held-out quick-test monitoring. Added V21-native
+Gaussian-start Euler K1/K2/K3 diagnostics with persistent/reset H, fixed32/seed42,
+RNG/mode/step restoration, prediction/provenance artifacts, and standard TensorBoard
+tags. Added epoch-end hook for new trainers and checkpoint sidecar for existing runs.
+Started poseflow-v21-quick-test against 20261021_020829 without restarting training
+or changing optimizer/model state. Verified epoch021 step33000, identical V19 test
+IDs, K1 persistent/reset prediction parity and six live TensorBoard AP tags. Early
+fixed32 AP shows persistent H degradation at repeated calls; full-test AP unmeasured
+by this repair. Documentation and focused monitoring regression checks updated.
+Final verification: 18 focused tests passed and git diff --check passed. Automatic
+next-checkpoint monitoring succeeded at epoch022/step34500 while training continued.
+
+[2026-10-21] Completed approved V21 carry investigation without production edits.
+Frozen epoch024/step37500: 24 manual/native comparisons and12 reset/inherited-Euler
+comparisons exactly equal on4 images. Actual-criterion structural gradient probe
+confirmed returned final H has no current-call loss path but receives a later-call
+loss gradient. At identical second-call state/time, changing H shifts initial box
+coordinates substantially. No audited carry/indexing/solver bug found; train-time
+H-input and recurrent-credit mismatch confirmed. Evidence saved under
+tmp/v21_carry_audit; concrete opt-in matched rollout pilot proposed in .plan.
+
+[2026-10-21] Implemented approved V21 H-first/G-second attention update. H completes
+its attention/FFN before geometry reads it; the same H is returned for carry, so
+the current criterion supervises final H. Reuses existing parameters and retains
+legacy parallel behavior for old saved configs. 203 checks passed plus full-width
+real-data CUDA two-update/gradient/strict-restore/BF16/native quick-test smokes.
+Cancelled old parallel training and watcher, preserving epoch030/last/logs.
+Launched fresh H-first80epoch run 20261021_113014 in a separate namespace,
+resume=null, original V1 recipe and source initialization. Dashboard retains
+V5/V19-detached and now shows V21-H-first. AP improvement remains unverified.
+Live launch verified: PID173030, sequential saved config, fresh80epochs. At
+optimizer step49 loss62.88573 and gate.00418419 were finite. Dashboard API confirms
+only V5/V19-detached-geometry/V21-H-first. Old trainer and watcher stopped.
+
+[2026-10-21] Implemented approved V22 explicit timestep conditioning: FiLM on
+coordinate and H/G attention; AdaLN on H/proposal and decoder normalizations.
+Embedding time scales by999; physical flow time, H-derived proposals, fixed50
+pairing, single-call losses and Euler solver retained. Selective new-adapter XY
+gradients bypass the otherwise detached reference boundary while inherited
+geometry stays detached. Legacy V21 behavior preserved. 209 tests plus fullCUDA
+two-update/strict-restore/BF16/native-hook checks passed. Stopped old H-first run
+with checkpoints/logs preserved and launched fresh80epoch V22 20261021_143304.
+Dashboard retains V5/V19-detached/current V22; startup verification pending.
+Live V22 launch verified: PID386624, actual saved config time scale999, resume=null,
+80epochs and fixed32 quick tests. At optimizer49 loss69.59315 and gate.00360475
+were finite. Three-entry dashboard confirmed and old V21 PID173030 absent.
+
+[2026-10-21] Fixed V22 coordinate batch layout via explicit per_image config;
+transpose batch/group before flattening. Historical configs defaultlegacy.
+35 tests plus fullCUDA two-update/source/gradient/strict-restore/BF16/native-hook
+checks passed; B1 sampling exactly unchanged and B2/B4 image/time isolation proven.
+Stopped prior V22 training with epoch002/last/logs preserved; launched fresh
+80epoch corrected run 20261021_153657, resume=null, same conditioning/proposal/loss
+recipe. Three-entry dashboard now V5/V19-detached/V22-batch-fixed.
+Corrected launch verified: PID462436, saved per_image config, fresh80epochs,
+fixed32 quick tests, finite losses through37batches. Dashboard current entry is
+V22-batch-fixed; original V22 trainer exited and artifacts remain preserved.
+
+[2026-10-21] Implemented approved V23 first/second-step random supervision on
+corrected V22. Two ordered uniform times and50/50 branch; no warm-up loss/gradient,
+detached H/XY and one complete supervised criterion per batch. Private schedule
+RNG checkpointed; validation/evaluation unchanged. 184 checks plus fullCUDA
+both-branch/two-update/strict-restore/BF16/native-hook verification passed.
+Stopped prior pre-epoch V22 batch-fixed run with logs/source/config retained
+(no epoch checkpoint yet). Launched fresh80epoch V23 20261021_155200, resume=null,
+same model/source/optimizer and three-entry dashboard. Startup verification pending.
+V23 startup verified: PID481354, fresh80epoch saved config and uniform first/second
+schedule. Optimizer49 loss123.1763 finite, branch/time diagnostics visible.
+Dashboard API confirms three intended runs. Implementation and launch complete.

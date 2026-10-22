@@ -102,6 +102,7 @@ def build_poseflow_targets(
     num_body_points: int,
     padding_policy: Literal["source_prior", "diffusionregpose"],
     noise_seed: int | None = None,
+    flow_times: Tensor | None = None,
 ) -> tuple[Tensor, Tensor, Tensor, list[dict[str, Tensor]]]:
     """Build endpoint-flow decoder inputs and existing semantic task targets."""
     keypoints = batch["gt_keypoints"]
@@ -174,9 +175,15 @@ def build_poseflow_targets(
                     generator=generator,
                 ) * scale
 
-    times = torch.rand(
-        batch_size, device=keypoints.device, dtype=keypoints.dtype, generator=generator
-    )
+    if flow_times is None:
+        times = torch.rand(
+            batch_size, device=keypoints.device, dtype=keypoints.dtype, generator=generator
+        )
+    else:
+        if (flow_times.shape != (batch_size,) or not torch.isfinite(flow_times).all()
+                or ((flow_times < 0) | (flow_times > 1)).any()):
+            raise ValueError('Explicit flow times must be finite [batch] values in [0,1]')
+        times = flow_times.to(keypoints)
     state = (1.0 - times[:, None, None]) * source + times[:, None, None] * endpoint
     return _transport_to_decoder_coordinates(state, scale), source, times, targets
 

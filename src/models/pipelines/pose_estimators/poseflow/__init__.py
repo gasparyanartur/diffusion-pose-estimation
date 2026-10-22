@@ -162,3 +162,17 @@ from .model_v20 import PoseFlowV20Model
 from .training_v20 import PoseFlowV20Pipeline, PoseFlowV20PipelineConfig
 
 __all__ += ['PoseFlowV20Model', 'PoseFlowV20Pipeline', 'PoseFlowV20PipelineConfig']
+
+from .model_v21 import PoseFlowV21Model
+from .training_v21 import PoseFlowV21Pipeline, PoseFlowV21PipelineConfig
+
+__all__ += ['PoseFlowV21Model', 'PoseFlowV21Pipeline', 'PoseFlowV21PipelineConfig']
+
+from .model_v22 import PoseFlowV22Model
+from .training_v22 import PoseFlowV22Pipeline, PoseFlowV22PipelineConfig
+
+__all__ += ['PoseFlowV22Model', 'PoseFlowV22Pipeline', 'PoseFlowV22PipelineConfig']
+
+from .training_v23 import PoseFlowV23Pipeline, PoseFlowV23PipelineConfig
+
+__all__ += ['PoseFlowV23Pipeline', 'PoseFlowV23PipelineConfig']

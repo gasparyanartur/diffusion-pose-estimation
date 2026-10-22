@@ -205,3 +205,24 @@ The vendored deformable-attention source retains its
 [provenance and attribution](src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/NOTICE.md)
 and [DINOv3 license](src/models/pipelines/pose_estimators/diffusionregpose/third_party/dinov3_msda/DINOv3-LICENSE.md).
 External code, datasets, and pretrained weights retain their respective terms.
+
+V21 restores the reduced V1 detector recipe with 50 fixed hypothesis/candidate
+pairs and hypothesis-derived initial boxes. Each decoder layer updates H first,
+then geometry reads that updated H (`hypothesis_update_order: h_then_g`). It has
+no 3D teacher. Train with
+`venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v21`;
+see the [experiment notes](docs/experiments.md#v21-v1-detector-with-fixed-slot-hypothesis-derived-proposals)
+for its differences from V1 and evaluation limits.
+
+V22 adds explicit timestep FiLM/AdaLN to the coordinate and H/geometry interaction
+paths, retaining H-derived proposals and fixed candidate pairing. Train with
+`venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v22`.
+See the [experiment notes](docs/experiments.md#v22-explicit-timestep-conditioning-on-v21-h-first)
+for the embedding-scale and gradient-boundary contract.
+The current V22 preset uses `coordinate_batch_layout: per_image` to keep batched
+coordinate attention isolated by image. Historical V22 configs without this field
+restore their original layout.
+
+V23 trains the corrected V22 architecture on a50/50 mixture of first-step loss and
+second-step loss after a detached warm-up, with one supervised call per batch:
+`venv/bin/python -m scripts.training.train_poseflow --config-name benchmark_poseflow_v23`.

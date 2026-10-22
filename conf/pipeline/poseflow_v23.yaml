@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v22
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV23PipelineConfig
+rollout_seed: 42

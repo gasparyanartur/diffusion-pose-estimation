@@ -1,0 +1,7 @@
+defaults:
+  - poseflow_v21
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV22PipelineConfig
+time_embedding_scale: 999.0
+coordinate_batch_layout: per_image

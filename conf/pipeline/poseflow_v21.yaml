@@ -1,0 +1,14 @@
+defaults:
+  - poseflow
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV21PipelineConfig
+num_queries: 50
+num_proposals: 50
+num_group: 50
+hypothesis_update_order: h_then_g
+
+quick_eval_enabled: true
+quick_eval_images: 32
+quick_eval_seed: 42
+quick_eval_steps: [1, 2, 3]
