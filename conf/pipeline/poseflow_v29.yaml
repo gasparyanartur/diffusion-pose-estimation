@@ -1,0 +1,8 @@
+defaults:
+  - poseflow_v28
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV29PipelineConfig
+matching_strategy: ota
+ota_candidate_topk: 5
+ota_center_radius: 2.5

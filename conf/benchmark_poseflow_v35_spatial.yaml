@@ -1,0 +1,10 @@
+defaults:
+  - benchmark_poseflow_v35
+  - _self_
+
+run_name: poseflow_v35_spatial
+out_dir: results/poseflow_v35_spatial
+
+pipeline:
+  spatial_queries: true
+  spatial_cost_weight: 1.0

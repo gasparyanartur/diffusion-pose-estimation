@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v26
+  - override pipeline: poseflow_v27
+  - _self_
+
+run_name: poseflow_v27_coarse_to_fine
+out_dir: results/poseflow_v27_coarse_to_fine

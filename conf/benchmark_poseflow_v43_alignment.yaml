@@ -1,0 +1,47 @@
+defaults:
+  - pipeline: poseflow_v43_frozen_vae
+  - data: crowdpose_diffusionregpose_development_256
+  - hardware: auto
+  - training: diffusionregpose_development
+  - _self_
+
+run_name: poseflow_v43_alignment
+out_dir: results/poseflow_v43_alignment
+final_evaluation: true
+expected_initial_model_sha256: null
+
+data:
+  train_ann: crowdpose/annotations/crowdpose_train.json
+  val_ann: crowdpose/annotations/crowdpose_val.json
+  # The shared DataModule eagerly loads its unused test slot during fit.
+  test_ann: crowdpose/annotations/crowdpose_val.json
+  batch_size: 4
+  train_random_flip: true
+  train_random_crop: true
+
+pipeline:
+  training_task: image_alignment
+  prediction_type: x0
+  posterior_mode: mean
+  scheduler_type: cosine
+  center_min_side_px: 1.0
+  quick_eval_images: 64
+
+training:
+  max_epochs: 10
+  accumulate_grad_batches: 2
+  precision: 32
+  test_after_fit: false
+  checkpoint:
+    monitor: val/geometry/total
+    mode: min
+    save_top_k: 1
+    save_last: true
+    save_last_every_epoch: true
+    every_n_epochs: 1
+
+hydra:
+  run:
+    dir: ${out_dir}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

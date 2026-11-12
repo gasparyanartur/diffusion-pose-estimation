@@ -1,0 +1,12 @@
+# Applied internally only after the full clean-validation AP gate passes.
+defaults:
+  - benchmark_pose_autoencoder
+  - _self_
+
+pipeline:
+  phase: robust
+  lr: 0.0001
+  min_lr: 0.000001
+
+training:
+  max_epochs: 50

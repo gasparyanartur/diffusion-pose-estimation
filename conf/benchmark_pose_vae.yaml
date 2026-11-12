@@ -1,0 +1,51 @@
+defaults:
+  - hardware: auto
+  - training: default
+  - _self_
+
+run_name: pose_vae
+out_dir: results/pose_vae
+
+hardware:
+  devices: 1
+  precision: 32
+
+data:
+  train_ann: data/crowdpose/annotations/crowdpose_train.json
+  val_ann: data/crowdpose/annotations/crowdpose_val.json
+  test_ann: data/crowdpose/annotations/crowdpose_test.json
+  batch_size: 512
+  num_workers: 0
+  subset_frac: 1.0
+
+pipeline:
+  _target_: src.models.pipelines.pose_vae.training.PoseVAEConfig
+  width: 256
+  latent_dim: 32
+  lr: 0.001
+  min_lr: 0.00001
+  weight_decay: 0.0001
+  kl_weight: 0.0001
+  kl_warmup_epochs: 10
+  seed: ${training.seed}
+  export_every_n_epochs: 10
+
+training:
+  max_epochs: 50
+  grad_clip: 1.0
+  seed: 42
+  test_after_fit: true
+  enable_progress_bar: false
+  log_every_n_steps: 10
+  checkpoint:
+    monitor: val/reconstruction
+    mode: min
+    filename: 'epoch{epoch:03d}-reconstruction{val/reconstruction:.5f}'
+    save_top_k: 1
+    save_last: true
+
+hydra:
+  run:
+    dir: ${out_dir}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

@@ -1,0 +1,15 @@
+defaults:
+  - diffusionregpose_development_compatible
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v42.PoseFlowV42PipelineConfig
+num_encoder_layers: 3
+num_decoder_layers: 3
+num_box_decoder_layers: 1
+pretrained_keep_encoder_layers: [2, 4, 6]
+pretrained_keep_decoder_layers: [2, 4, 6]
+pose_readout_mode: box_center_residual
+quick_eval_enabled: true
+quick_eval_images: 32
+quick_eval_seed: 42
+quick_eval_steps: [1, 4, 8]

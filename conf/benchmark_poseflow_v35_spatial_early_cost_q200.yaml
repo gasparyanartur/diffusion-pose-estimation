@@ -1,0 +1,13 @@
+defaults:
+  - benchmark_poseflow_v35_spatial_early_cost
+  - _self_
+
+run_name: poseflow_v35_spatial_early_cost_q200
+out_dir: results/poseflow_v35_spatial_early_cost_q200
+
+pipeline:
+  num_proposals: 200
+  num_queries: 200
+  num_group: 200
+  grid_rows: 10
+  grid_columns: 20

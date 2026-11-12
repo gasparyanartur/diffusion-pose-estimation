@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v42_paired_proposal
+  - override pipeline: poseflow_v42_noisy_proposal
+  - _self_
+
+run_name: v42-noisy-proposal-paired
+out_dir: results/poseflow_v42_noisy_proposal

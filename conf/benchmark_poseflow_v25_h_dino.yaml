@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v24_h
+  - override pipeline: poseflow_v25
+  - _self_
+
+run_name: poseflow_v25_h_dino
+out_dir: results/poseflow_v25_h_dino

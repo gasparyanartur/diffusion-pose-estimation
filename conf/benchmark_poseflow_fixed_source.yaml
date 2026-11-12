@@ -1,0 +1,4 @@
+# Compatibility alias for the original launch name.
+defaults:
+  - benchmark_poseflow_v39
+  - _self_

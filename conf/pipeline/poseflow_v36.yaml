@@ -1,0 +1,8 @@
+defaults:
+  - poseflow_v35
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV36PipelineConfig
+clean_existence_input: false
+clean_box_input_format: pixels
+denoised_task_loss_weight: 0.0

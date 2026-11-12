@@ -1,0 +1,11 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV24PipelineConfig
+
+defaults:
+  - poseflow
+  - _self_
+
+h_enabled: false
+quick_eval_enabled: true
+quick_eval_images: 32
+quick_eval_seed: 42
+quick_eval_steps: [1]

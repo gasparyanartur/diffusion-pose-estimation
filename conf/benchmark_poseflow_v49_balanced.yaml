@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v49
+  - override pipeline: poseflow_v49_balanced
+  - _self_
+
+run_name: poseflow_v49_balanced
+out_dir: results/poseflow_v49_balanced

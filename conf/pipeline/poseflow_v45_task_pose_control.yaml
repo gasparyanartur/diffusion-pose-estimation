@@ -1,0 +1,10 @@
+defaults:
+  - poseflow_v42_image_confidence
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v45_task_pose.PoseFlowV45TaskPosePipelineConfig
+pose_readout_mode: absolute
+latent_dim: 32
+jepa_weight: 0.0
+clean_pose_weight: 0.5
+ema_decay: 0.999

@@ -408,7 +408,7 @@ def main() -> None:
     args.metrics.parent.mkdir(parents=True, exist_ok=True)
     result = {
         "checkpoint": str(args.checkpoint),
-        "sampler": "latent DDIM eta0" if isinstance(model, PoseFlowV12Model) else "Euler flow",
+        "sampler": getattr(model, "sampler_kind", "latent DDIM eta0" if isinstance(model, PoseFlowV12Model) else "Euler flow"),
         "flow_sampling_steps": sampling_steps,
         "flow_seed": args.flow_seed,
         "renewal": model.flow_renewal,

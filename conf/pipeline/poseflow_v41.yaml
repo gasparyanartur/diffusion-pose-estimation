@@ -1,0 +1,12 @@
+defaults:
+  - poseflow_v40
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV41PipelineConfig
+coordinate_scale: 6.0
+jepa_loss_weight: 10.0
+sigreg_weight: 0.05
+sigreg_projections: 256
+sigreg_knots: 17
+sigreg_t_max: 3.0
+sigreg_seed: 42

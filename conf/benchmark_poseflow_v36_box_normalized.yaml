@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v36_box
+  - _self_
+
+run_name: poseflow_v36_box_normalized
+out_dir: results/poseflow_v36_box_normalized
+
+pipeline:
+  clean_box_input_format: normalized

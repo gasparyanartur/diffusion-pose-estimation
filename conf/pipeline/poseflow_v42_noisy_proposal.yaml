@@ -1,0 +1,7 @@
+defaults:
+  - poseflow_v42_paired_proposal
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v42_noisy_proposal.PoseFlowV42NoisyProposalPipelineConfig
+target_assignment: noisy_proposal_source_fixed
+inference_association: proposal_noisy_pose_hungarian

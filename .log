@@ -3494,3 +3494,895 @@ same model/source/optimizer and three-entry dashboard. Startup verification pend
 V23 startup verified: PID481354, fresh80epoch saved config and uniform first/second
 schedule. Optimizer49 loss123.1763 finite, branch/time diagnostics visible.
 Dashboard API confirms three intended runs. Implementation and launch complete.
+
+[2026-10-22] Completed approved one-step h audit, production unchanged. Fresh
+V23 epoch079 full-test8000 K1 AP51.926 vs verified historical V1 55.105 and
+V5 55.948 (seed42+imageID,256/427,FP32,TF32off,corrected native NMS). Fixed32
+masked the regression. Source/config/proposal/stage/score diagnostics and exact
+coverage/parity checks saved in tmp/one_step_h_audit. User correctly rejected
+trained-model h-removal as evidence of adding h value; no causal benefit or
+regression mechanism claimed. Proposed matched baseline-preserving single-call
+h/no-h comparison for separate review; no training launch or model change.
+
+[2026-10-22] Implemented and launched approved V24 matched one-step h/no-h test.
+Preserves V1 spatial proposals/200-to-50 selection and geometry path; common
+opt-in per-image coordinate fix, legacy behavior retained for old models. New
+h branch is image-conditioned, local to person geometry, zero-gated and limited
+to pose stages within one call; DN bypasses it. Shared initialization/RNG and
+zero-gate predictions/loss/common gradients match. 96 checks plus realCUDA
+both-arm two-update/gradient/strict-restore/BF16/native-hook smokes pass.
+Three matched seeds42/43/44,80epochs per arm, FP32/batch4/accumulate2/original
+OTA/DN/LR recipe. Frozen source/weights and paired initial states/protocol saved
+at results/poseflow_v24_matched/20261022_192822. Both seed42 trainers verified at
+optimizer99 with finite losses and open h gates; later seeds and full-test K1
+AP are durably queued. TensorBoard33330; prior dashboard/artifacts retained.
+No learned improvement claim; final epoch079 test8000 AP differences are pending.
+
+[2026-10-22] User-approved V24 budget reduction: cancelled four unstarted
+seed43/44 repeats; retained only seed42 control/h and their final full-test K1
+evaluations. Preserved original trainer PIDs/start times and optimizer progress
+(both7349,epoch4). Suspended old multi-run controllers; replacement single-run
+supervisors cannot launch training and retire old controllers after trainer exit.
+Active manifest/protocol/status/dashboard/docs now reflect one pair; original
+three-seed plan archived. No trainer restart or model/optimizer changes.
+
+[2026-10-22] Repaired V24 monitoring visibility. Existing TensorBoard33329 now
+includes V24-control/V24-h alongside preserved historical runs; paired33330 also
+has verified loss/AP curves. Added two read-only live progress/loss/gate viewers
+in tmux poseflow-v24-live and opened an attached GNOME terminal window. Original
+trainers remain unchanged; output had been redirected and progress disabled.
+
+[2026-10-23] Executed frozen image-information diagnostic on V24 control epoch063:
+64 held-out test images,12 conditions,768 forwards+repeat,114.5s. Same63 person
+matches across conditions. Supporting-context removal raises wrist error7.20
+[4.09,10.89] vs equal-area distant-body masking; two fills agree. Final pose stage
+reduces joint error6.80->5.99 (52/63 improved). Color/background/flip show individual
+prediction changes despite small net accuracy changes; no3D/reasoning claim.
+Protocol, hashes, raw measurements, synthetic checks, plot and visual cases saved
+under tmp/image_information_protocol; durable report docs/reports/2026-10-23-image-information.md.
+Existing training unchanged; no new training launched or production code modified.
+
+[2026-10-23] Specified concrete discriminating h/control suite. Pinned epoch065
+(step99000) models and configs; strict frozen-source restore passed, K1 verified.
+Registered32-family admission pilots;512-family native ownership and hidden-wrist
+studies; matched-2D depth readouts with initialization/stage/h controls and separate
+B-task readouts.36,864 planned main frozen forwards,42,000 total cap; no full model
+training. Protocol docs/reports/2026-10-23-h-control-test-suite.md; manifest/status/
+hashes in tmp/h_control_information_suite/. Pilot/main generation and inference
+have NOT been launched. Existing training unchanged.
+
+[2026-10-23] Implemented DiffusionRegPose inspection notebook on the reduced OTA
+epoch079 checkpoint (20260912_224837), fixed32 test images, resize256/427,
+subset seed42 and proposals1729+image_id, deterministic DDIM S1/S2/S3.
+Completed96 image/settings; keypoint AP .505718/.507381/.504237; bbox AP
+.477583/.477054/.478515. Native standalone evaluator aggregate parity verified.
+Six selected images yielded18 exact replays,36 calls and108 decoder-layer traces.
+Notebook includes best/worst galleries, separate references/boxes/joints, masks,
+sparse image-attention locations/weights, controls and exported decoder sheets.
+All first-pose joint references in these selected traces are outside image;
+next-stage references are inside. Recorded observation, no causal or full-test claim.
+25 focused tests passed;18-cell notebook has9 executed code cells,15 embedded
+figures and no error outputs. Automatic widget initial rendering was replaced by
+an explicit Update view button; changed/remaining cells and control wiring verified.
+Notebook: notebooks/investigations/diffusionregpose_diffusion_inspection.ipynb.
+Local artifacts: tmp/diffusionregpose_diffusion_inspection/. README/diary/.plan
+updated; production models and existing training jobs unchanged.
+
+[2026-10-23] Executed first approved information-suite iteration: A32-family
+admission pilot and single allowed fresh32-family construction repair. Implemented
+scoped SMPL-X/Blender geometry/pixel audits, native frozen-checkpoint evaluation,
+non-oracle scoring, hook/repeat parity, RGB cue control and failure reporting.
+A native competence gates fail;512-family A main stopped. Audited over-wide
+reference-box matching separately on cached predictions, preserving original
+pixel tolerances and scores. No representation/3D/h advantage conclusion.
+Seven focused tests pass;712 native calls; no new model training or trainer
+changes. Report docs/reports/2026-10-23-information-suite-pilot.md; suite status
+explicitly partial, with independent B/C pilots and representation tests pending.
+
+[2026-10-24] Replaced cryptic DiffusionRegPose notebook attention plots with the
+approved reference-star / predicted-offset-arrow / color-matched sample-strength
+bar layout. Added legends, exact percentages, true off-image locations/context
+insets and decoder-layer selection. Default explorer: layer3, left wrist, head0.
+Re-executed revised attention/control cells; valid notebook has9 executed code
+cells,16 embedded figures and no error outputs. Numerical cache SHA256 unchanged;
+no inference, reranking, model or training changes. Nine focused tests pass,
+including exact arrow/weight and in-/out-of-image plot checks. Visual QA verified
+headers, samples, bars, legends and context insets. .plan and notebook text updated.
+
+[2026-10-24] Resumed remaining information probes under explicit user approval.
+Implemented B/C signed-depth one-person rig/renderer, shared tight pair boxes,
+physical/target-ray admission, fixed family-CV cue and leakage audits, frozen
+backbone/encoder/pose/h capture, strict source initialization comparison, small
+linear readers and native/appearance/shortcut reporting. Both32-family pilots
+pass required admission: native visible64/64 each model; RGB B63/64,C64/64;
+C raw2D ties. B hidden-wrist pilot0/64 both models. Outside-arm score-ordering
+warning explicitly retained; accessibility alone cannot establish coherent3D.
+Ten tests pass, real h hook/map output parity exact, synthetic AP smoke succeeds.
+Launched registered main B/C splits/readouts with fixed epoch065 checkpoints,
+CPU small-reader fits only, resource caps and persistent progress/results files.
+Live report docs/reports/2026-10-24-information-probes.md. Results still running.
+
+[2026-10-24] Replaced contextless attention crops with three recognizable-person
+examples from the fixed32 best S3 cohort (111057/115025/100537; groups0/0/4).
+Each figure keeps the selected person and predicted skeleton beside a head/body
+attention view, reference star, offset arrows and original-weight strength bars.
+GT association defines display crop only. Added feature-level selection and
+automatic person focus when switching examples. User waived further review.
+Ten focused tests pass; all3 examples visually inspected, original sample weights
+and head/shoulder context checked. Revised notebook cells executed with no errors;
+numerical cache unchanged. No new model inference, ranking or training changes.
+[2026-10-24] Main jobs continue independently through construction, frozen feature
+extraction, validation-selected readouts and cached native/AP summaries. Added
+automatic live report/figure generation and canonical status updates; no manual
+next-stage launch required. Verified fast audit12/12 exact parity, exact shared-
+initialization capture parity/storage ownership, and reader-pipeline fixture IO/
+11 paired contrasts. Cache housekeeping preserves all selected data/rejection
+parameters and audits. B training-split control features complete and h extraction
+active; C physical selection progressing toward1024. Main scientific results are
+not complete. Source changes since launch affect verified allocation/audit reuse
+and report/cache handling only, not estimator values or registered endpoints.
+
+[2026-10-24] Audited DiffusionRegPose apparent background attention. First shown
+head0/final-layer panel: near-wrist samples45.66%/19.42%, distant samples0.40%/0.51%.
+Added original-weight arrow opacity/width/dot size and annotated-joint markers.
+Independent native-output reconstruction across3 calls: exact saved coordinates,
+weight error<=1.79e-7 and output error<=2.48e-6; sampled predictions identical.
+Separate real behavior: first-pose joint samples have zero bilinear image support
+in all3 opening examples/all3 calls. This does not identify cause of AP or prove
+a native/reference discrepancy. Evidence under tmp/diffusionregpose_attention_audit/.
+Ten focused tests pass; notebook examples refreshed; numerical cache unchanged.
+No production model or training changes; reference-construction diagnosis deferred.
+
+[2026-10-24] Audited completed B/C probes and final matched V24 training.
+Final epoch079/step120000 full held-out8000 K1 AP control54.91414,h55.29491,
++0.38077points on seed42. Verified same test IDs/flags and zero test/train overlap.
+Val losses close but distinct8.065090/8.058168; val2000 overlaps trainval12000.
+Fixed32 still favors control, including direct rescoring of final cached outputs.
+Flagged B token-reader coverage156/512; secondary ALL-family cached encoder map
+readouts86.3%/96.9% paired classification, while native hidden wrists0/1024 both.
+Depth specificity compromised by outside-arm97.5% pair ordering and ceiling;
+no coherent3D or incremental-h conclusion. No new full model training or forward
+passes. Completion review docs/reports/2026-10-24-v24-completion-review.md;
+primary results preserved, coverage/shortcut qualifications added explicitly.
+
+[2026-10-24] Consolidated image-information suite documentation
+Created docs/reports/2026-10-24-image-information-report.md as the current reference:
+attempt history, reader/native distinctions, failed A admission, B coverage and
+all-family sensitivity, C shortcuts/ceiling, final AP and validation interpretation.
+Six original documents archived byte-for-byte with SHA256 manifest; old report
+paths redirect and experiment-diary links now point to the consolidated report.
+Verified headline JSON values, checkpoint hashes, archive identity and local links;
+whitespace check passes. No production code changes or new experiment execution.
+
+[2026-10-24] Ran reduced DiffusionRegPose state sensitivity and joint-route masks.
+- Same32 test images, epoch079, resize256/427; five native S3 seeds and384 fixed
+  image/time/state conditional mask replays (864 calls in final verified run).
+- State changes48.64–96.00 pixel-equivalent units moved final joints0.0116–0.0156px
+  on average. All336000 incoming first-pose joint refs negative in both XY axes;
+  inverse-sigmoid coordinate clamp erases their geometric variation across seeds.
+- First-pose joint image values identically zero; bias-preserving removal leaves
+  outputs exact. At t332, AP50.42374 baseline/first-image-mask,18.44771 final joint
+  image-mask,0 first joint self-attention+FFN updates masked,0 combined mask.
+- Intermediate layer's feature/geometry processing is essential despite its dead
+  joint image read. Combined mask is floor-limited; no learned-compensation claim.
+- Corrected CPU-postprocessing drift in initial diagnostic; final GPU scores,
+  boxes,joints,query IDs and raw outputs match original cached S3 baseline exactly.
+- Added diagnostic/report runners,12 passing focused tests, readable methods/results
+  report and summary chart. Appended an executed result section to existing notebook
+  while preserving previous outputs. No production model or checkpoint changes.
+
+[2026-10-24] V24 matched multi-step evaluation launched
+Existing matched pair had K1 only. Diagnostic adapter uses the frozen existing
+endpoint Euler sampler at K2/K3/K5, final epoch079, all8000 held-out test images,
+matched source42+image_id/resize256-427/FP32/TF32off/corrected NMS. Eight-image
+per-arm K1 native/cached-record parity exact; multi-step schedule/source/finite
+checks and native h-reset checks passed. No cross-call h carry added, no training
+or production source changes. Saved status/logs/predictions/TensorBoard33331 under
+/storage/outputs/pose-graph-diff/diagnostics/v24_multistep_epoch079_20261024/.
+Consolidated report updates incrementally; final comparisons pending completion.
+
+[2026-10-24] Rewrote information report after clarity feedback
+Replaced internal task letters with descriptive names and led with measured
+hidden-wrist behavior versus separately supervised frozen-feature classification.
+Explained images, scoring, all512 coverage, new-label/known-elbow assistance,
+h training-system versus inference-route distinction and actual remaining question.
+Acknowledged unmet five-insight objective; unsuccessful ownership/depth tests no
+longer presented as representation findings. Added render-example link; preserved
+live multistep update boundary, raw evidence and historical archives unchanged.
+Verified saved headline values, links/archive hashes and whitespace. No new runs.
+
+[2026-10-24] Corrected consolidated report to system-property characterization
+Rebuilt docs/reports/2026-10-24-image-information-report.md around native
+DiffusionRegPose measurements: weak diffusion-state sensitivity, reference-clamp
+collapse, exactly inactive first-pose joint image values, necessary first-pose
+feature updates and useful final-pose joint image values. Each has the actual
+probe/measurement/conclusion and explicit32-image epoch79 scope. V24 h/control
+synthetic/full-test results remain separate, with model ages, limits and sources.
+Preserved live multistep updater boundary and original evidence. Numerical/link
+checks pass; no model changes, new training or inference by this report revision.
+
+[2026-10-24] Full23–24October probe report consolidation completed
+Read the20-cell inspection notebook and integrated its native S1/2/3 results,
+best/worst gallery, decoder geometry, weighted image attention, query masks and
+verified state/route diagnostics with all related V24 protocols/pilots/results.
+One canonical report now has outline, sections, full results,11 captioned figures,
+interpretation, technical contracts, corrections and source/evidence inventories.
+Deleted eight superseded source/redirect reports, six archived duplicate reports,
+and obsolete archive index/hash sidecar after merging. Preserved original raw
+results, notebook code/outputs, models and checkpoints. Updated notebook/generator
+links and raw technical-export destinations to avoid recreating deleted reports.
+Link/anchor/image/hash/numerical/syntax/whitespace checks pass. Existing multistep
+evaluation continues updating the same canonical report; no new inference/training.
+
+[2026-10-24] V25 person-aligned h-to-DINO spatial supervision implemented
+Added h-only7x7x384 decoder, pinned frozen local DINOv3 ViT-S/16 region targets,
+exact final pose-assignment reuse and weighted cosine auxiliary objective in a
+separate model/config family. Target extraction unpads normalized augmented images
+and pools GT boxes in correct per-image coordinates. Teacher is excluded from
+optimizer/checkpoint, no teacher/auxiliary decoder execution during pose sampling.
+Shared changes limited to context export, optional final matches and V24 factory
+hooks with historical defaults. Strict V24 import permits only fresh decoder keys.
+44 focused/compatibility/shared checks pass, including zero-weight exact V24 loss,
+shared-gradient/RNG parity, assignment/ROI tests, empty cases, distributed-positive
+normalization and strict restore. Real full-width CUDA smoke used two trainval
+images and three updates: finite FP32/BF16 backward, h/head gradients and exact
+restored pose predictions. Teacher/optimizer exclusion verified; no AP claim.
+Smoke evidence tmp/v25_h_dino_smoke/result.json; docs/config/report updated.
+No long training launched in this approved first iteration. Whitespace/compile pass.
+
+[2026-10-24] Approved V25 longer matched training launched
+- One new seed42/80-epoch V25 run; reuse completed V24 h baseline55.2949 AP.
+- Original shared+h initialization578 tensors and CPU RNG exact; same data,
+  batch4/accumulate2,32-bit optimizer/LR schedule and checkpoint/fixed32 policy.
+- Source/config/input/teacher/runtime hashes frozen; test8000 disjoint, val2000
+  contained in training12000, no validation/fixed32 checkpoint selection.
+- Persistent worker queues canonical full-test K1 after epoch079 and verifies
+  endpoint coverage/contract before writing AP comparison. Live auxiliary
+  logging is temporary orchestration only; no production model changes.
+- Root /storage/outputs/pose-graph-diff/results/poseflow_v25_h_dino/20261024_181523; tmux poseflow-v25-h-dino, dashboard33332.
+- Launch verified after50 optimizer updates: finite losses, nonzero decoder/
+  h-image/h-writer gradients, teacher exclusion and seven live auxiliary scalars.
+  Exact live initialization parity passed; no full-training AP result yet.
+
+[2026-10-24] V25 visible progress terminal repaired
+- App terminal requests were queued and no app terminal was attached. Opened
+  a dedicated V25 Live Training Progress host terminal instead, with a read-only
+  status viewer refreshing every second: process/epoch/batches/updates/losses
+  and time since trainer output. Verified window and viewer process1810689.
+- Training remains running without source, optimizer or checkpoint changes.
+
+[2026-10-24] V24 multistep full-test evaluation completed; K1/K2/K3/K5 paired results added to consolidated information report. No new estimator training.
+[2026-10-24] V26 approved iteration1: indexed positive/duplicate/foreign/synthetic
+proposal construction and direct masked task losses; four contract tests pass.
+[2026-10-24] V26 iterations2/3: two dense-attention latent stacks, final shared
+readouts, cosine DDIM sampler, direct training pipeline/private RNG and configs.
+Ten focused tests pass; live/full-evaluation and CUDA preflight remain pending.
+[2026-10-24] V26 verification:42 regression checks pass; real CUDA B4/accum2
+optimizer and Lightning validation/checkpoint smokes pass.282 source image tensors
+import exactly,124 fresh state entries; no deformable modules. Automatic K1/K4
+held-out evaluation and visible launch worker prepared; pilot launch pending.
+[2026-10-24] V26 seed42 80epoch pilot RUNNING at update170+ in
+/storage/outputs/pose-graph-diff/results/poseflow_v26_latent_diffusion/20261024_194251.
+42 tests and CUDA/Lightning/CLI smokes pass; live finite gradients/scalars verified.
+Dashboard33333 and read-only progress window available. Zero-update TMPDIR Unix
+socket issue corrected with a short local path; other jobs untouched. Automatic
+final8000-image K4/K1 evaluation queued in worker; no learned V26 AP claim yet.
+[2026-10-24] Consolidated experiment TensorBoards onto existing shared33329;
+retained old runs and merged V25/V26/multistep diagnostics. Closed redundant33330-
+33333 servers only; trainers unchanged. Verified live V25/V26 scalar tags through
+loopback, Tailscale IP100.122.159.115 and lynx.tail481642.ts.net. Shared launcher:
+tmp/tensorboard_shared.sh. Future versions should add runs here, not spawn servers.
+[2026-10-25] Shared TensorBoard33329 was absent (connection refused; previous
+TensorBoard tmux session also absent). Restored the same launcher/run list in a
+stable tensorboard-shared tmux session. No training process or event files changed.
+
+[2026-10-25] V26 epoch079 read-only diagnostics: verified full8000 K1/K4
+pose AP0.63/7.33, box3.39/14.71. Native sampler parity and monitoring AP
+reproduction passed. K1–64 sweep on fixed32+independent128 peaksK4; extra
+calls reduce unique-person coverage. Clean GT-derived latents decode92.45
+poseAP on fixed32; conditional t0/t99974.84/0.66. Feature interventions and
+QK localization show substantial image use. High-noise recovered slot
+variance shrinks~92%, with positive/negative existence indistinguishable.
+Report: docs/reports/2026-10-25-v26-latent-diagnostics.md; raw artifacts in
+local tmp/v26_diagnostics. No production model edits or retraining.
+
+[2026-10-25] V26 actual Gaussian DDIM trajectory variance follow-up, fixed32:
+K4 predicted-clean variance .01431/.04539/.04845/.04614 per call; final
+K64 .10850 versus GT-derived B4 reference .19196. Noise-bearing states
+retain diversity between calls. Native K4 parity passed. Corrected report:
+~92% reduction was first-call only; variance recovers as AP declines, so
+variance alone does not explain poor sampling. Raw per-call artifacts in
+ tmp/v26_diagnostics/results/trajectory_variance.json. No retraining.
+
+[2026-10-25] Implemented approved V26 latent-only denoising ablation.
+Added denoised_task_loss_weight (default0.5); fresh benchmark sets0, retaining
+0.5 clean-task + latent-MSE1. Denoised task metrics run without autograd.
+17 V26 objective/gradient/recipe/RNG/strict-restore tests pass. CUDA batch4,
+accum2 optimizer and K1/K4 eval smoke passed; peak reserved0.902GiB.
+Clean encoder remains jointly trained; no architecture/conditioning edits.
+User roadmap recorded: inspect layers/FiLM–AdaLN next, then DINO/REPA targets.
+
+[2026-10-25] Launched V26 latent-only seed42/80epoch pilot from fresh frozen
+source/config: /storage/outputs/pose-graph-diff/results/poseflow_v26_latent_only/20261025_094303.
+Worker2393169 passed150+ updates; finite clean/latent losses and nonzero
+encoder/denoiser/readout gradients. Live peak allocation~1.43GiB. 37 focused/
+regression tests plus CUDA and Lightning smokes passed. Resolved recipe/source
+comparison established loss-only change versus original V26. Shared33329 label
+V26-latent-only has verified scalar samples and local/Tailscale HTTP200; old
+labels and V25 trainer preserved. Visible progress viewer and persistent logs
+running; final epoch079 full8000 K4/K1 evaluation and original-V26 comparison
+automated. Report: docs/reports/poseflow_v26_latent_only.md. No learned AP yet.
+
+[2026-10-25] Read-only V26 latent-only failure audit pinned epoch011.
+Same-age original/new K4 fixed32 AP4.493/.470 despite lower latent MSE.
+Native sampler parity and saved metric reproduction passed. Near-clean
+recovery damages GT decoding43.30→19.98AP; equal-MSE random perturbations
+retain35.62AP. First-call averaging is severe, but64 calls restore latent
+variance while raw coverage worsens41→27/133 and AP stays~.62. NMS removal,
+normalization and variance expansion do not rescue sampling. Confidence and
+geometry both fail. No global persistent constant-output collapse established;
+plain MSE poorly tracks task fidelity. Full provenance/predictions and report:
+docs/reports/2026-10-25-v26-latent-only-failure-audit.md. Training unchanged.
+
+[2026-10-25] Completed pinned V26 epoch011 near-clean sublayer trace.
+All8 B4 traces match native denoise bitwise. Raw input43.431AP becomes
+19.983AP; exact-clean through network19.980. Internal states change basis
+and need final projection; removing it gives.035AP. No single residual/block
+bypass restores clean accuracy (best20.809). Layer2 attends70.6% to same-person
+slots and is necessary under frozen bypass; time modulation removal dropsAP
+4.715. No missing time/attention route found. Report and raw artifacts:
+docs/reports/2026-10-25-v26-near-clean-layer-trace.md and tmp/v26_layer_trace.
+Running experiment unchanged; no production architecture edits.
+
+[2026-10-25] Implemented approved V27 scale-only attention experiment.
+New model/config routes clean/denoiser blocks through stride32/16/8 separately,
+no image-token multiscale concatenation and no fusion neck. Reuses V26 latent-only
+training/sampling/readout. Explicit source-level subset import preserves strict
+V26 defaults. 44 focused/regression checks plus CUDA batch4/accum2 update and
+Lightning fit/validation/restore smokes pass. Image import278 tensors100%; model
+37,275,105 parameters. Preflight peak reserved0.680GiB. Documentation records
+new family, removed stride64 projection and changed initialization RNG consumption.
+
+[2026-10-25] Launched approved V27 coarse-to-fine seed42/80epoch pilot:
+/storage/outputs/pose-graph-diff/results/poseflow_v27_coarse_to_fine/20261025_145027.
+Worker2552025 passes100+ updates, finite losses and nonzero branch/readout
+gradients; live peak~1.11GiB.44 tests plus CUDA/Lightning smokes passed.
+Resolved recipe parity checked; only feature-level access/family changes from
+V26 latent-only. Shared33329/Tailscale populated labelV27-coarse-to-fine,
+visible progress viewer, persistent logs and automatic final full8000 K4/K1
+configured. Existing V25/V26 jobs preserved. Report:
+docs/reports/poseflow_v27_coarse_to_fine.md. Learned AP not yet available.
+
+2026-10-25: Evaluated pinned V26 latent-only epoch046 on fixed32 test at1/4/8/16/32/64/128 deterministic DDIM calls. Pose AP remains~1.5-1.9 beyond4; boxAP improves7.52->11.53. Frozen source, FP32/TF32off, seed42+imageID, strict restore/nativeK4 parity; existing trainers unchanged. Report docs/reports/2026-10-25-v26-latent-only-step-sweep.md.
+2026-10-25: Audited V26 latent-only epoch046 spatial image attention on fixed32,
+clean and GaussianK4/K16 first/final calls. Verified480 weighted-value/output
+reconstructions against native. Coarse32/64 dominate early layers at late calls;
+final layer~75%stride16 and person-localized, but crossscale peaks often differ.
+Saved per-head/level localization metrics, six overlays, chart and report
+ docs/reports/2026-10-25-v26-latent-only-image-attention.md. Trainers unchanged.
+
+2026-10-25: Audited V26 latent-only attention-token reuse across layers/calls on pinned epoch046 fixed32. New late salient features exist; aggressive early masks discard substantial late mass.99%-perhead L1+L2union retains48.9%tokens/98.4%L3mass atK4. Saved report and raw metrics; no model/training changes or masked-AP claim.
+
+2026-10-25: Reviewed all latent validation/quick-test tags from shared events; saved series, matched49epoch V26 and18epoch V27 snapshots, overview figure and report docs/reports/2026-10-25-latent-metric-overview.md. Distinguished constructed coverage, conditional reconstruction and generated detection, score effects, loss/target-scale confounds. No training/model/dashboard changes.
+
+2026-10-25: User requested stop of current runs for V28. Gracefully stopped V25-h-DINO, V26-latent-only and V27; preserved/hash-verified latest epoch050/049/018 checkpoints and logs; recorded live state and explicit stopped_by_user status. Shared33329 dashboard remains running. V28 planned only; base under discussion, recommended V26-latent-only.
+2026-10-25: Implemented V28 from V26 latent-only after plan approval. Only clean
+encode receives detached image memory/positions. Added distinct configs/export,
+four focused TDD tests;28 V26/V27/V28 tests pass. README/project/architecture updated.
+CUDA/Lightning validation and fresh pilot launch in progress.
+
+2026-10-25: Launched fresh V28 clean-image-stopgrad seed42/80epochs at/storage/outputs/pose-graph-diff/results/poseflow_v28_clean_image_stopgrad/20261025_192620. Exact full initialization and recipe parity to V26-latent-only, one gradient-route change.48 tests plus CUDA/Lightning checks passed. Verified310+ finite updates, image/latent gradients and shared TensorBoard33329/Tailscale scalar data; prior trainers stopped and artifacts retained.
+2026-10-25: Implemented approved V29 OTA supervision from V28. Clean construction
+unchanged; recovered slots use OTA person targets or closest clean negative latent.
+Uniform all-slot MSE and detached task monitoring retained. Six TDD tests pass;
+full regressions/CUDA checks and parallel launch preparation underway.
+
+2026-10-25: Launched V29-OTA seed42/80epochs alongside unchanged V28 at/storage/outputs/pose-graph-diff/results/poseflow_v29_ota/20261025_201803. Verified120+ finite updates, OTA coverage1, uniform latent-only loss,127tests and CUDA/Lightning smokes. Full model init matchesV28; shared TensorBoard/Tailscale actual OTA scalar data verified. No learned performance claim.
+
+2026-10-25: Launched matched4image V28/V29 overfit diagnostics at/storage/outputs/pose-graph-diff/diagnostics/latent_overfit4/20261025_224813:15people total, fixed no-aug inputs/proposals, fresh latent noise/times,5000constant-LR updates, clean/t0/499/999 and3seed GaussianK1/K4/K16 evaluation. GPU/strict-restore/RNG/parity smokes passed; shared dashboard/Tailscale verified. Full-data jobs preserved. Memorization only, outcomes pending.
+
+2026-10-26: Recorded completed four-image overfit outcomes in docs/reports/2026-10-25-latent-overfit4.md. V28 learns iterative Gaussian generation; OTA improves one-call but declines at4/16calls, including raw coverage. Full V28 epoch79 full8000 remains poor (K4 poseAP0.773/boxAP4.277); full V29 active. No production changes.
+
+2026-10-26: Cleaned existing TensorBoard33329 to V26–V29 plus Overfit4-V28/V29. Verified all7scalar streams, K16 endpoint and TailscaleHTTP200 after asynchronous indexing. No training changes.
+
+2026-10-26: Implemented V30 decoder-tolerance family from V28 fixed correspondence. Shared heads receive recovered task gradients after latent detach; image/denoiser remain MSE-only. Added targeted backward/strict restore/recipe tests,130 regressions passed, CUDA/Lightning smokes passed (1.053GiB peak reserved); V28 init exact parity. Stopped V29 on request, retained epoch071/last checkpoints. Preparing frozen fresh launch.
+
+2026-10-26: Launched V30 decoder tolerance at /storage/outputs/pose-graph-diff/results/poseflow_v30_decoder_tolerance/20261026_112529: recovered task loss trains heads only via detached latent, clean task0.5/recovered task0.5/MSE1, fixed correspondence fromV28. Verified 250 updates,130tests, CUDA/Lightning smokes and existing TensorBoard/Tailscale populated label. Frozen seed42/80epochs, automatic epoch79 full8000 K1/K4 evaluation.
+
+2026-10-26: Added V31 config family restoring recovered task gradients through denoiser/image/readout, preserving both h0 detaches and clean-image stopgrad.133tests plus CUDA/Lightning smokes pass; model initialization exact V28 parity. V30 stopped, epoch025/last retained.
+
+2026-10-26: Launched V31 at /storage/outputs/pose-graph-diff/results/poseflow_v31_denoised_task/20261026_142350, fresh seed42/80epochs, full recovered task gradients with h0 corruption source and latent target detached. Verified 100 finite updates and actual V31-denoised-task TensorBoard/Tailscale scalars; fixed32 monitoring and final full8000 K1/K4 evaluation configured.
+
+2026-10-26: Implemented V32 dual clean/recovered DINO person-region supervision plus user-requested live clean image gradients. Shared grid head/frozen pinned V25 teacher, positive constructed correspondence, both h0 detaches retained.138 tests, real-teacher CUDA/Lightning smokes passed (1.420GiB peak reserved); old families default no-op. V31 control preserved. Preparing frozen fresh launch.
+
+2026-10-26: Launched V32 dual DINO at /storage/outputs/pose-graph-diff/results/poseflow_v32_dual_dino/20261026_150316, fresh seed42/80epochs with clean-image gradients and retained h0 detaches. Verified 80 finite updates and both DINO scalar streams on existing TensorBoard/Tailscale; V31 remains active.138tests and real-teacher GPU/Lightning smokes passed; final full8000 K1/K4 configured.
+
+2026-10-27: Verified completed V26-latent/V31/V32 epoch79 full8000 results under matched protocol. K4 poseAP7.33/7.95/7.73, boxAP14.71/15.17/15.60; DINO conditional cosine0.804/0.794 but no material pose improvement. Recorded report docs/reports/2026-10-27-v26-v31-v32-final-comparison.md and machine-readable tmp/latent_final_comparison/comparison.json. No model changes.
+
+2026-10-27: Implemented V33 grouped17-token task readout from V32,3pre-LN transformer blocks and final linear joint/box/existence outputs. Diffusion/DINO/gradient routes unchanged; direct joint coordinates independent of box outputs.143regressions and focused gradient/parity/restore tests plus real teacher CUDA/Lightning smokes passed (1.908GiB peak reserved). Preparing frozen seed42 pilot.
+
+2026-10-27: Launched V33 at /storage/outputs/pose-graph-diff/results/poseflow_v33_token_readout/20261027_105255, fresh17-token readout pilot from V32 with upstream latent/DINO/gradient routing unchanged. Verified 150 updates and pose_decoder/head gradients, actual existing TensorBoard/Tailscale task/DINO streams.143tests+CUDA/Lightning smokes passed; full8000 epoch79 K1/K4 evaluation with V32/V31 references configured.
+
+2026-10-27: Implemented V34 OTA task supervision on V33 architecture. Recovered pose/box/existence optimize against OTA, consistent remapped latent/DINO targets; clean correspondence unchanged and nearest-negative policy retained.148tests plus cached-teacher CUDA/Lightning smokes passed; full model init exact V33 parity. Preparing frozen seed42/80epoch parallel launch.
+
+2026-10-27: Launched V34 OTA-task at /storage/outputs/pose-graph-diff/results/poseflow_v34_ota_task/20261027_150734, fresh seed42/80epochs parallel to V33. Recovered task loss active with consistent OTA latent/DINO targets; both h0 detaches intact. Verified 60 finite updates, OTA coverage and actual existing TensorBoard/Tailscale streams.148tests/CUDA/Lightning smokes passed.
+2026-10-27: Audited V32/V33 gradients offline with strict retained checkpoints, identical batch4accum2 replay and five weighted loss routes. V33 final joint projection dominates clipping (84–89% squared norm); decoder transformer<1%. Task/MSE imbalance is not larger in V33. Verified gradient/objective sums and replay hashes; report docs/reports/2026-10-27-v32-v33-gradient-audit.md. No production edits/optimizer updates; checkpoint-age and AdamW caveats recorded.
+2026-10-27: Added V33 no_clip and no_clip_rescale configs (latent weight1/10) with unchanged model/state schema.8focused checks and two native CUDA batch4accum2 smokes pass; no clipping calls, finite updates, exact initial model parity, strict evaluator restore. Run-local gradient monitoring, frozen snapshots and parallel launches prepared; docs updated.
+2026-10-27: Launched parallel v33-no-clip (λh1) and v33-no-clip-rescale (λh10), frozen seed42/80epoch V33 runs. Both70finite optimizer updates; explicit clipping-disabled checks and actual gradient/task/latent TensorBoard scalars verified, Tailscale33329HTTP200. Existing V33/V34 preserved, visible tmux73viewers; strictsource/config/input manifests and final8000K1/K4 configured. Report docs/reports/poseflow_v33_no_clip_variants.md. No learned-performance claim.
+2026-10-28: User cancelled V33-no-clip and V33-no-clip-rescale. Verified exact run PIDs1142515/1142526 before SIGINT; both exited gracefully, marked stopped_by_user. Epoch042 and last checkpoints, logs/TB retained; no checkpoint deletion. V34 remains active (validation/fixed32 at87000updates). Confirmed V34 uses PoseFlowV33Model17-token readout.
+2026-10-28: Implemented approved V35 box-only OTA/spatial pair: box input/direct heads, no DINO/joints, latent10/clip0.1, positive perturb/foreign/zero construction, global Hungarian canonical metadata and denoiser-only Fourier positions.61 initial regressions/final focused checks and both CUDA optimizer/strictrestore/bboxquick-eval smokes pass; historical default block bitwise parity and common init hashes verified. Fixed8 cost audit selects spatialweight1 via .124/.131 same-gate gap ratio, no AP tuning. Preparing frozen parallel launch; report docs/reports/poseflow_v35_box_detectors.md.
+2026-10-28: V35-OTA and V35-spatial frozen and launched in parallel at /storage/outputs/pose-graph-diff/results/poseflow_v35_ota/20261028_220138 and poseflow_v35_spatial/20261028_220140. Both60finiteupdates, λh10/clip0.1, spatialcost1; noDINO/joints/tokenreadout.11finalfocused +61initialregressions, nativeCUDAstrictrestore andhistoricalblockparity passed. Existingjobs retained; shared33329labels/progressviewers andfinal8000bboxK1/K4worker configured. Awaiting finalTB scalarverification.
+2026-10-28: V35 parallel launch verified at210finiteupdates each, actualGPUpeak1.466/1.467GiB. Nativebox/latent/OTA/gradient/spatialscalarstreams populated, shared33329TailscaleHTTP200; labels V35-OTA-box/V35-spatial-box, originaljobs/labelsretained. Frozenmanifests/launch_verification.json andautomaticfinal8000K1/K4bboxeval configured.61initial+11focused tests/CUDAstrictrestore/bitwisehistoricalblockparity passed. Report docs/reports/poseflow_v35_box_detectors.md; no startup learnedperformanceclaim.
+2026-10-29: Implemented reviewed V35 spatial latent-only control, recovered task weight0/monitoringno-grad with clean.5+matchedlatentMSE10, anchors/spatialcost1/clip0.1 unchanged.14focusedtests pass including exactdenoiser-gradientroute, defaultforwardparity andconfigisolation. NativeCUDA2updates/bboxquickeval/isolatedMSEgrad/strictrestore pass; commoninitmatchescontrol, peakreserved1.405GiB. Preparingfreshfrozenlaunch; existingrunsretained.
+2026-10-29: New spatial-latent-only launch hit worker AF_UNIX path-too-long beforeanyupdates. Stopped verifiednewPIDonly, shortened workspace-localTMPDIRto tmp/v35lo, recordedruntimeoverride andpreservedstartupstatus/logs, restartedfresh unchangedexperiment. Existingjobsretained.
+2026-10-29: Launched V35-spatial-latent-only at /storage/outputs/pose-graph-diff/results/poseflow_v35_spatial_latent_only/20261029_001905;70finiteupdates, coefficient0/latent10/spatial1/clip.1, actualGPUpeak1.381GiB.14tests/nativeCUDAisolatedgradient/strictrestore pass; actualTBgradients/losses/spatialstreams andTailscaleHTTP200 verified. ExistingV35runsretained, final8000bboxK1/K4 configured. StartupAF_UNIXTMPDIRfix recorded; no learnedclaim.
+2026-10-29 V36 iteration1: approved MLP-only clean box versus box+c families, no clean image/attention route, retained V35-spatial latent-only objective/OTA.20 focused tests pass after six intended red failures; native CUDA verification pending.
+2026-10-29 V36 CUDA box preflight PASS: two batch4 accumulation2 updates, peak allocated1.005GiB/reserved1.170GiB; image-only init coverage282/282 tensors, strict model restore and isolated denoising gradients verified. Box+c preflight in progress. Docs describe input label boundary and unchanged OTA remapping limitation.
+2026-10-29 V36 pair launched: box/20261029_004444 and box_c/20261029_004447 under /storage/outputs/pose-graph-diff/results/poseflow_v36_*. Both90finiteupdates, peakallocated1.139GiB, freshfrozenimageonlyinitializationverified;20tests/CUDA/strictrestore pass. Existing33329TensorBoard/Tailscale40scalartagsperrun verified, visible73:progress and persistentlogs; existingjobs unchanged. No learned AP claim; final8000bboxK1/K4 automatic at epoch79.
+2026-10-29 V35-spatial-latent-only failed at00:42 after1209gradientupdates (SystemExit1, no finaltraceback/noepochcheckpoint). User authorized relaunch: cloned exact original frozen source/config, freshseed42 output20261029_010826, failedattempt20261029_001905 preserved. ShortlocalTMPDIR retained, faulthandler/shellexitcode logging enabled. No model/recipechanges, no otherjobsstopped. Startup/progress verification underway.
+2026-10-29 V35-spatial-latent-only replacement launch verified:50+finiteupdates, actualpeak~1.381GiB,40populatedTBtags viaTailscale33329. Newattempt20261029_010826 underusual label, failed20261029_001905 archivedasV35-spatial-latent-only-failed. Exactfrozenmodel/config preserved; allotherjobsunchanged.
+2026-10-29 read-only decodedloss/V36 audit: matchedepoch11 cleanreconstructionunchanged byremovingdecodedloss butrecoveredboxerror2.54x/APdrops; foundV36missingframe-sizeinformation(pixelcleaninput vsnormalizedtargets) andboxonlyexistenceambiguity. Frozen16image/matchedtimesteps/4imagefeatureshuffle probes documented withage/GToraclelimits. ConfirmedOTA canchangeoriginalsourceidentity/existence evenlow-noise. No trainingmodifications. Report:docs/reports/2026-10-29-decoded-loss-and-v36-audit.md.
+2026-10-29 V36-box-normalized iteration1: explicit clean_box_input_format(defaultpixels), normalizeddirectinput_boxes path, newbenchmarkconfig.23focusedtests pass after3intendedredfailures; historicalpixeldefaults/state preserved. CUDApreflight pending; activejobsuntouched.
+2026-10-29 V36-box-normalized launched20261029_094245: freshseed42, exactV36-boxinit, onlycleanrelativeinput/no100scalingchange.23tests/CUDA2updates/strictrestore pass,50+finiteproductionupdates and40populatedscalars viaexisting33329TailscaleTB verified. Visible73:progress/persistentlogs/final8000K1/K4; alloldrunsremainactive. Report docs/reports/poseflow_v36_box_normalized.md.
+2026-10-29 V36-box-c-normalized: addedconfigonly, existingmodelcombinesnormalizedgeometrywithunscaledclean c. Expectedmissingconfigredfailure andfivefeature/parity/restoregradienttestpassed; nativeCUDA2updates+quickbboxeval/strictrestorepassed,initialSHAexactoriginalbox+c0bc219d6e613802c4f3885f5b5f2e11f56fa8c49d559e7f0fc94b00bb4fe840d. Launchverificationpending.
+2026-10-29 V36-box-c-normalized launched20261029_140927: existingnormalizedmodel+cinput,newconfigonly, exactbox+cinit.25tests/CUDA/strictrestorepass;50+finiteupdates/40populatedTBscalars/TailscaleHTTP200verified. AllV36frozenconfigsconfirmedspatial5x10/cost1/latent10/recovered0. Currentjobsremainactive; final8000K1/K4automatic.
+2026-10-30 V35 timed spatial-cost iteration1: approvedlate-linear max(0,1-t/500), baseV35-spatial decodedtaskretained. OptionalperimageOTAweight/defaultconstantlegacyparity, weightedcost/noise-bin diagnostics andnewconfig.29focusedtests pass after4redfailures; CUDApreflight/launch next. Newdedicatedobject-onlyTB requestedbyuser.
+2026-10-30 V35-spatial-timed-cost launched20261030_221528: approvedmax(0,1-t/500)OTAanchorcost,decodedtaskretained,model/init/recipeunchanged.29tests+4finalchecks/CUDA/strictrestorepass;100+finiteupdates/nativepeak~1.467GiB,46scalartagsincludingactualweights verified. Newobject-onlyTensorBoard33330(8runs,V35+V36,nooverfit/failed),K1/K4quickbboxAPpinned/opened/visuallyverified/TailscaleHTTP200. Progresswindowinnewtmuxsession; old73sessionabsent,no duplicate training. Report docs/reports/poseflow_v35_spatial_timed_cost.md.
+2026-10-31 V35early-costiteration1: opposite ramp viaT-1-t reflection, same.2505mean/max1, newconfig onlydirection/namespace.21focusedtests pass after3expectedredfailures. CUDApreflight/launchpending; latejobkept.
+2026-10-31 V35-spatial-early-cost launched20261031_001634: exactreflectedlatecost/samemean.2505+max1,decoded.5/latent10/clip.1 unchanged.21tests/CUDA/strictrestorepass;200+finiteupdates/46scalars,low-noiseweight0 andpositivehighweightsverified. Existing33330objectTBnow9runs/unchangedAPpins/TailscaleHTTP200;latejobkeptalive. Report docs/reports/poseflow_v35_spatial_early_cost.md.
+
+[2026-10-31] Read-only V35-spatial-box epoch74 iterative/noise audit: exact nativeAPparity, fixed32 stagewiseK4/K8, conditionalq-noise andcustomcallplacement. MainAPdamagefromhigh-noiserepeats; latecallslessharmful, no testedmulticallbeatsK1. Savedreport/rawrecords/hash/scripts. No production/training/run changes.
+
+[2026-10-31] Approved V35 early-spatial q200: added inherited200query/10x20 config and three focused tests; intended red then21 combined regression tests pass. No architecture code changes. CUDApreflight and freshlaunch next.
+
+[2026-10-31] Launched V35-spatial-early-cost-q200 at /storage/outputs/pose-graph-diff/results/poseflow_v35_spatial_early_cost_q200/20261031_004325;21tests/nativeCUDA/strictrestore/detach/sharedinitializationPASS. Verified140finiteupdates, livepeak1.529GiB,46scalar tags over existingTailscale33330dashboard withAPpinsretained; controlsalive. Report docs/reports/poseflow_v35_spatial_early_cost_q200.md.
+
+2026-10-31 V37 iteration1: added isolated latent OTA/target gathering and clean metric alignment, new pipeline/config, unchanged V35 inference model. Nine intended-red tests preceded implementation; initial nine checks passed. Expanded restore/evaluator/regression checks in progress. No training launched yet.
+
+2026-10-31 V37 verification PASS: 10 V37 tests plus35 V35/V36 regressions. One added loader fixture initially omitted Hydra _target_; corrected and all10 V37 tests rerun PASS, no production workaround. NativeCUDA batch4accum2 two finite updates, exact V35 model/globalRNG init, strict model+pipeline restoration/next draws, calibration optimizer/state, detached latent routes, alignment clean/image gradients, real coverage1 and K1/K4 evaluation PASS. Peakallocated1.106GiB/reserved1.344GiB. Next approved step frozen freshseed42/80epoch launch.
+
+2026-10-31 V37 initial launch runtime correction: no optimizer update occurred; run-root TMPDIR exceeded AF_UNIX socket path limit in DataLoader workers. Use shorter resolved local tmp/v37/ipc, record runtime_override.json; preserve first-attempt logs and restart V37 only. Frozen production source/config/model unchanged.
+
+2026-10-31 V37 implementation/launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v37_latent_ota/20261031_170101, freshseed42/80epochs, unchangedV35spatialmodel/50slots and decodedloss, latentOTA and sigmoid alignment. 10V37+35legacy checks and nativeCUDA PASS. First 50 finite updates, coverage1; strictrestore/RNG/gradients verified. Existing object-only33330 dashboard updated with11runs/pins retained; priorjobs health and scalarAPI verification underway. Keep.plan pending experiment outcome review; no AP gain claimed.
+
+2026-10-31 V37 final launch verification PASS: 90 finite updates, coverage1, HTTP200 and59 scalar tags for V37-latent-OTA on33330; existing11 object-only runs/pins retained. Prior early/timed/q200 PIDs3383734/3365332/3388736 verified alive and progressing. Frozen source/config, preflight/verification and experiment_report.md under /storage/outputs/pose-graph-diff/results/poseflow_v37_latent_ota/20261031_170101. No AP available before epoch1. Approved implementation and launch delivered; retain plan pending outcome review.
+
+[2026-10-31] User cancelled50-queryV35early-cost/timed-cost. VerifiedexactrunPIDs, SIGINT/gracefulshutdown andprocess exit; statusmarkedcancelled_by_user, cancellationmetadata recorded. Checkpoints/logs/TensorBoardhistory retained. 200-queryearly-costPID3388736verifiedalive/untouched. 50-query early-cost: epoch061.ckpt, last.ckpt; 50-query timed-cost: epoch073.ckpt, last.ckpt
+
+[2026-10-31] User cancelledV35early-cost-q200. VerifiedrunPID3388736, SIGINT/gracefulshutdown/process exit; statuscancelled_by_user andcancellationmetadata recorded. Checkpoints epoch049.ckpt,last.ckpt andlogs/TensorBoardhistory preserved. Nootherprocessesmodified.
+
+2026-10-31 V37 localization diagnosis COMPLETE (read-only): validation recbbox.1556→.1564, latentMSE.0273→.0344, highnoise.0499→.0568 (epochs11-15 vs18-22). Totalval decline.195 is covered by alignment decline.211, primarily weightedexistence.198. Pinnedepoch022 fixed32/133people batch4 FP32 TF32off: directnearlyclean decodeL1.0384 vsdenoiset0 .1668; conditionalt250 .0872, t999 .3487; nearestGTt999 .3038; shuffledimage t999 .5979 proves image matters. GeneratedK4 .3403→.3117, IoU.5 coverage44.4%→44.4%, IoU.75 improves21.1→26.3. Real-source slots also degrade, so fake→real alone is insufficient. Functional bottleneck is denoised geometry/highnoise/generated-state transfer; optimizer cause/intervention unproven. Temporary scripts, JSON, report and plot tmp/v37_diagnosis; source/model/livejobs unchanged.
+
+2026-10-31 V37-reweight iteration1: inherited config added; resolved diff exactly latent10→100/existence4→1 plus namespace. Existing10 V37 tests PASS. No production code changes or new tests. Native CUDA/gradient-scale/restore checks running; docs describe changed weights and comparison limits.
+
+2026-10-31 V37-reweight verification PASS: exact four-field resolved configdiff,10 V37 checks, nativeCUDA2updates/K1K4/strictrestore/RNG, full initial state exact vsV37. Isolated latent grads denoiser/query/image10× at sameforward. Clip.1 retained, preclipnorm300.108; peakallocated1.106/reserved1.344GiB. Proceeding approved fresh seed42/80epoch freeze/launch; cancelled jobs stay stopped.
+
+2026-10-31 V37-reweight approved implementation/launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v37_reweight/20261031_232257, freshseed42/80epochs, alignment1:1:1 and latent100 only.10 tests+configdiff/nativeCUDA/strictrestore/RNG/10xroute checks PASS; initial90finiteupdates. Dashboard process updated12runs/pins; API reload/parent-preservation verification underway. Earlier cancelled jobs must remain stopped. Retain plan until outcome review.
+
+2026-10-31 V37-reweight FINAL verification PASS: 190finiteupdates, coverage1, HTTP200/59scalarstags and12configured dashboard runs/pins retained. Original V37 PID3477966 active at38480; cancelled early/timed/q200 PIDs remain exited and cancelled_by_user. Frozen run /storage/outputs/pose-graph-diff/results/poseflow_v37_reweight/20261031_232257;10tests/configdiff/CUDA2updates/strictrestore/RNG/exactinit/isolated10xlatentgradient PASS. No AP before first epoch. .plan retained for outcome review.
+
+2026-11-01 V38 iteration1: approved VAE clean posterior replaces explicit alignment; sampled clean reconstruction, detached mean matching/diffusion, latent100 and KL0.1. Dedicated model/pipeline/config and checkpointed posterior RNG1042. Nine intended-red then19 focused passing checks; shared initialization/RNG/Gaussian parity, masks/gradients/strict restoration verified. NativeCUDA verification pending; docs/report and .plan updated.
+2026-11-01 V38 nativeCUDA PASS: two batch4accum2 finite updates/K1K4, strict restore/optimizer/all RNG continuation, gradient routes and exact shared native initialization/global RNG. Peakreserved1.348GiB; recipe diff approved-scope only. Preparing frozen freshseed42/80epoch launch.
+2026-11-01 V38 launch verified: freshseed42/80epochs at /storage/outputs/pose-graph-diff/results/poseflow_v38_vae/20261101_001343, frozen505sourcehashes/config/inputs, independent posterior RNG and unchanged Gaussian DDIM.19tests+nativeCUDA PASS;160finiteupdates/coverage1,62liveTBscalars,13runs/history/APpins retained on33330. V37/reweight continue, prior cancellations stay stopped. Fixed32/final8000K1K4 and matched-age comparison configured. Report/docs/diary/.plan updated; outcome review pending, noAPclaim.
+
+2026-11-01 POEM adaptation investigation only: joint image-independent 2D box+14joint+existence VAE feasibility report, pinned upstream model/loss/trainer audit and read-only CrowdPose mask/range/split audit. Candidate47input/32latent/33output mirrored residualMLP577kparams; mean-metric triplet/pair alignment and staged codec freeze proposed. Documented missing joints, box-vs-joint differences, KL reduction scaling, latent/attention width coupling, target gather/augmentation/evaluation changes. No implementation, training, checkpoint or active-run changes. .plan retained for design review.
+
+2026-11-01 fixed-source iteration: isolated V35-OTA model/config wrapper; exactly one GT positive/person, shuffled slots, foreign/random negatives, original-paired real-only geometry/latent MSE, all-slot focal classification.17 focused checks and nativeCUDA two-update/K1K4/strictrestore/RNG/init checks pass. V37-reweight/V38 cancelled by user with checkpoints/logs preserved. Fresh launch preparation underway; no performance claim.
+
+2026-11-01 fixed-source launched freshseed42/80epochs: /storage/outputs/pose-graph-diff/results/poseflow_fixed_source/20261101_193746.17 focused checks/nativeCUDA2updates/init/strictrestore/RNG PASS. Live150finiteupdates, unique positive targets verified. Fixed32/final8000K1K4, noise-bin/source recovery, excessIoU and feature-shuffle diagnostics configured. V37-reweight/V38 stopped with checkpoints preserved; dashboard14runs/history/pins retained.
+
+2026-11-01 fixed-source implementation/verification/launch COMPLETE within approved scope: /storage/outputs/pose-graph-diff/results/poseflow_fixed_source/20261101_193746.17 focused tests and nativeFP32CUDA2updates/K1K4/gradient/init/strictrestore/optimizer/RNG checks PASS. Live500finiteupdates; exactlyonepositive/person;511 frozen source hashes and5input hashes verified. TensorBoard33330 serves44new scalar tags,14configured runs with prior13/history/APpins preserved. V37-reweight and V38 cancelled_by_user and exited, all checkpoint paths preserved; original V37 already complete. Per-epoch fixed32K1K4/noise-bin/source recovery/feature-shuffle/excessIoU diagnostics and automatic epoch79full8000K1K4 configured. FirstepochAP pending; no learned-performance claim. Plan retained pending outcome review. Next step: inspect first-epoch and matched-age AP/coverage/class separation.
+
+2026-11-01 renamed experiment V39 at user request: canonical config/class/test/report/dashboard/progress names, run alias /storage/outputs/pose-graph-diff/results/poseflow_v39/20261101_193746, legacy config/class compatibility retained.17checks and strict old checkpoint loading pass; same trainerPID3759467 continues, no optimizer/RNG reset.
+
+2026-11-01 V39-denoiser-grad implementation/native verification PASS:4 intended-red then40 focused tests; exact originalV39 init/hash/RNG/forward/Gaussian parity and draws. Native FP32 batch4accum2/two finite updates/K1K4/strictrestore/optimizer/RNG pass. Frozen isolated clean-encoder norms detached latent0/decoded0 versus live1.5323/24.0956; target remains detached. New run-local representation spread/readout-norm diagnostics smoke verified. Preparing approved freshseed42/80epoch frozen launch alongside active V39; no performance claim.
+
+2026-11-01 V39-denoiser-grad approved implementation/verification/launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v39_denoiser_grad/20261101_212530, freshseed42/80epochs, corruption_source_detached=false and latent_target_detached=true, original decoded losses/weights retained.4intended-red then40focusedchecks; nativeFP32CUDA2updates/K1K4/init/RNG/draw/strictrestore/optimizer and isolatedgradientroutes PASS. Live260finiteupdates,516source+5inputhashesverified,15dashboardruns with prior14/history/APpins retained and44newscalartags verified. V39 PID3759467 continues (update21320); no restart/cancellation. Epoch12 baseline checkpoint/config pinned and hashverified for later matched-age representation comparison. Per-epoch fixed32K1K4/source-recovery/class/noise/feature-shuffle/representation-spread/readout-norm diagnostics and automatic epoch79full8000K1K4 configured. FirstepochAP pending; no performance claim. Retain plan pending outcome review. Next step: examine first-epoch and matched-age AP/recovery/latent spread.
+
+2026-11-01 V40 approved implementation: isolated ED-Pose encoder-proposal frontend, pre-corruption Hungarian/matched-preserving50, live feature+box conditioning, positive-only latent/geometry with all-slot classification, fixed-reference DDIM and configs/docs/tests. Seven intended-red then30 focused regressions pass; native preflight pending.
+
+[2026-11-01 23:57 Europe/Stockholm] V40 approved implementation, verification and launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v40/20261101_235355. Seven intended-red then31focused V40/V35/V39 checks; nativeFP32CUDA2updates/K1K4/strictmodel+pipeline+optimizer+RNG restore, V35 sharedinit/RNG parity,342EDPose tensor coverage100percent and isolated live feature/box reference gradients PASS. Live100finite optimizer updates verified; trainerPID3813829;520source+5inputhashesverified. Dashboard16runs preserves prior15/history/APpins,51V40scalar tags served. Freshseed42/80epochs batch4accum2 clip0.1; fixed32K1K4each epoch and epoch79full8000K1K4 configured. Existing V39/V39-denoiser-grad processes remain active and untouched. No learned-performance claim; firstepochAP pending. Plan retained pending outcome review. Next step: inspect proposal/top50coverage, reference ranks, background calibration and matched-age Gaussian bboxAP.
+
+2026-11-02 V40-EMA implementation iteration: six intended-red then37 focused EMA/V40/V35/V39 tests PASS. Full clean producer teacher, post-optimizer cadence, teacher corruption+MSE, online task losses, actual-target diagnostics and configs/docs implemented. Initial online tensors/RNG exact; teacher forward checked at FP32 tolerance. Native real-data CUDA preflight in progress; launch pending.
+
+2026-11-02 V40-EMA native verification PASS:37focused checks; real-data nativeFP32CUDA batch4accum2/two finite updates, teacher cadence[0,1,1,2], teacher no-grad/optimizer exclusion, live reference feature+box gradients, strict model+teacher+optimizer+RNG and next EMA update restoration, init-free online-only GaussianK1K4. Initial online model hash/RNG identical to V40; peakreserved1.898GiB. Freezing approved freshseed42/80epoch launch; SigReg remains deferred.
+
+[2026-11-02 11:32 Europe/Stockholm] V40-EMA approved implementation, verification and fresh launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v40_ema/20261102_112758. Six intended-red then37focused EMA/V40/V35/V39 checks PASS. NativeFP32CUDA real-data batch4accum2/two finite updates, cadence[0,1,1,2], teacher no-grad/optimizer exclusion, strict model+teacher+optimizer+RNG and next EMA update restore, online-only K1/K4 and live-reference gradients PASS. Initial online model/globalRNG exact V40 parity; teacher-forward equality verified atFP32 tolerance. Freshseed42/80epochs, EMA0.999 afteroptimizersteps. Live160 optimizer and160 teacher updates match; trainerPID3933264;524source+5inputhashesverified;69scalar tags served;17dashboardruns preserve prior16/history/APpins. V40 control remains active and unchanged. Fixed32K1K4 each epoch and epoch79full8000K1K4 configured. FirstepochAP pending; no learned-performance claim. SigReg deferred. Retain plan pending outcome review. Next step: inspect online-teacher lag, teacher-code decode losses and matched-age raw K4AP/K4-K1 gap.
+
+2026-11-03 V40-SigReg iteration1:8 intended-red then45focused tests pass. Isolated single-encoder/identity-clean-output model and pipeline/config, live corruption with detached matched MSE, SIGReg0.05 on matched clean codes and independent checkpointed projection RNG. Default V40/EMA paths unchanged; native CUDA verification and one approved launch pending.
+
+2026-11-03 V40-SigReg native verification PASS:45focused tests plus8post-logging checks; real FP32CUDA2updates, independent clean-source latent/task/SIGReg gradients, live reference gradients,342EDPose tensors100percent, shared V40 initial tensor hash/RNG, exact state/optimizer restore and next CUDAupdate withinFP32tol(max1.14e-7), GaussianK1K4 smoke and held-out17person probe repeat0/injectedshift0.0001. Validation callback logs without trainingRNG changes. Peakreserved2.227GiB. Preparing approved one freshseed42/80epoch frozen launch.
+
+[2026-11-03 Europe/Stockholm] V40-SigReg implementation/verification/launch COMPLETE: /storage/outputs/pose-graph-diff/results/poseflow_v40_sigreg/20261103_123752. One freshseed42/80epoch run, trainerPID278823, 380finite optimizer updates with continued progress after initial170-step verification.8intended-red then45focused tests plus8post-logging checks; nativeFP32CUDA2updates/independent source and reference gradients/342EDPose tensors100percent/exact restore+optimizer/RNG/next-update FP32 parity/K1K4/probe and validation mode-parity PASS.607frozen source/doc files+5inputs hashverified,65scalar tags,18dashboard streams preserve prior17/history/pins. SIGReg0.05,256projections,17knots[0,3], matchedclean only, identity final clean norm, live corruption/detached latent target, no teacher. Fixed32K1K4 each epoch, full8000 afterepoch79,all50/noNMS. First launch 20261103_123224 preserved as superseded due initial-probe augmentation; corrected run is fresh seed42 with evaluation-only probe. No AP result claimed; plan retained pending outcome review.
+
+2026-11-03 V40-SigReg learned outcome FAILED: fixed32 K1/K4 AP0 and IoU0.5 coverage0 at epochs1/2; fixed held-out clean RMS .849->14.357->246.464->2136.947; run stopped duringepoch3 on nonfinite gradient-norm check(lastlogged4940). Predictions cover correct32images/1600outputs; frozen source matches current. SIGReg weighted penalty remains order1 while MSE explodes. Frozen target-gradient counterfactual removes outward latent component at high noise, but parameter-Jacobian check does not prove target detach alone caused AdamW scale growth. Production training rules unchanged; report docs/reports/poseflow_v40_sigreg_failure.md; propose SigReg-only live MSE target and bounded2epoch pilot, awaiting review.
+
+2026-11-03 approved live-target correction implemented: default-preserving V40 latent-loss hook; SigReg new preset detach_latent_target=false, missing historical flag defaults true.4intended-red then50focused checks plus14finalSigReg checks(51distinct) pass, including direct target gradients, contracting-predictor radial sign, identical whole-batch forward losses and historical restore. Native FP32CUDA2updates/init/reference gradients/strict optimizer+RNG restore/nextupdateFP32/K1K4/probe pass. Bounded2epoch pilot preparing; no80epoch launch.
+
+2026-11-03 live-target pilot launch verified: tmp/v40_sigreg/live_target/pilot_20261103_144558 (resolved under /library/tmp-folders/pose-graph-diff), fresh seed42, trainer2epochs/scheduler80epochs, PID351587; 609frozen source+5input hashes verified; live-target diagnostic0,66scalar tags,19dashboard streams preserve prior18 and AP pins. Step480 finite, matchedclean RMS0.333/MSE0.0312. Early health only; two-epoch AP/scale result pending. No80epoch launch.
+
+[2026-11-03] APPROVED V40-SigReg live-target correction and bounded pilot COMPLETE; pending user outcome review.
+Implemented SigReg-only live MSE target with historical missing-flag default true; original V35/V39/V40/EMA gradients preserved. Four intended-red tests; 51 distinct focused checks across regression/final runs; native FP32CUDA initialization/gradients/restore/RNG/K1K4 checks pass. Pilot tmp/v40_sigreg/live_target/pilot_20261103_144558 completed two epochs/3000 optimizer steps, scheduler horizon80, no numerical/scale guard. Fixed32 bbox AP K1/K4 epoch0=8.349/5.982, epoch1=13.148/5.335. Held-out17person cleanRMS0.40526/0.49161 versus original14.357/246.464; finalvariance0.16010, adjacentprobeMSE0.024975/cos0.943207. Epoch1 IoU50 coverage101/133 and104/133. Final last/epoch001 checkpoints finite; all AdamW steps3000; trainer exited;609source+5input hashes intact;19dashboard streams/history/pins preserved. Documentation/README/failure follow-up/current report updated. Original failed runs/checkpoints preserved. No80epoch launch. Remaining limitation: K4 AP remains below K1 and decreased in epoch1 despite stable scale; no claim of long-term stability or full8000/pose performance. No unapproved refactor or other training change. Retain .plan pending outcome review; next step is user review before any longer run or further correction.
+
+[2026-11-03 15:22 Europe/Stockholm] AUTHORIZED fresh V40-SigReg live-target80epoch launch COMPLETE (training ongoing).
+Run /storage/outputs/pose-graph-diff/results/poseflow_v40_sigreg/20261103_151941; trainerPID365331; freshseed42, no resume, max_epochs80 and scheduler80, pilot source/config equality verified except Trainer horizon. SIGReg0.05/live source/live target; original FP32/data/augmentation/optimizer/resize256427/batch4accum2/clip0.1 retained. ScaleRMS>10/nonfinite guard with forensic checkpoint; fixed32K1K4 each epoch/all50/noNMS, full8000K1K4 afterepoch79 configured. Startup finite step290, cleanRMS0.39047; initialized342EDtensors100percent/exactinitialhash,609frozen source+5input hashes verified,66scalar tags;20dashboard streams preserve prior19/history/APpins. Existing51focused/nativeCUDA/strictrestore checks apply unchanged; new launch guard smoke pass. Failed original and pilot pointers/artifacts preserved. .log/project/architecture/experiments/README/full-run report updated. No new AP claim; next follow-up is matched-age K1/K4 and clean-scale/variance/lag review. Retain plan pending learned-outcome review.
+
+2026-11-03 V41 implementation iteration1 verified: 10 initial intended-red checks, then62focused V41/V40/SigReg/EMA/V35/V39 regressions pass. Corrected proposal-retaining scope: fullV40 front-end/top200/top50score, live reference conditioning/cachedsampling; coordinateGaussian4Dstate, sharednormalizedboxE3blocks andtimedP3blocks, separateHungarianproposal/outputassignments, outputassignmentgatherslivecleanJEPA target, proposal+.5clean+.5denoised+10JEPA+.05SIGReg. NativeFP32CUDA batch4accum2/2updates PASS; exactsharedV40initialstate/RNG,342EDtensors100percent, independentJEPA/task/SIGRegsource andreferencegradients, strictmodel/pipeline/optimizer/RNGrestore and nextupdatewithinFP32(max1.54e-7), GaussianK1K4sampling100detections/condition, heldout17personproberepeat0/injectedshift0.0001. Peakreserved2.463GiB. Two finaltarget/skiptests added; finalfocusedrunpending. PriorV40live-targetrun observedguard_stoppedepoch13/step20466/RMS13.35154; forensiccheckpointpreserved, noexistingprocessinterrupted. Continueapproved documentation/frozen80epochlaunch; nolearnedAPclaim.
+
+2026-11-03 V41 final focused13PASS (64distinctincluding62regressions), launchguard-smokePASS. Retained fullproposal-front-end andscoreselectionconfirmed; separateproposal/finaltargetidentityregressionPASS. Finaldocumentationupdated; preparingapprovedfreshseed42/80epochfrozenlaunch. Noexistingruninterrupted.
+
+2026-11-03 V41 final restoration iteration PASS: 11intended-red total (10initial+globalRNGhook),62regression+14finalV41checks(65distinct), nativeCUDAreverified2updates/globalCPU-CUDAcheckpointRNG/strictrestore/nextupdateFP32/K1K4/probes. Readyforapprovedfresh80epochlaunch; firstunusedfrozennamespacepreservedassupersededbeforelaunch. No production changes outside approvedV41scope/historicalexports.
+
+[2026-11-03 18:18 Europe/Stockholm] APPROVED V41 implementation, verification and fresh80epoch launch COMPLETE (training ongoing; retainplanpendingoutcomereview).
+Run /storage/outputs/pose-graph-diff/results/poseflow_v41/20261103_181429; trainerPID424762; tmuxposeflow-v41. CorrecteduserrequirementretainsfullV40proposalstage/342EDtensors, top200/top50native-scoreselectionbothtrain/infer, livecachedreferences. Diffusionstate4DcoordinateGaussian, uniformt0..999/cosine1000/scale6, sharednormalizedboxencoderE3 andtimedreferencepredictorP3; separateproposal/finalHungarianmatching andsamefinalindicesforgeometry/JEPA; livecleanGTbanktargets+uniqueGT SIGReg. Objectiveproposal+.5clean+.5denoised+10JEPA+.05SIGReg. No learnedfeaturecorruption/carry, noaux/DN/constructedduplicates/foreignnegatives/renewal/ensemble/NMS.11intendedred(10initial+RNGhook),62regressions+14finalV41checks(65distinct) PASS. NativeFP32CUDA batch4accum2/2updates/fullinitcoverage/exactsharedinitialtensors+globalRNG/independentlossandreferencegradients/strictmodel+pipeline+optimizer+RNG/nextupdateFP32(max1.26e-7)/GaussianK1K4/probe PASS. V41globalPython/NumPy/TorchCPU-CUDARngcheckpoint hooks verified; fixedbatchrestore doesnotclaimdataloaderprefetch replay. Guard-smokePASS.617frozen source+5input hashesintact;64scalartags;21dashboardstreams preserveprior20/history/APpins. Freshseed42/80epochs, originaldata/augment/optimizer/scheduler/resize256427/FP32/batch4accum2/clip.1, fixed32K1K4eachepoch/full8000afterepoch79 configured. Finite live step420, cleanRMS0.29449, JEPA0.02257; noAPclaim. .log/README/project/architecture/experiments/V41report updated. Unusedinitialfrozennamespace20261103_181140 preservedsupersededbeforelaunch. ExistingV40SigReg previouslyguardstoppedepoch13step20466RMS13.35154, forensiccheckpointpreserved; noexistingtrainerinterrupted. Remainingrisk: coordinatefixedcorruptiondoesnotguaranteereversestatequality orfeaturestability; monitorAP/coverage/K1K4gap/featurevariance-scale. Nextfollowup: inspectmatchedepochresults, not anotherunapprovedarchitecturechange.
+
+2026-11-03 V42 approved iteration1 implemented: isolated coordinate-diffusion full-pose baseline; whole-pose encoder and absolute pose reader, one person feature, box-only deformable reads, 60 points for ordinary pose queries/4 for DN, original proposal selection/reference detach/task/aux/DN losses and t0 corruption/DDIM. Initial5tests and28focused/native-regression checks pass. NativeCUDA real batch4accum2/2updates finite;481shared native tensors exact, strictmodel+optimizer restore and predictions exact; K1/K4/K8 two-image evaluator smoke finite (not learned AP evidence). Added DN-read-count/detach/batch-isolation checks, final regression pending. V41 SIGINT exit verified, checkpoints preserved; V40-SIGReg alreadyguardstopped. Remaining approved work: final verification, docs, fresh80epoch frozen V42 run and dedicated full-pose/V41/V42 TensorBoard with6pins.
+
+2026-11-03 V42 verification complete:28initialfocused/regressions +80finalfocused (102distinct) PASS, including7V42checks. NativeCUDA batch4accum2/2finiteupdates;481shared native tensors exact before new query modules, original EDPose coverage gate preserved; strictmodel/optimizer/prediction restore and controllednextupdate FP32max3.7719e-8; K1/K4/K8 two-image evaluator/RNG smoke, peakreserved2.148GiB. UpdatedREADME/project/architecture/experiments/V42report. Ready for approved frozen seed42/80epoch launch and dashboard. No learnedAP claim; retainplanpending outcome review.
+
+[2026-11-03 20:35 Europe/Stockholm] APPROVED V42 implementation, fresh80epoch launch and comparison TensorBoard COMPLETE (training ongoing).
+Run /storage/outputs/pose-graph-diff/results/poseflow_v42/20261103_203019; trainerPID447947; tmuxposeflow-v42; seed42/80epochs, FP32,batch4accum2,resize256427,3E3D EDPose2/4/6,200/50queries/DN50, originalHungarian andt0corruption/task/aux/proposal/DN losses, noJEPA. Onewhole-pose encoder/person state, absolute learned pose reader, boxreferences everylayer; normal60/DN4 offsets preserve original image-read counts.
+102distinct focused checks PASS; nativeCUDA realaugmentedbatch4accum2/2finiteupdates;481survivingnative tensors exact; originalpretrainedcoveragegate retained; strictmodel/optimizer/prediction restore, nextupdateFP32delta3.7719e-8; K1/K4/K8 evaluator/RNG smoke.623frozensource+5input hashes verified. Liveepoch0/step300, batchloss49.13892, finitegradients.
+DedicatedTensorBoard33331:33configuredrunroots/36indexedstreams from previousfull-pose runs+nativecontrol+V41+V42. Sixpose_AP/bbox_AP pins atsteps1/4/8 verified in liveUI andHTTP tags; screenshot/tmphelpers under localtmp/v42/dashboard. Originaldashboards intact. V41's existingmeasured box_AP curves have explicitcomparison aliases (originalevents preserved); no fabricated pose/K8history.
+Hash-verified seededV42 initialization measured on same32heldout images atstep0 to establishall6tags; independentprocess didnotaltertrainer. InitialposeAP0 atallsteps; boxAP~.02486/.02659/.02656; initializationevidenceonly, trainedposeAPpending. Epochendfixed32K1/K4/K8 andfinalfull8000 configured; no automaticarchitecture/JEPAloss changes.
+UsercancelledV41:verifiedSIGINTexit, latestlast.ckpt/logs/history preserved, statusmarkedcancelled. V40-SIGReg alreadyguardstopped before request; status/forensiccheckpoint preserved andcancellationnoted. README/project/architecture/experiments/V42report/.log updated. Retainthisplan pendingbaselineoutcome review; acceptableperformancegate andfutureJEPA target/matching/collapse design remainuserdecisions.
+
+[2026-11-03 21:31 Europe/Stockholm] V42 approved anchor repair implemented and verified. Three intended-red checks then18focused V42/native decoder/diffusion checks PASS. Explicit historicalabsolute default/repairedpresetbox_center_residual, unchangedparameter keys/shapes and exactoriginalinitialstatehash ef71a0f0543d7109117605ee9e162052d81aaff935c3ea685e7e21db27373628. Actualcorrectedreadout initialsame32/133people meanmatchedboxIoU0.371371 vsfailed0.109578; pose/boxassignmentagreement20.30percent vs1.50percent; posecenterstd0.180292 vs0.001822. Unchangedfirststage/finalboxforwardvaluesbeforetraining (no causalityclaimforlearnedAP). NativeFP32CUDA realbatch4accum2/2finiteupdates;481sharednativetensors exact; strictmodel/optimizer/predictionrestore; nextupdateFP32max4.09782e-8; K1/K4/K8 evaluator smoke. Prepared approvedfreshbounded2epoch check, module/scheduler80. Nofull80extensionwithoutoutcomereview.
+
+[2026-11-03 21:34 Europe/Stockholm] Approved V42 repair pilot launched: /storage/outputs/pose-graph-diff/results/poseflow_v42/box_center_pilot_20261103_213148, PID459492, tmuxposeflow-v42-repair. Trainer2epochs/module-scheduler80; sameinitialhash/data/optimizer/loss/noise verified againstfailedrun. Readoutmodebox_center_residual is solemodelbehaviorchange. ExistingoldV42 stoppedgracefully; interrupted.ckpt521764069bytes pluslast/epoch003preserved, cancellation/statusrecorded. Dashboard33331 preservedallpreviousroots+V41; failedabsolutestreamrenamedexplicitly andnewV42-repair-box-centeradded; sixpinsunchanged. Boundedpilotprogressfinite; learnedoutcomePENDING. Hypothesis: restoredgeometricanchor improves earlypose/boxassignment andsame-ageGaussianposeAP. Evaluateepoch0/1at1500/3000updates onidenticalfixed32/K1K4K8; rejectsole-causeclaimifAPstillfails. Noautomaticextension beyondtwoepochs.
+
+[2026-11-03 21:52 Europe/Stockholm] V42 repair first learned check: epoch0/step1500 fixed32 K1/K4/K8 poseAP7.434/7.256/7.024 versusfailedsameage0.098/0.204/0.122; boxAP19.766/19.645/19.624 versus2.323/2.281/1.611. Images/updatecounts verifiedidentical. Source/readoutmode solemodelchange; nofulltest orfinalbaselineclaim. Epoch1ongoing. Preservedepoch000checkpointwithSHA256. ActualhistoricalcheckpointgivesbitwiseidenticalCPU B2predictionsinold/newsource withabsolute mode. Noautomaticextension afterepoch1.
+
+[2026-11-03 22:09 Europe/Stockholm] APPROVED V42 box-center repair and bounded2epoch learning check COMPLETE; retain plan pending user outcome review.
+Pilot /storage/outputs/pose-graph-diff/results/poseflow_v42/box_center_pilot_20261103_213148; trainer exited after3000updates/2epochs, scheduler80. Identicalinitialhash and unchangeddata/optimizer/loss/noise. Same-agefixed32 K1/K4/K8 poseAP0.0134/0.0098/0.0568 ->20.0945/16.4526/15.2285; bboxAP0.4896/0.7969/0.8661 ->26.1195/24.0943/23.6027. E0 learned improvement also retained. Actualcleanconditional matchedIoU0.20594 ->0.67734; repaired encoder/first/finalrawbboxAP25.92/29.96/19.81 (remainingfinalstagegap; separatefromGaussianAP).
+18focusedtests/nativeCUDA2updates/strictrestore/nextupdate4.10e-8/actualhistoricalB2CPUbitwiseparity PASS. 624frozensource+5inputhashesintact; finalmodel/AdamWstatefinite, alloptimizersteps3000, modebox_center_residual/max_epochs80 saved. FinalcheckpointSHA256db567c5151df56faa0156cb47b65ac5566f692c3ba5ccd7d2063628416922b02; epoch0preservedwithSHA256. Oldfailedrun/last/interrupted/epoch003/historypreserved.
+Dashboard33331 contains34runroots withdistinctfailed/repairlabels; sixliveAPscalarvaluesverifiedatstep3000 and6pinsinUI. ComparisonfilterV42 plusfullrange(nooutlierclipping), screenshotlocaltmp/v42/repair/dashboard.png. Docs/report/.log updated. NoJEPA or fulltestclaim. Noautomatic80epoch extension; nextsmallstep is userreview of completedtrial beforelongerrun.
+
+2026-11-03 23:58 CET: V42 full training continuation RUNNING, PID497679, tmux poseflow-v42. Resumed preserved repaired epoch001/step3000 with strict native model/AdamW/scheduler restore verified; live epoch2/step3050, finite loss/gradients. Total80epochs, same frozen source/initialization/data/loss/noise/optimizer. No further pilot cutoff or review gate. Fixed32 K1/K4/K8 after every epoch and full8000 final evaluation retained. Existing TensorBoard33331 indexes V42-repair-box-center/resume; historical streams and sixpins preserved. Pilot endpoint/status/manifest/config remain preserved; continuation.json and continuation.log record the launch.
+
+2026-11-04 00:01 CET: Corrected approved V42 TensorBoard33331 scope: V34 is the latest pre-V42 full-pose architecture; V35 is box-only. Added V30 decoder-tolerance, V31 denoised-task, V32 dual-DINO, V33 token-readout, V33 no-clip/rescale controls and V34 OTA-task (7 runs). Local linked event views preserve original data; exact native AP/bbox/AP values aliased to canonical pose_AP/bbox_AP for genuine K1/K4 pinned-chart comparisons; no K8 history exists for these runs. Dashboard now41 roots; sixpins/earlier roots/V41/V42 preserved. V42 trainer PID497679 unaffected and progressing. Provenance tmp/v42/dashboard/pose_predecessors.json; HTTP verification pending indexing.
+
+2026-11-04 00:05 CET: V30-V34 dashboard correction verified: all7 added streams indexed, all28 canonical K1/K4 pose/bbox AP latest values and steps match original event data within1e-7.45 indexed streams total; original event files untouched; no retrospective K8 metrics fabricated. Evidence tmp/v42/dashboard/pose_predecessors_verified.json.
+
+2026-11-04 01:28 Europe/Stockholm: APPROVED V42-matched-target implementation and prelaunch verification COMPLETE.7 intended-red ->17 focused tests,91 native criterion/runner/V34 regressions PASS (108 total). Frozen-old/new24costcases/36lossfields and RNG bitwise exact; historical V42 defaults preserved. New model initialization hash exactly matches repaired V42: ef71a0f0543d7109117605ee9e162052d81aaff935c3ea685e7e21db27373628;481 shared native tensors exact. Native CUDA real augmented batch4accum2 completed2 finite updates; full model/AdamW/scheduler state restore and predictions exact; continued update FP32 max delta1.28e-07. Gaussian K1/K4/K8 two-image smoke finite (wiring only). Source implementation reviewed for explicit input matching before forward and shared final/pose-aux assignments; preselection/proposal/DN unchanged. Full80epoch frozen launch authorized and next; no pilot cutoff. Hypothesis: input-conditioned targets improve Gaussian pose AP/step consistency relative to repaired V42 at the same update count; compare fixed32 AP plus input/output assignment disagreement and coverage. No learned result yet.
+
+2026-11-04 01:33 Europe/Stockholm: V42-matched-target full80epoch training RUNNING, PID552828, tmux poseflow-v42-matched-target, root /storage/outputs/pose-graph-diff/results/poseflow_v42_matched_target/20261104_012819.628frozen source+5input hashes verified by worker; initialmodelhash exactly matches V42. Actual live epoch0/step300, finite loss/gradients. Current repaired V42 control PID497679 continues at epoch8/step12750. No pilot cutoff, no cancellation, no JEPA.108tests/nativeCUDA model+optimizer+scheduler restore/nextupdate1.28e-7 PASS; legacyoldcriterion36lossfields/24costcases/RNG bitwise exact with matched configuredweights. Fixed32K1/K4/K8 each epoch/full8000 at epoch79; first learnedAP pending epoch0 completion. Dashboard33331 configured42roots and sixsavedpins, indexing verification pending. Retainplanpendingoutcome review; nextsmallstep is same-age AP/assignment comparison, no extra approval gate.
+
+2026-11-04 01:35 Europe/Stockholm: V42-matched-target IMPLEMENTATION/LAUNCH COMPLETE, training ongoing at epoch0/step400, PID552828.108tests/nativeCUDA/strictrestore PASS; initialweights exactV42; no architecture/noising/optimizer changes. Dashboard newtrainingloss indexed,46streams/all42roots preserved, sixAPpins verified, selectedrun checkboxes preserved. First learned AP afterepoch0; full80epochs/final8000 retained, control stillrunning. Evidence /storage/outputs/pose-graph-diff/results/poseflow_v42_matched_target/20261104_012819/launch_verification.json and docs/reports/poseflow_v42_matched_target.md. Retainplan foroutcome review; no further pilot/launch approval required.
+
+2026-11-04 10:28 Europe/Stockholm: TensorBoard33331 Tailscale access correction complete. Existing0.0.0.0 listener/46streams already servedHTTP200 through tailnet addresses. Added persistent private Serve TCP33331->127.0.0.1:33331; existing8501 route preserved, no Funnel/firewall/ACL/trainer changes. Verified page/scalar APIs via100.122.159.115 and lynx.tail481642.ts.net, and browser rendered directIP URL with all6canonical K1/K4/K8pose_AP/bbox_AP pins. Originating remote client not independently verified (peer SSH authentication unavailable); directIP bypasses client short-name DNS. URLs/evidence: tmp/v42/dashboard/tailscale_url.txt and tailscale_verified.json. Disable only this route with tailscale serve --tcp=33331 off. Both full80epoch trainers remain active.
+
+[2026-11-04 10:32 CET] Read-only all-version evidence audit: source-linked review/version ledger and scientific overview in tmp/evidence_review_20261104/ (87 result namespaces,59 latest monitor records,122 metric/report hashes). Verified final8k V40-EMA K4box30.737 vsV40 25.832, K1approximatelyunchanged; target-stabilization mechanism remains qualified. Refreshed SigReg long-run failure (epoch13RMSguard), V42 same-age input-matching failure and nonmonotonic multistep monitor behavior. No model/config/checkpoint/process changes; no inference/training launched. Artifact links and figure verified; plan retained for review.
+
+2026-11-04 10:53 Europe/Stockholm: Corrected prior Tailscale Serve configuration error: tailscaled could not bind100.122.159.115:33331 because TensorBoard owned0.0.0.0:33331. Prior same-hostHTTP200 checks bypassed the failedproxy. TensorBoard nowPID631880 binds127.0.0.1:33331; daemon confirms separate listener100.122.159.115:33331, forwards toloopback. Serve8501 preserved. ForwardedHTTP200,46scalarstreams and all6V42APtags verified; no subsequentbinderror. Trainers continue. Rootcause/config/sockets in tmp/v42/dashboard/tailscale_binding_verified.json; remoteclientretry requested, no remoteconfirmation yet. Supersedes earlier operational verification claim.
+
+TensorBoard moved at user request to0.0.0.0:33332; PID639339. HTTP200 via localhost, tailnet IP and FQDN.42runroots/sixpins preserved in launch.json and saved URLs. Removed obsolete33331Serve route and prior TensorBoard only; Serve8501 and training jobs untouched. Graph history reloads after restart; evidence tmp/v42/dashboard/port_33332_verified.json.
+
+2026-11-04T11:21:44.816987+01:00: Investigated persistent phone timeout with real Tailscale capture. TensorBoard0.0.0.0:33332 remains HTTP200 locally. Captured only calibrated outbound SYNs; no inbound dashboard TCP in two capture windows. Inbound tailnet filter allows phone/all ports, ShieldsUpfalse, no inbound filter drops. Phone Tailscale ping fails, pipit ping works; relay repeatedly reports registeredXiaomi peerunknown. Host map/restun/relay reconnect didnotrestore phone path. No root firewall access or security changes; no model/trainer changes. Await phone retry/33330same-browser comparison. Evidence tmp/v42/dashboard/phone_path_diagnosis.json. Do not claim remoteaccess fixed.
+
+2026-11-04T13:11+01:00 V42 matched-target failure investigated without changing jobs: epoch31/48000 fixed32 pose AP0/0/0 vs same-age control9.103/26.011/30.369. Current/frozen source hashes match; input/decoder slot ordering remains aligned. Training always t0; input-match coverage1/disagreement.000267, validation disagreement0. Frozen32 input/time ablation: almost-clean GT coordinates poseAP12.744(t0)/11.049(t999), Gaussian0 at either time; Gaussian t999 matches saved K1 boxAP. Evidence tmp/v42_matched_target/diagnosis/diagnosis.json. Proposed explicit uniform-t matched variant recorded in .plan awaiting review; no cancellation, code/config edits or new training launch.
+
+2026-11-04: User cancelled failed V42-matched-target; verified PID552828 exit at epoch33/50950 recorded status and preserved interrupted.ckpt/events/source. Implemented approved corrected box-center V42 uniform per-image t0..999 coordinate corruption with output-Hungarian; historical defaults/RNG/model keys preserved.107 focused/native tests and nativeCUDA batch4accum2/strictmodel-optimizer-scheduler-restore pass; actual varied forward timesteps observed, same initial weights, nextupdate delta1.19e-7. Docs/config/README updated. Fresh frozen full80epoch launch in progress; no learned performance claim.
+
+
+2026-11-04: Corrected V42 box-center uniform-t full80epoch training RUNNING, PID666506, tmux poseflow-v42-uniform-t, root /storage/outputs/pose-graph-diff/results/poseflow_v42_uniform_t/20261104_133538. Fresh EDPose/seed42 initialization exact prior box-center hash; no t0 checkpoint resumed. Native coordinate corruption samples per-image integer t0..999 and same actual t conditions model; ordinary output-Hungarian, no JEPA. Live epoch0/step200, finite loss/gradients; observed 1600 images/790 distinct timesteps, range1..998, all10 time bins sampled.107tests/nativeCUDA/strictmodel-AdamW-scheduler restore PASS.631frozen source+5input hashes worker/audit verified. Failed matched-target PID552828 cancelled with interrupted checkpoint preserved; old V42 control PID497679 remains running. TensorBoard0.0.0.0:33332 preserves prior42roots/sixpins and adds V42-box-center-uniform-t (43roots/47streams); scalar history reload ongoing. Fixed32 K1/K4/K8 each epoch/full8000 afterepoch79 retained, no pilot cutoff. Evidence launch_verification.json and local tmp/v42_uniform_t; first learned AP pending. Next follow-up: epoch-end sampled AP and actual-t histogram, without another launch gate.
+
+Corrected V42 launch final verification: PID666506 active at epoch0/step250; actual forward timestep range1..999. TensorBoard33332 fully reindexed47scalarstreams, new V42-box-center-uniform-t training-loss data populated and all6pose/boxK1/K4/K8 pins have existing measurements; prior43configured roots including new stream preserved. Corrected run AP populates after each epoch; no invented values. No pending launch gate or pilot cutoff; training proceeds through80epochs.
+
+
+[2026-11-04T17:53+01:00] V42 uniform-t similarity audit complete
+Same-age epoch11/18000 fixed32 poseAP K1/K4/K8: uniform32.830/31.091/30.917; t0control29.640/29.662/28.950. Averaged epochs8..11: uniform31.051/29.309/29.342 vs t0control31.450/30.830/30.531; no consistent pose gain demonstrated yet. Frozen config/source match manifest and uniform training histogram covers all1000 timesteps roughly evenly.
+Frozen epoch011 K1 baseline reproduces all saved evaluator metrics exactly. Same32/seed42/256427/nativeposeNMS: baselineposeAP32.830; alternateGaussianseed32.744 (joint shift0.166 resizedpixels mean); zero coordinate state32.765 (0.129px); zero pose encoder31.729 (2.595px); sameGaussian input/timestep0 gives32.617. At t0 GT-derived native-corrupted input31.414 vs zero-state32.756 (0.851px); t500 GT-derived32.085 vs zero-state32.511 (0.619px). Conditional GT-input AP is a recovery diagnostic, not inference AP. Coordinate deltas average all50 ordinary slots with fixed image/timestep and unchanged preselection, so slot order is matched.
+Finding: weak coordinate-state dependence at this checkpoint; image/proposal-driven solution is supported. Coordinate inputs only add an MLP feature at selection, while box-referenced image proposals/readout are rebuilt each call; output-Hungarian task loss allows this solution. This is an empirical inference-ablation interpretation, not proof of exact training causality or all-checkpoint behavior. Uniform-t correction is active; useful iterative state-guided refinement remains unestablished. No production/model/job/dashboard changes; both live jobs retained. Evidence tmp/v42_uniform_t/sensitivity/{report,same_age,audit_summary}.json and sensitivity_conditional/report.json. No further run/architecture change proposed as approved scope.
+
+
+[2026-11-04T19:00+01:00] Proposal–pose correspondence audit COMPLETE; no production changes
+Frozen corrected V42epoch014/22500, fixed32/133people plus32 seeded augmentedtrain images/112validpeople, native refs/inputsource/finalHungarian assignments captured. SavedGaussianK1 poseAP32.573 and all metrics reproduced exactly. On augmentedtrain sample: knownsource slots17sameGT/30differentGT/65unmatched (15.2/26.8/58.0percent); frozen eval-mode diagnostics, not live training-gradient labels. Fixed32t0:22same/32different/79unmatched. Source coverage100percent using exact raw masked joint match. Some proposal IoU>=.5 covers94.0percentGT, but source's own slot covers30.8percent; mean ownslotIoU.305 vs geometryaligned.807. GTassisted bijective input-bank permutation preservesboxes/readcount, raises sourceboxcoverage93.2percent, but conditionalAP31.045->30.940: correspondence mismatch confirmed, frozen alignment doesnotrestoreAP; causal learned-suppression effect needs controlled retraining.
+Historical answer: V40 explicitly proposal-Hungarian->gather assignedGT->encode/noise->same recovered task/latent targets, verified in original frozen worker/helper;2targeted tests PASS. V41 replaced this with independent source/reference banks and separate final/output JEPA alignment (source/proposal identity not fixed), verified current=frozen. V33/V34 latent state itself is query, no rankedimageproposal additivebank; frozen methods verified. V19 state defines sampling references/residual, native DiffusionRegPose has learned coordinate-fusion attention but no hard source/proposal identity alignment. V40forcedmatchedcandidate inclusion differs from score-top50 inference and is a selection-policy tradeoff, not drop-in proof of AP benefit. No new fix/run approved or implemented; jobs retained. Full report docs/reports/poseflow_v42_correspondence_audit.md; artifacts tmp/v42_uniform_t/correspondence/{report,details,v40_checks.log}. Proposed next design decision is consistent proposal/source/supervision mapping, with explicit selection policy, before another experiment.
+
+
+[2026-11-04T19:31+01:00] V40 actual state-dependence audit COMPLETE
+BaseV40 epoch079/120000/fixed32 seed42/resize256427/nativebboxallqueries/noNMS; savedK1/K4 metrics exactlyreproduced and frozen core methodsverified. K1boxAP43.2876; differentnoise42.9505; zerostate43.5072; zerocompleteproposalconditioning.2316. K4boxAP20.6213; zeroinginputeveryK4call42.8150. Pairedgeometry/confidenceswaps: K4boxes+K1scores43.4169; K1boxes+K4scores20.3638. Samecachedreferences/queryorder/no rematching. Thus measuredK4AP deterioration tracks scores, not geometry; generatedstatefeedbackcausallyimplicated by zero-inputcounterfactual, exact underlyingtrainingrouteunisolated. Acceptedqueries@.5 rise2.66->49.75/50, centerchange1.14resizedpx, probabilityMAE.621.
+GTconditioned matchedreferencebank tests (not inferenceAP) show informative stateuse: t0boxAP69.89->41.16whenzeroed; matchedboxMAE.0050->.0179, positivescore.904->.529 andnegativescore.000112->.05866. t500AP50.32->44.35. ThereforeV40 maintained trainingcorrespondence and learned low-noise stateuse, while generatedtrajectoryconfidence remainsfailed. Full8000nativeK1/K4boxAP47.9955/25.8320verified; ablationsarefixed32only. No model/run/configchanges. Report docs/reports/poseflow_v40_state_audit.md; artifacts tmp/v40_state_audit/report.json. No new fix or run approved by this question.
+
+[2026-11-04] Approved V42 paired-proposal implementation and verification
+Added pure native complete-person target helper, optional V42 selection-boundary pose-input callback and isolated paired-proposal pipeline/configs. Native score-top50 proposal class/box Hungarian now determines clean pose source BEFORE uniform-t coordinate q_sample and fixed final/pose-aux task labels. Background classification only; earlier box/proposal/DN matching and Gaussian inference unchanged. No model-state changes or JEPA.129 tests PASS;16 saved-before-edit target/RNG cases and default train/eval forward/loss/RNG exact. Native CUDA2updates(batch4accum2) finite,76 positive source/label checks exact, strictmodel-AdamW-scheduler restore and controllednextupdate maxdelta4.703179e-8 PASS. InitialmodelSHA ef71a0f0543d7109117605ee9e162052d81aaff935c3ea685e7e21db27373628 matches control;481 surviving native tensors exact. Frozen full80 launch/TensorBoard/live audit follow in same approved iteration; no pilot cutoff. Learned benefit unmeasured.
+
+
+2026-11-04T20:40+01:00: V42 paired-proposal full80 RUNNING, PID758206, tmux poseflow-v42-paired-proposal, root /storage/outputs/pose-graph-diff/results/poseflow_v42_paired_proposal/20261104_203731. Live epoch0/step100, finite loss/gradients;2751 paired positive sources checked with zero source/target mismatch,400 actual timesteps spanning5..995/all10bins. Fresh initial weights match control;129tests/nativeCUDA/strictrestore/nextupdate checks PASS.638source+5input hashes verified. TensorBoard0.0.0.0:33332 adds distinct stream, preserves43previousroots/sixpins; indexing ongoing. Full val/fixed32K1/K4/K8 each epoch and final8000 afterepoch79; no pilot cutoff. Prior controls preserved. Learned state-use/AP effect pending. Report docs/reports/poseflow_v42_paired_proposal.md.
+
+
+Final launch/dashboard verification: PID758206 is active at epoch0/step200,
+finite loss/gradients. Live pairing audit now checks5403 positive sources
+across400 microbatches with zero identity mismatches. Actual timestep
+range0..999, distinct values808, all10 bins sampled.
+TensorBoard fully indexed48 scalar streams/44 roots; `V42-paired-proposal/.`
+contains measured training loss through step199. All six saved K1/K4/K8
+pose/box AP pins have existing scalar measurements, with all historical roots
+preserved. The new run's validation/AP arrive at epoch end. Direct host-side HTTP
+to100.122.159.115:33332 passes; a phone-side connectivity check is separate.
+Full80 training continues without another pilot gate. Next follow-up is trained
+state-dependence/same-age AP assessment. Plan retained pending user outcome review.
+
+
+[2026-11-04] Repaired V42 late Gaussian-AP collapse diagnosed (read-only)
+Historical t0-only control K1 fixed32 poseAP33.815(epoch9)->4.385(epoch63), boxAP37.738 and val loss15.697->7.542. Frozen epoch1/63 baseline metrics exactly reproduced. Early Gaussian/GTt0/zeroAP20.094/17.148/19.368; late4.385/54.718/2.147. Holding Gaussian coordinates fixed while changing t999->0 gives4.385->4.336, ruling out time embedding alone. Holding native background padding fixed while randomizing only GT-source slots gives54.718->17.951 (erasing gives7.814); informative pose dependence is learned late. Clamped Gaussian6 partial recovery17.223 at999 also identifies input-scale mismatch. Interpretation: t0-only training/validation learn conditional pose recovery, while Gaussian initialization is untrained; source-content/scale mismatch drives observed sampling degradation. No sole-cause optimization claim or full-test generalization. Earlier weak state-use applied to younger uniform-t model; late repair clearly uses pose content despite rematching. Correcteduniform t0..999 removes this distribution omission; its late outcome remains unmeasured. No model/job/dashboard changes. Report docs/reports/poseflow_v42_box_center_collapse.md; artifacts tmp/v42/repair/collapse_audit.
+[2026-11-04] Pose VAE iteration1: standalone geometry-only CrowdPose loader, box-centered isotropic pose normalization, independent box placement, input jitter/dropout/flip, residual Gaussian codec and reconstruction/KL. Focused tests written first; integration/launch pending.
+[2026-11-04 21:20 CET] Pose VAE iteration2: Lightning/Hydra entrypoint and shared runner, fixed clean/noisy mean/sample validation, per-joint/size/masked errors+IoU, latent diagnostics, qualitative/prior exports, source/annotation provenance.33tests pass including CPU/CUDA native restore+exact next update;2epoch GPU smoke passes. Full recipe launch follows.
+[2026-11-04 21:23 CET] Pose VAE full50epoch run launched from frozen source at /storage/outputs/pose-graph-diff/results/pose_vae/20261104_212036; PID767063,574560params,train35659/val7074,overlap0.388source+3annotationhashes verified.33tests +2epochGPU smoke PASS. Early finite progress verified; learned full-run/test outcome pending. Existing experiments untouched.
+[2026-11-04 21:29 CET] Pose VAE COMPLETE:50epochs/3500updates,574560params,best epoch49;33tests/nativeCPU+CUDA exact nextupdate PASS. Run /storage/outputs/pose-graph-diff/results/pose_vae/20261104_212036. Final held-out test29122people: clean/noisy pose error .04103/.05333 scale, boxIoU .92878/.86186, masked error .09542. Full-val baseline confirms completion gain (.18380->.09697) but worse observed precision (.02266->.04893); prior grids remain poor. No extra tuning/integration. Artifacts/provenance and docs/reports/pose_vae.md saved; plan retained for outcome review.
+
+[2026-11-04 21:52 CET] Fidelity-first codec iterations1/2 verified
+- Tests written first; missing new modules produced expected initial failures.11new checks PASS;33VAE/shared-runner/data regressions PASS. CPU/CUDA clean+robust native restore and exact next update verified; frozen encoder invariant PASS.
+- New deterministic model566336parameters, native codec AP/AP75/AP95 plus paired OKS/IoU and p50/p95 errors. Native GTcopy/normalization ceiling100 on smoke.
+- Two-epoch3%GPU clean smoke completed6finite updates; failed quality gate correctly skips robustness. This is wiring only. Separate2epoch decoder-only robust wiring smoke in progress.
+- Test data never loaded or scored. Next approved step: freeze source, full100epoch clean training and gated follow-on; retain old VAE/runs.
+
+[2026-11-04 21:55 CET] Fidelity-first full run verified
+- Run /storage/outputs/pose-graph-diff/results/pose_autoencoder/20261104_215332, PID773969. Full-val ground-copy+normalization pose/box AP100/100;395source/config +2annotation hashes verified, no mismatches. Train35659/val7074,overlap0,test untouched.
+- Robust wiring smoke2epochs/6updates passes, encoder bitwise unchanged.44tests pass. Full100 clean continues with finite loss/gradients; early AP belowgate.
+- Hypothesis under test: removing sampling/KL/input corruption plus OKS/per-axis box objectives improves clean reconstruction AP/tails enough to pass97.5. This is a combined intervention; it cannot isolate individual causes.
+- Acceptance test is full-val pose and box AP, followed only on pass by fixed-encoder latent-noise control/robust comparison. No unplanned architecture or optimizer changes.
+
+[2026-11-04 22:10 CET] Fidelity-first codec100epoch/7000update control finished;44tests pass,566336params. Full trainAP93.808/96.954,valAP92.468/96.608; gate97.5/97.5 FAILED. Robust phase skipped, no accepted integration checkpoint, test untouched. Three-seed5%latent-noise AP78.641/86.723. Source395+2annotationhashes/nativeCPU-CUDA restore exact verified. Run /storage/outputs/pose-graph-diff/results/pose_autoencoder/20261104_215332; docs/reports/pose_autoencoder.md records tails, curves and unresolved fit gap. No unapproved extra training; plan retained pending outcome review.
+
+[2026-11-04 22:57 CET] User “Keep going”: temporary fixed-batch diagnostics show unchanged codec fits128training people to100/100AP from both fresh and baseline weights. Frozen oracle substitutions locate greater residual pose error in joint offsets than box anchoring. Started unchanged-code full-data refinement PID785828, /storage/outputs/pose-graph-diff/results/pose_autoencoder_refinement/20261104_225527,100epochs AdamW1e-4->1e-6, same gates; no test access/source changes/integration.
+
+
+[2026-11-04] Paired V42 multicall diagnosis COMPLETE (read-only)
+Frozen paired epoch3/6000/fixed32/seed42/resize256427/native pose NMS, all K1/K4/K8 saved metrics exactly reproduced. PoseAP23.442/9.820/9.108, same-age uniform26.484/23.393/23.878 (see exact comparison in report). Same-final-t/reference/logit controls: original Gaussian input at finalK4/K8 gives21.499/22.151. Carried geometry + controlled scores gives20.892/22.086; controlled geometry + carried scores9.659/9.316. Thus generated-state feedback corrupts confidence ranking, accounting for most AP penalty; this is not an isolated training-route cause. Proposal refs reorder strongly; explicit no-GT spatial remapping of state consistently through model AND DDIM does not rescue K4 (7.143 vs9.820); native replay exact. Training uniform0..999 and source-target pairing verified live; neither proves stable calibration on model-generated background/error states. No production/model/job/dashboard changes. Artifacts tmp/v42_paired_proposal/multistep_audit; report docs/reports/poseflow_v42_paired_multistep_audit.md.
+
+[2026-11-04 23:12 CET] Unchanged-code fidelity refinement finished100epochs/7000updates; bestepoch98,trainAP96.988/98.360,val96.049/97.915. Pose gate failed; robust50skipped/no accepted integration checkpoint/test untouched. Three-seed5%noiseAP80.328/87.460.395source+2annotation hashes match; prior44tests reused (unchanged source). Artifacts/curves/error slices/checkpoint saved in results/pose_autoencoder_refinement/20261104_225527; docs updated. User deferred proposed loss change; no implementation or next run.
+
+[2026-11-04 23:34 CET] Warm-started VAE implementation verified; eight arms launched
+- Six focused checks +37existing codec/shared-runner regressions PASS (43unique). Expected missing-module test failed first. Native CPU/CUDA checkpoint/optimizer/scheduler/RNG exact nextupdate PASS. Sampled+masked2epoch3% and deterministic2epoch1%GPU smokes complete all evaluations; wiring only.
+- Strict AE->mean/decode parity verified; full35659trainpeople initializationmeanloss .03660935,sampleloss .16688272,KL200.3979187. Fixedcalibratedbeta low8.3275677e-6/high8.3275677e-5,10epochwarmup.
+- Eight parallel100epoch arms launched at /storage/outputs/pose-graph-diff/results/pose_vae_comparison/20261104_233335, supervisorPID819048; all sameinitializationhash/seed/geometryobjectives. Mode deterministic/sampleKL0/sampleKLlow/sampleKLhigh each mask0/.3. NewVAE574560params, no decoder-only training. Source snapshot509files verified0mismatch; train/valonly.
+- Keep original VAE/AE/detector experiments and jobs unchanged. Shared export helper accepts optional figuretitle, preserving its old default. Relative-jointloss proposal remains deferred; this approved VAE factorial supersedes it as current work.
+- Implementation, reports,README/project/architecture updated. Full learning outcomes pending; inspect progress.json/per-arm manifests/validation and completion. No integration checkpoint promoted.
+
+
+[2026-11-04] Failed matched-target semantics re-reviewed from frozen source
+User asked whether we already trained proposal-to-noisy-state matching and should revisit the failure. Verified original helper against manifest/current helper: exact SHA9c90108e... . Its noisy-pose->clean-GT L1/OKS assignment runs BEFORE image forward/proposal creation. Selected image proposals remain indexwise attached to noisy states; no proposal<->incoming-state association occurs. Frozen noiser also hardcodes t0. Cancelled epoch33/50950, completed epoch32 poseAP0/0/0. Saved epoch31 conditional GTt0 AP12.744 versus Gaussian0 at either t0/999; this is a failed recipe, not a controlled rejection of the proposed new association or evidence uniform-t alone repairs it. Current paired variant instead matches proposal->GT before source construction/noising and trains uniform. New direct proposal<->noisy-state mechanism remains untested. Report docs/reports/poseflow_v42_matching_review.md; evidence tmp/v42_matched_target/review/audit.json. No restart/model/sampler/dashboard changes.
+
+[2026-11-05 00:09 CET] Eight scientific VAE arms fully assessed; latest-state repair pending
+- Original8arms100epochs/7000updates each,56000updates; all exit0.43unique tests pass,509source+2annotationhashes match, test untouched.
+- Three-seed clean sampled AP highKLunmasked97.2075/98.3827, matchedAE97.3994/98.5364. Current-train-std5%noise highKL82.7428/87.9975 vsAE80.6617/87.6845. Posterior/meanstd highKL.638%,low.207%,KL0.125%; prior grid malformed qualitatively.
+- At30%joint hiding highKLhiddenmedian .14621->.070736 scale with masktraining, but clean sampledposeAP97.2075->89.761. Allencoder/posterior/decoder optimizedjointly; no frozen-decoder stage or auxiliaryrelative loss. Fullresultsreport docs/reports/pose_vae_fidelity.md and /storage/outputs/pose-graph-diff/results/pose_vae_comparison/20261104_233335/results_summary.json.
+- Native latest-state audit caught two original last.ckpt at94/6650 (bestselected94); scientificfull100results valid. Existing independentlatestcallback enabled in fidelitypreset, failingrecipe assertion then19focused+runner tests PASS. ReplaysPIDs835100/835101 fromsameinitialization are running in checkpoint_replays, not extra optimization of scientificarms. Originalsnapshots/results preserved. Final7000state +exact selectedstate/history comparison pending.
+
+
+[2026-11-05] Approved V42 proposal-to-noisy-pose inference comparison COMPLETE
+Added opt-in sampling_v42.py and comparison CLI, reusing configured DiffusionRegPoseMatcher on enclosing boxes of actual incoming noisy joints, including first Gaussian call. Complete50x50 permutation preserved consistently through encoder/epsilon/DDIM; no GT/model-state/native-default/training change.10focused tests and59regressions PASS after intended missing-module red. Frozen checkpoint3/6000 native poseAP23.442/9.820/9.108 vsmatched23.186/6.984/6.289; checkpoint6/10500 native29.240/9.292/8.451 vsmatched28.687/7.657/7.015. Box AP also decreases at every condition. All six native conditions exactly replay saved AP/AR/box metrics.638original frozen sources verified per replay; new extension hashes verified, all832matching calls/41600state associations are complete bijections. This policy does not repair multicall AP on tested fixed32 checkpoints; no full-test or retrained-outcome claim. Native inference/training/dashboard curves preserved. Report docs/reports/poseflow_v42_proposal_pose_inference.md, artifacts tmp/v42_paired_proposal/proposal_state_inference. Retain .plan for user outcome review; future consistent train/inference assignment requires a separate reviewed iteration.
+
+[2026-11-05 00:22 CET] Warm-started VAE parallel comparison COMPLETE; checkpoint audit resolved
+- Eight scientific arms completed100epochs/7000updates each and all final train/val/posterior/noise/masking assessments. 43unique tests PASS; source509+annotation2 hashes match. Test and downstream integration untouched.
+- Replayed only KL0masked/lowKLmasked with independent latest-state policy. Both100epoch repeats preserve exact selected model, optimizer, scheduler and3private RNG states plus all20validation snapshots. All8latest native checkpoints verified epoch99/step7000; original2lagging last files preserved, recovered finals under checkpoint_replays. Scientificupdates56000 +verification14000 =70000executed. No extra optimization of selected scientific models.
+- Full8arm table/curves/samples in docs/reports/pose_vae_fidelity.md and /storage/outputs/pose-graph-diff/results/pose_vae_comparison/20261104_233335/results_summary.json, comparison.md, checkpoint_recovery.json, verification.json.
+- Clean highKLsample AP97.208/98.383; own-scale5%noise82.743/87.998 vsmatchedAE80.662/87.685. Fixed-initial5%scale highKL79.941/86.778 vsAE79.655/87.308, so ranking depends probe; no uniform robustness winner.
+- Masktraining highKLhiddenmedian14.621%->7.074%boxscale at30%hiding; clean samplepose97.208->89.761. Posteriornoise contracts to .638%latentspread; standard-normal prior grid remains malformed qualitatively. Clean fidelity recovered, broader VAEprior/noise/masking quality remains insufficiently established.
+- All work within approved eight-arm strategy and best/last checkpoint preservation; no unapproved capacity/objective/auxrelative-loss or integration changes. Future model changes require review. Retain plan for results review; do not mark robustcodec goal achieved.
+
+[2026-11-05] V42 noisy-proposal-paired: approved training counterpart implemented. Actual noisy-state/proposal Hungarian association with inverse-permuted source GT/background labels; same fixed final/pose-aux targets, uniform0..999. Opt-in matched quick/full evaluation, legacy defaults preserved.6new/145focused regressions and native CUDA initialization/restore/update/finite sampling checks PASS. Full80 launch pending snapshot; docs updated.
+
+[2026-11-05 08:56 CET] V42 noisy-proposal periodic validation AP now also uses matched inference via native-default hook. Regression suite146 tests/7new PASS; native CUDA preflight repeat PASS (next-update4.29e-8). Initial startup preserved/superseded before epoch end; fresh full80 snapshot follows.
+
+[2026-11-05T08:59+01:00] V42 noisy-proposal-paired corrected full80 RUNNING
+- PID869864, tmux poseflow-v42-noisy-proposal, root /storage/outputs/pose-graph-diff/results/poseflow_v42_noisy_proposal/20261105_085659. Fresh seed42/exact control initialization;677source+5input hashes worker-verified. Actual state permutations/source GT/background labels and encoder/time order audited; finite optimizer progress at step100,1392 sources initially verified, zero mismatches. No pilot cutoff.
+- 146 tests/7new and repeated native CUDA preflight PASS (restore-next-update4.29e-8), default evaluator prediction/metric/RNG parity exact. Quick/full and optional periodic validation AP all matched. Full val loss/fixed32K1/K4/K8 each epoch, full8000 after79; initial learned AP pending.
+- TensorBoard0.0.0.0:33332 PID869868 configured45roots, original44 roots/sixpins preserved; current measured-loss indexing verification pending. Keep plan for outcome review; next step is same-age learned AP/state-use comparison after results accrue, without another training gate.
+
+[2026-11-05T09:02+01:00] V42 noisy-proposal-paired launch/dashboard verification COMPLETE
+- Full80 PID869864 active, epoch0/step300, finite loss65.3695. All677 frozen source hashes and5 inputs verified;2400 actual timestep observations span0..999/910unique/all10bins;8132 positive sources checked with zero mismatch, complete state permutations/background provenance and encoder/time agreement.
+- TensorBoard PID869868 0.0.0.0:33332 has49 scalar streams/45roots. New measured stream V42-noisy-proposal-paired/. train/loss_step through199; all six K1/K4/K8 pose/box pins have real scalar data. Original44roots and pins preserved; direct host-side Tailscale-address HTTP succeeds (not a phone-side test).
+- Run /storage/outputs/pose-graph-diff/results/poseflow_v42_noisy_proposal/20261105_085659. Evidence manifest/status/launch_verification/dashboard_verification and tmp/v42_noisy_proposal.146tests/CUDA checks/legacy evaluation parity passed; docs updated. No learned AP yet: validation loss and matched fixed32K1/K4/K8 follow first epoch, final8000 after79. No pilot cutoff or new approval gate. Keep plan for outcome review; next small step is same-age learned AP/state-use assessment once results accrue.
+
+[2026-11-05] V43 iteration1: frozen High-KL codec/geometry adapter and real detector augmentation audit implemented after TDD red;7focused tests pass. Full12000trainval audit:42733uncropped/40873augmented people, pairedOKS.986189/.976550, normalization max3.05e-5px. Full2000val replay exactly97.246106/98.426622meanAP,97.207467/98.382681sampledmean; both native ceilings100/100. Trainval-only posterior moments include q variance, artifact namespace20261105_093111_codec_audit; test untouched, no detector training. Next approved iteration: denoiser/losses.
+
+[2026-11-05] V43 iteration2 implemented after missing-module TDD: standalone32D latent model with V40 frontend, fixed50 references, image-only cached confidence, frozen-decoder pose/box output, independent candidate/selected Hungarian maps, balanced positive/null-background latent loss and masked geometry loss.7new model/training tests pass, including empty scenes, geometry gradients, private RNG and exact next-update restore.8V40regressions pass; pre-refactor snapshot confirms exact initialization/RNG/context/proposal parity. No detector training or performance claim.
+
+[2026-11-05 10:03 CET] V43 implementation complete: frozen High-KL32D pose-box LDM with V40/V40-EMA shared frontend, fixed top50/cached image-only scores, source-preserving latent+geometry losses, explicit null background, historical crops/trainval-test, separate train/eval entrypoints, embedded codec/stats/private+global RNG.60focused checks pass; real FP32CUDA2nativeupdates and strict restore/nextupdate8.72e-8 pass,342ED-Pose tensors100%copied, frozen tensors exact, native2imageK1/K4/K8 rawscore delta0. Full trainval codec audit and exact validation replay recorded.417preflight source hashes verified; artifacts20261105_100324_implementation, full80training not launched. Docs/report/README/.plan updated; existing jobs preserved.
+
+[2026-11-05] V43 final verification/package COMPLETE:62combined focused regressions PASS, including evaluation-only flag guards and tiny-box/outside/missing-NaN geometry. Final real FP32CUDA controlled restore losses both41.9723625183, maxparameterdelta9.9449e-8; CPU/CUDA global RNG assertions pass. Sampler/evaluator are checked on the exact savedstep2 weights (controlled next-update weights reset first), raw K1/K4/K8confidence difference0.418source/config/script hashes and6input hashes match; native checkpointcopy SHAde225e08c0ada30e02577e3107a9fcc7077e54c52975f5c2d7f8cee3b32e6225 verified. Frozen workspace, native checkpoint/evaluation/report/test logs and manifest preserved under20261105_100324_implementation. Full80training remains unlaunched; documentation/current plan updated, no detector performance claim.
+
+[2026-11-05] V43 TensorBoard visibility: full training was never launched; native preflight had logger=False. Exported eight saved preflight measurements plus scope text under V43-preflight-diagnostic, with source JSON hash in the durable implementation artifact's dashboard_export.json. Appended one dashboard root (45->46) while preserving six AP pins and all old paths; only the verified port33332 TensorBoard service was restarted. No model edits, training launch, fabricated curves, or detector AP claims. HTTP indexing verification pending; results to follow in .plan.
+- Visibility verification PASS: direct tailnet HTTP address and scalar APIs confirm all8 preflight values, all49 previous scalar streams/tags and six AP pins preserved; dashboard now50streams/46roots. Evidence: implementation/dashboard_verification.json. Full training remains pending.
+
+[2026-11-05] User authorized full V43 training ('Do the training'). Fresh full80 seed42 launched in persistent tmux poseflow-v43-frozen-vae, PID889241, home-filesystem root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v43_frozen_vae/20261105_103134. 418 tested source hashes unchanged;579 frozen files+6 input hashes verified. GPU native FP32 batch4/accum2, frozen High-KL VAE, fresh ED-Pose/frontend denoiser and reviewed losses/schedule unchanged. Home storage chosen for36GiB checkpoint budget (/storage only19GB free); both existing V42 trainers preserved.
+- Original20261105_103027 startup failed before updates because Lightning rejects monitorNone/top_k80; preserved failure artifacts. Corrected full run uses runtime monitor=epoch/mode=max to retain all80 epochs+last. Production preset maintenance TODO recorded; README command includes overrides. No production model edits.
+- Finite logged startup steps49/99 loss92.4344482/16.6246567; live TensorBoard V43-frozen-HighKL-VAE-live indexed. Full test8000 afterepoch79; per-epoch fixed32 monitoring scheduled; learned detector AP pending. Updated README/project/architecture/report and .plan; final prior dashboard preservation verification pending.
+
+- V43 full80 launch verification PASS: logged optimizer step299, finite total loss15.0345364; live HTTP/direct tailnet stream V43-frozen-HighKL-VAE-live/. verified. All50 prior scalar streams/tags and six AP pins preserved;51streams/47roots. Both V42 trainers remain alive. Evidence: /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v43_frozen_vae/20261105_103134/launch_verification.json. Full recipe continues in tmux; AP pending.
+
+[2026-11-05 11:57 CET] User-approved V42 noisy-proposal cancellation verified
+- SentSIGINT only to verified PID869864; process exited, native interrupted checkpoint preserved at /storage/outputs/pose-graph-diff/results/poseflow_v42_noisy_proposal/20261105_085659/seed42/checkpoints/interrupted.ckpt (521764325bytes). Saved user_cancellation.json/status/history; latest completed epoch006/10500 fixed32 poseAP K1/K4/K8=5.856/1.865/1.435. Uniform-t/V43 controls and TensorBoard unchanged.
+- Approved next step is frozen existing-head pre-pose confidence substitution with exact native query alignment, no geometry/DDIM/training change.3local red-to-green checks PASS; pinned paired epoch3/6000 and epoch31/48000, immutable capture/evaluator extension snapshot. Original frozen-source verification and fixed32 comparisons underway.
+
+[2026-11-05] Read-only V43 early failure audit: pinned epoch002/4500 source/checkpoint,8fixed images/45people, exact K1/K4/K8 native trace replay and frozen codec bitwise equality. Codec oraclepairedOKS.975 ->denoisert0 .311; GaussianK1/K4/K8 .165/.112/.102, showing learned latent prediction and iterative geometry failure. Fullfixed32 K4poseAP.044/boxAP6.245/poseAR1.429; nativeproposalvalcoverage90.5%. Matched8-image box-only V40EMA control outperformsV43, not a pose comparison. Train epoch1mean centerloss107605.5 identified; tinycrop denominator mechanism remains unproven until exactbatch replay. Report/probe/hashes preserved in run diagnostics/epoch002_early_failure. No model/training/job changes; propose outlier replay and low-noise overfit gate before redesign.
+
+[2026-11-05 12:00 CET] Approved frozen image-confidence diagnostic COMPLETE
+- Three local TDD checks PASS, all638 frozen sources verified per checkpoint, extension/checkpoint/baseline hashes verified. Native saved metrics replay EXACTLY in all6K/checkpoint conditions; raw geometry, weights and CPU/CUDA RNG unchanged.832 captured native calls,192 score-only prediction pairs; correct actual raw-top50 indexing into normalized box-classifier logits.
+- Paired epoch3/6000 native poseAP23.442/9.820/9.108 ->image-only25.273/23.312/23.711. Epoch31/48000 native40.073/13.038/10.207 ->42.893/35.525/35.274. Box AP improves in all conditions too. This is ranking recovery with fixed geometry, two frozen fixed32 checkpoints, not full-test/retrained or improved-geometry evidence. A residual multicall gap remains.
+- User-approved failed noisy-matching worker cancelled with native interrupted checkpoint/history preserved; no control or TensorBoard mutation. Report docs/reports/poseflow_v42_image_confidence.md, artifacts tmp/v42_paired_proposal/image_confidence. Next training step needs the concrete head/loss/config plan below reviewed before production edits; no new training launched here.
+
+[2026-11-05T14:26+01:00] Approved V42 paired image-only-confidence implementation/preflight PASS
+- Optional514-parameter cloned pre-pose classifier supplies final/pose-aux logits; fixed paired targets and native geometry/DN/proposal paths retained. Legacy mode remains default. Added explicit config/preset and image-only evaluation provenance.
+- TDD red missing module,7new checks and153focused regressions PASS;7case legacy-source output/RNG/state-key parity PASS. Native FP32 CUDA2accumulated updates,481native tensors/exact shared initial SHA, strict model/AdamW/scheduler restore, next-update maxdelta1.19e-07, finite val loss and K1/K4/K8 smoke PASS. Shared init matches control; newmodel43551762params.
+- Docs/README updated. Preparing frozen full80 seed42 launch and distinct dashboard stream; no pilot cutoff or additional approval gate. Existing controls/V43 and history remain unchanged.
+
+[2026-11-05T14:30+01:00] Approved image-only-confidence full80 RUNNING; dashboard indexing pending
+- Fresh seed42 EDPose, root /storage/outputs/pose-graph-diff/results/poseflow_v42_image_confidence/20261105_142646, PID912787, tmux poseflow-v42-image-confidence.701frozen sources+5inputs worker verified and full model initial SHA matches preflight. Live epoch0/step100, finite loss; actual pairing/time audit and pre-pose confidence contract pass. No pilot cutoff.
+- TensorBoard current47historical roots (including V43) preserved and distinct V42-paired-image-confidence added:48roots/6pins on0.0.0.0:33332 PID912796. Scalar indexing verification pending. Full validation loss/fixed32K1/K4/K8 each epoch, final8000 after79; learned AP pending first epoch.
+
+[2026-11-05T14:33+01:00] V42 paired image-only-confidence launch VERIFIED
+- Full80 fresh seed42 RUNNING, PID912787, tmux poseflow-v42-image-confidence; /storage/outputs/pose-graph-diff/results/poseflow_v42_image_confidence/20261105_142646. Epoch0/step200, finite loss28.8679.701frozen sources+5inputs verified.1600actual times span0..999/808unique/all10bins;5403positive sources checked with zero mismatches and pre-pose confidence verified. New classifier has finite nonzero live gradients.
+- TensorBoard0.0.0.0:33332 PID912796 fully indexed52scalar streams/48roots. New measured V42-paired-image-confidence/. loss through step149; all47previous roots (including V43) and sixpins preserved. Direct host-side Tailscale-address HTTP passes, not a phone-side test.
+-153regressions/7new,7legacy parity cases and native CUDA strict restore/update checks PASS. Snapshot/run/status/launch_verification/dashboard_verification and tmp/v42_image_confidence hold evidence. No learned AP yet; full validation loss and K1/K4/K8 each epoch, final8000 after79. No pilot cutoff/further launch gate. Next small step is learned same-age AP/state-use comparison as results accrue; retain plan for outcome approval.
+
+[2026-11-05] V43 small-noise investigation complete; production/training unchanged. Pinned epoch011/18000 and002/4500,8images/45people/3paired draws; exact saved prediction replay. At1% standardized additive noise direct codec pairedOKS.9718 vs epoch11denoiser.6078, latentMSE .000100 vs.021849 (218.5x amplification). At5% rawOKS.8946 vs.6101. Uniform native time allocates only.2%<=1%noise and2.5%<=5%; cleanendpoint absent. Native12k-image geometry replay40873people has28subpixel-side targets, smallestwidth.023338px;1pixel centererror costs918 before1px normalization floor(.5 after). Exact offending training batch remains unidentified.
+- Standard v/EDM parameterization primary sources inspected; exact v inversion/zero-noise identity algebra passes7noise levels. Analytic zero-head preconditioning preserves noisy baseline but is NOT trained recovery. Concrete plan: opt-in velocity denoiser/continuous-sigma interface, balanced1/2.5/5%noise, optional1px centerloss denominatorfloor/defaultlegacy0, frozen-codec cached16train/16val controlled<=2000update trial with gates and historical-x0 arm; separately reviewed10epoch extension only if gates pass. Best/last retention only. Prior frozen-component trainval exposure explicitly disclosed. No production edits/optimizer updates/new run/cancellation in investigation. Plan and measured artifacts saved under existing run diagnostics/small_noise_plan; .plan awaits review.
+
+[2026-11-05] Approved V43 small-noise implementation and bounded trial complete. Added noise_v43 velocity algebra; opt-in model x0/v and continuous-sigma path; noise/posterior/mode checkpoint plumbing; default0 optional1px center normalization floor; cached control/config/training/evaluation entrypoints. Seven focused tests intended-red then pass;67 regressions, exact legacy native6trajectory replay, CUDA2updates/arm, restored evaluation exact and next-update maxdelta2.8645e-8 PASS. Legacy defaults/state keys and existing jobs preserved.
+- Fresh run /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v43_small_noise/20261105_152101 completed4000updates (2000/arm),16TRAIN/54people,16VAL/46people, shared epoch011 parent/frozen contexts/mean codes/draws; v new head deliberately zero.611source+2annotation+parent/cache hashes verified,21draw traces and final RNGstates match, frozen tensors unchanged. Best/last only204MiB each. TensorBoard54streams/49roots preserves52oldstreams/sixpins; both new conditional-noise streams verified.
+- BOTH LEARNING GATES FAILED. VAL OKS at1/2.5/5% raw=.9789/.9651/.9204, absolute=.6105/.6085/.6037, velocity=.9789/.9653/.9219. v clean identity exact and prevents damage, but only~.3% latent MSE gain at5%, not learned recovery target. TRAIN MSE misses1e-5 alllevels. Bestx0step2000/vstep1500 also fail. Real cache re-encoding exact; foreground head gradients finite/nonzero and larger than BG in frozen4image probe; unique learning cause unproven. No10epoch/full experiment launched. Report docs/reports/poseflow_v43_small_noise.md and run audit/artifacts preserve evidence. Suggested next diagnostic single-image foreground-only5% overfit pending review; do not claim robustness solved.
+- Final selected-v-best restoration reproduces all cached metrics/gate exactly; original3trainers alive and relevant current sources match frozen trial. Full artifact verification saved; small-noise recovery goal remains unmet.
+
+[2026-11-05 16:16 CET] Completed approved V43 single-image foreground diagnostic: /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v43_foreground_probe/20261105_160859. Eightpeople, all50queries, sigma5%, fresh/fixed2000updates each. Fresh unseen-noise MSE improves89.92% (.00247242->.00024923), OKS.88975->.97643, IoU.93233->.95283; strict gate stillfails. Fixed draws memorize1.13e-14 but unseen noise worsens. Exactzero/frozen/restore/source checks pass;3focusedtests and CUDA smokes pass. Dashboard56streams preserves54prior/sixpins. No production changes or wider training; report records scope/error tails and proposed16image next control.
+
+[2026-11-05T16:31+01:00] V43 thesis-driven analysis: zero-update frozen conditioning/transfer probes show one-image model uses image conditioning (trained-imageOKS.97643->.88506 with swap) but fails on16VAL/46people (rawOKS.92045->.72323, latentMSE5.91x worse).16image control has near-zero conditioning benefit. Native replay/state hashes pass. Withdraw automatic16image scaling proposal; recommend explicitly testing image-to-frozen-VAE alignment before more diffusion optimization. Evidence/report: docs/reports/poseflow_v43_thesis.md, tmp/v43/thesis. No new training.
+
+[2026-11-05T17:41+01:00] Implemented and launched approved V43 image-only alignment baseline: /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v43_alignment/20261105_173723, PID956042, tmux poseflow-v43-alignment.10epochs TRAIN10000/VAL2000/disjoint; no TEST access, frozen High-KL codec, fresh V43 body plus EDPose frontend, clean mean-code/geometry supervision.72regressions/5focused pass; native CUDA2accumulated updates, exact nextloss/restore maxdelta1.19e-7 and frozen codec pass.615snapshot sources verified; worker initial SHA matches preflight exactly. Best VALgeometry and last only; full VAL correct/wrong conditioning evaluation of both after training. Live step200 finite; no learned outcome yet. Dashboard indexing verification pending; original jobs unchanged.
+
+[2026-11-05T17:44+01:00] V43 image-alignment launch verified at step300:615snapshot sources/5inputs/initial-state SHA exact, disjoint10kTRAIN/2kVAL. TensorBoard57streams/51roots, all56prior/sixpins/directHTTP preserved; new finite loss visible. Original jobs alive.10epoch baseline running; held-out result pending.
+
+[2026-11-05T19:59+01:00] User-cancelled V43 alignment PID956042, preserved best/last. Diagnosed frontend damage (fullVAL selectedrecall72%->0/4.6%); frozen16image restoration recovers original proposalcoverage but not posequality. Weightedpose->proposalbox gradient6.58x native and opposed(cos-.521); referenceboxdetach gives0gradient withsameoutput. Initialzero queries + zeromodulation makesall50predictions identical (breaksduringtraining). Native64monitor exactreplay, nooptimizerupdates. Report poseflow_v43_alignment_failure.md; no replacement training.
+
+[2026-11-05 20:03 CET] Delivered 3D human pose literature audit in docs/reports/3d_human_pose_literature_audit_2026-11-05.md (7,464 words; 91 external source URLs). Added taxonomy/lineage trees, mechanisms/equations, 2025–2026 frontier, protocol-qualified quantitative anchors, prior/teacher distinctions and reading paths. Verified D3DP oracle35.4 versus practical39.5mm; inspected FinePOSE/GAtFuN evaluator modes and visually checked central PDF tables. Recorded unresolved headline aggregation and scope limits. Research-only; no production/model/config/trainer changes or benchmark execution. .plan retained for review; document consistency checks pass.
+
+[2026-11-05] V44 implemented: native reduced pre-expansion human proposals, frozen SHA-pinned High-KL codec, TRAIN posterior-mean statistics (10,000 images/34,096 views), explicit fixed selected-slot assignment, two native latent decoder layers and cached eta0 DDIM. Separate TRAIN/VAL entrypoint, quick-test K1/K4/K8 AP and small-noise curves, best/last retention, full selected-checkpoint VAL evaluation. Native CUDA2 accumulated updates and strict optimizer/scheduler/RNG restore passed (next-update delta5.96e-8); codec unchanged. Preflight41.17M params/2.43GB allocated; no learned-performance claim. Existing models/runs preserved. Launch and final regression evidence pending below.
+
+[2026-11-05] V44 launch verified:43 tests,625 source hashes,5 input hashes; PID983777 step325 finite. TensorBoard33332 stream V44-native-HighKL-LDM/. verified on six existing quick-test cards plus live training;51 prior roots/pins retained, reload_threads4. Existing training preserved. Run /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v44/20261105_215551; best/last and final fullVAL scheduled. Step0 AP is initialization only; no learned AP claim.
+
+[2026-11-05] V42 paired-image JEPA: implemented approved positive-only final-feature EMA target and online clean-pose reconstruction using existing reader/reference. Native coordinate diffusion, fixed pairing and image confidence retained. Added focused tests and documented objective/checkpoint/evaluation contracts; verification/launch pending.
+
+[2026-11-05] V42 JEPA verification: 138 regression + six final focused checks pass, native CUDA updates/strict restore/inference pass; parent initial model exact, restored next-update maxdelta2.80e-8. Preparing approved fresh full80 run with archived source and existing dashboard integration.
+
+[2026-11-05 22:25 CET] V42 paired-image JEPA full80 launch VERIFIED
+- PID990002, tmux poseflow-v42-jepa, root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v42_jepa/20261105_221931; epoch0/step150, finite loss48.1709, EMA count equals optimizer updates.
+- Fresh online initialization exact parent; 734 frozen sources +5 inputs verified, all timestep bins sampled, zero paired source/label mismatches.
+- TensorBoard33332 new V42-paired-image-jepa/. stream has real total/JEPA/clean loss scalars; all 52 previous roots and six AP pins preserved. Direct host tailnet HTTP verified. Validation/AP pending first completed epoch; no learned performance claim.
+- All three previous trainers alive. Implementation/verification/launch complete; retain this .plan entry for user review.
+
+[2026-11-06] V44 pose plateau frozen diagnosis: epoch047 fixed16VAL63people codecOKS.990,1% input.9868 -> denoised.7663; oraclebox.7978 vs oraclearticulation.8925. Model does respond to latent perturbations.512TRAIN crop audit: rare1–2px boxes cause high codec loss tails; gradient causality unmeasured. Zero optimizer updates/no production or run changes. Report poseflow_v44_pose_plateau.md and run diagnostics/pose_plateau. Proposed x0/v comparison and separate crop-gradient audit require review; no new run.
+
+[2026-11-06] Approved V44 x0/v comparison implemented, default x0 preserved. VP velocity targets/clean inversion, explicit mode restore checks, head-negation warmstart, paired10epoch entrypoint/queue and isolated artifact routing. Native CUDA2 accumulated velocity updates finite; codec/statistics unchanged; next-update restore delta1.49e-8. Old x0 frozen-source outputs exact on2images/3times. Initial v high-noise K1 AP near x0 but K4/K8 collapse before retraining, explicitly recorded; no learned benefit claimed. Comparison launch pending final regressions/snapshot verification.
+
+[2026-11-06] V44 velocity comparison launched/verified: PID1280237 step225 finite; x0 control queued sequentially, each10epochs/12500updates from same SHA-pinned epoch047 with matched recipe.48tests and CUDA/restore checks pass;635source hashes and exact initial identity verified. TensorBoard33332 six quick-test AP cards on both streams;53 historical roots/pins preserved; queued control displays measured baseline only. Duplicate startup event visibility issue fixed without touching trainer log. Original V44 continues. Root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v44_parameterization/20261106_164359. Learned comparison pending.
+
+[2026-11-07] Approved V44 frozen trajectory diagnosis completed: source epoch047 and matched-age x0/v epoch009 checkpoints, fixed32VAL/103people, zero optimizer updates, no TEST. Independent DDIM/oracle/inverse checks pass (max4.77e-7); manual sample replay exact; context/model/codec/statistics unchanged. x0 t249 forward/generated pairedOKS69.49/57.69 (source70.08/57.32); v fails even forward-corrupted t499 inputs (24.94 versus x0 66.16), and generated states worsen it further. Thus x0 trajectory sensitivity and v intermediate-time weakness both contribute; no sampler arithmetic discrepancy found. Two failing-first helper tests pass. Archived code/hashes/manifests/metrics in comparison namespace diagnostics/trajectory_20261107; report/project/architecture/.plan updated. No follow-up training launched; detached-rollout x0 control remains a proposal for review.
+
+[2026-11-07] Implemented and launched approved V44 x0 detached-rollout matched comparison. Separate training subclass/entrypoint/queue; minimal legacy input-helper extraction preserves default RNG/output parity. Half uniform batches; half matched K4 intermediate times, forward control versus eval/no-grad detached generated state, single cached context/assignment, unchanged losses/frozen codec.36 focused/related tests pass after failing-first tests. CUDA2 accumulated forced-rollout updates finite; strict optimizer/scheduler/global/private RNG replay next loss identical18.634130477905273, max state delta2.70e-8, codec/statistics unchanged. Final trajectory evaluator2VAL/13person wiring smoke passed. Fresh root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v44_rollout/20261107_030445, rollout PID1571461 verified at100updates, forward queued,2epochs/2500updates each.641 source hashes/shared source SHA/identical initial model hash/disjoint TRAIN10000/VAL2000 hashes verified. TensorBoard V44-rollout-x0 and V44-forward-control expose all six quick-test AP cards and live candidate train metrics;55historical roots preserved. Refreshed dashboard after candidate event file appeared; trainer/event logs unchanged. README/project/architecture/.plan/new rollout report updated. Learned results/fullVAL/gap/pairing pending; no automatic extension or promotion.
+
+[2026-11-07] Investigated visible-only mean-depth pose ordering. Raw TRAIN/VAL audit finds41.27/40.88% labeled people have no flag-2 joints; complete-rankable images3943/827. Frozen offline DA3-BASE32VAL/89people yields75 comparable pairs,11flip/2resolution reversals; synthetic mask/sampling checks pass. Report and reproducible manifests/results/harness saved under docs/reports/pose_depth_order.md and assets. Current V44 proposal/Hungarian/crop integration implications documented. No detector/training/environment changes; next cache-only iteration proposed for review.
+
+[2026-11-07] V45 core: progressive shared two-layer bidirectional prefix decoder and equal-person losses; frozen codec and image-only confidence; native evaluator/progressive TensorBoard tags.33 focused/related checks pass. Full-capacity CUDA/launch pending.
+
+[2026-11-07] V45 full-capacity CUDA PASS:2 accumulated updates, codec unchanged, strict train-mode next-update loss exact/state max5.96e-8;1.49GiB training allocations. Native3VAL metric wiring passed. Report/README/project/architecture updated; full80 launch pending.
+
+[2026-11-07T15:41+01:00] V45 full80 launch VERIFIED at/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v45/20261107_153347,PID1926106,step90 finite.53tests/native50stageCUDA/strictrestore pass;657source+5input hashes and exact initialization verified. TensorBoard33332 progressive AP/live loss works; prior57roots/6pins retained. Learned epoch/fullVAL results pending.
+
+[2026-11-07 15:41 CET] V45-task-pose implementation and verification
+- Isolated codec/context/model/pipeline and paired presets implemented; historical V42/V44 defaults unchanged. Native evaluation now honors an optional confidence-description override, preserving its old fallback.
+- 143 focused/historical regressions passed; final focused update in progress. Real CUDA augmented batch4/accum2 produced2 finite optimizer/EMA updates, complete-pose counts5/9/2/6.
+- Arm initialization/RNG exact. Strict restored predictions exact; matched next-update loss equal and max parameter delta5.96e-8. Native VAL smoke and fixed-context/teacher/perturbation/state-use diagnostics finite. Initial wiring AP is not a trained result.
+- Full80 sequential control then JEPA archival/launch preparation underway under the existing approval; no pilot cutoff, no existing job cancellation.
+
+[2026-11-07 15:54 CET] V45-task-pose pair IMPLEMENTED / LAUNCH VERIFIED
+- Namespaced independently from concurrent progressive V45.143 regressions +21 final focused/evaluator checks pass. Native CUDA/EMA/strict restore exact predictions; next-update maxdelta5.96e-8.
+- Pair root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v45_task_pose/20261107_154258; control PID1935244 running epoch0/step600, EMA count exact, finite loss52.0454. JEPA queued for fresh full80 after successful control/final8000; no pilot cutoff or trained checkpoint reuse.
+- Startup AF_UNIX length fixed with shorter repository-local TMPDIR; first attempt interrupted before any update, checkpoint/logs preserved, fresh seed42 restart. Model/data/optimizer unchanged.
+- 771 archived sources +5 inputs/arm verified. TensorBoard33332 contains both task-pose roots; prior58roots/eightpins (including original six) retained. Real control losses and queued JEPA status verified over direct host tailnet HTTP and UI.
+- Implementation/verification/archival/launch complete. First learned validation/AP pending first epoch; retain .plan for user outcome review. Documentation/README/.log updated; no existing models/jobs changed.
+
+2026-11-07: User changed V45-task-pose scheduling to parallel. Control continues its existing run; JEPA starts fresh seed42 for80 epochs in tmux `poseflow-v45-task-pose-jepa`. Sequential supervisor disabled to prevent a duplicate launch. Model, data, optimizer and evaluation protocol unchanged.
+
+Parallel launch VERIFIED: control PID1935244 continues epoch17/step26700; JEPA PID2137639 reached optimizer/EMA step50 with finite loss98.6422, weight1. Both full80 budgets retained. Sequential supervisor terminated and launcher disabled (original preserved), preventing duplicate launch.
+
+[2026-11-08T18:05] V46 iteration1: add canonical512-column ordering and64 independent denoising-row construction;7 targeted tests pass after captured missing-module failure.
+
+[2026-11-08T18:08] V46 iteration2: add independent dense row decoder with shared image K/V and separate birth/refine/EOS objectives;13 focused checks pass including exact frontend parity. Preserve rejected V45 epoch13 checkpoint and stop only its trainer.
+
+[2026-11-08T18:14] V46 iteration3: add image-only sampler, pipeline/config/entrypoint, strict checkpoint contract and native evaluator/TensorBoard metrics;19 focused tests pass including asset-free restore and per-image RNG.
+
+[2026-11-08T18:17] V46 native verification:50 checks pass; full64rows/50people/batch4accum2 FP32 fits alongside task-pose jobs, peak2.82GiB. Restored next-update losses exact, parameter delta1.19e-7, codec unchanged. Document architecture/recipe/interfaces; full80 launch next.
+
+[2026-11-08T18:24] V46 implemented and full80 launched: /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v46/20261108_181906,PID2763350.50 checks/native full64rows50people batch4accum2 FP32 pass; peak2.82GiB and restored maxdelta1.49e-8. Frozen sources/inputs/init exact, fixed32VAL baseline+live TensorBoard AP/loss verified,60previous roots preserved. Rejected V45 archived/stopped; task-pose jobs preserved. Learned results/finalVAL pending.
+
+[2026-11-09T09:00] V46 DDIM sampler override and frozen epoch46 fixed32VAL comparison complete.46 checks, oracle arithmetic, exact original-workspace/RNG parity and immutable model/codec pass. AP(0–100) renoise .2115/5.1836 vs DDIM .1043/5.6296; rank1finalMSE .7412/.7449. No refinement rescue; defaults/active training preserved. Artifacts /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v46/20261108_181906/diagnostics/ddim_20261109_085306; TensorBoard separate comparison streams verified.
+
+[2026-11-09T09:02] V46 DDIM comparison dashboard delivery verified: both epoch046 sampler runs/AP cards/64-row error curves visible;63roots retain61historical,12pins retain10previous. Original full80 trainer unchanged. DDIM eta0 did not rescue frozen32VAL pose/refinement; artifacts and report complete.
+
+[2026-11-09] V45 task-pose ordered50 IMPLEMENTED / TRAINING STARTED
+- User clarified50 canonical-rank slots and authorized launch. Direct sorted GT->firstM; background suffix; mean-labeled-joint centroid then descending area ties; all instances retained. No Hungarian/DP, confidence-selected proposals, encoder proposal or DN losses in this arm. Historical jobs untouched.
+-36 focused/historical regressions and8 final focused checks pass. Real CUDA FP32/batch4/accum2 two updates; complete counts5/5/7/5; native VAL evaluator finite. Strict restore exact outputs; next-update losses158.56297302246094 equal/max state delta1.19e-7. Teacher frozen and EMA cadence correct. Initial AP0 is wiring only.
+- Fresh full80 run /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v45_ordered/20261109_094318, PID3255736,tmux poseflow-v45-ordered, optimizer/EMA step100, finite loss90.6565933227539. Fresh ED-Pose seed42, no trained-checkpoint reuse or pilot cutoff.793 archived sources+5 inputs pinned; initial model299c06c8bb009536017378c4094f0daa3f92e7a9a2e52060a30f3ca9ac9abef5 verified.
+- TensorBoard33332 new V45-task-pose-ordered-JEPA root;63 prior roots and12 saved pins retained. Browser includes new run beside existing seven pinned charts; first AP pending epoch1. Live scalar indexing verification pending.
+- README/project/architecture/report updated; plan retained for outcome review. Historical trainval/overlapVAL/fixed32 TEST/final8000 development exposure unchanged.
+
+[2026-11-09] ordered50 full80 LAUNCH VERIFIED
+- PID3255736 running epoch0, optimizer/EMA step150, finite loss81.57113647460938. Actual direct rank-source/target correspondence verified on every training batch. All793 source and5 input hashes verified; no trained checkpoint resume.
+- TensorBoard direct tailnet HTTP verifies real train/task_pose/jepa_step data.64 roots preserve63 previous roots;12 saved pins (including all six K1/K4/K8 pose/box AP tags) retained. Current browser includes ordered arm alongside existing comparisons and pins; screenshot tmp/v45_ordered/dashboard.png. Reindexed server after first scalar flush; no trainer restart.
+- Implementation/verification/archive/launch complete. Full80 learned outcomes/final8000 remain asynchronous; retain plan for user outcome review. No AP-benefit claim from wiring tests.
+[2026-11-09] V47 iteration1: added isolated coordinate representation and ordered noisy-row construction;13 coordinate/legacy row checks pass after captured red test. Existing jobs preserved.
+[2026-11-09] V47 iteration2: jointly trained person codec, isolated dense decoder with per-image projected K/V cache, and masked coordinate/geometry/EOS objectives.5 model/loss/frontend parity checks pass; sampling/restore next.
+[2026-11-09] V47 iteration3: coordinate DDIM sampler, image-only wrapper, train/validation pipeline and strict self-contained checkpoint contract;5 sampling/RNG/restore tests pass. Native preflight and learnability gate remain pending.
+[2026-11-09] V47 evaluator/training/verification interfaces implemented;53 coordinate/model/loss/sampler/restore/evaluator/gate and V46/V44 regression checks pass. Full80 is guarded by native preflight and two-seed four-image free-running gate; no full training launched yet.
+[2026-11-09] V47 native full-capacity CUDA/restore PASS (peak2.18GiB,next-update maxdelta1.49e-8). Initial four-image gate invalid: extra box-only GT caps posed-person oracle bboxAP52.48. Preserved evidence and stopped only own diagnostic; correcting subset coverage without changing evaluator, model, threshold or full data.
+[2026-11-09] V47 implemented and launched fresh full80 seed42 after55 checks, native FP32/full64rows/50people/batch4accum2/restore, and corrected two-seed four-image learnability gate (500updates:pose98.80/bbox91.73,counts4/4). Trainer3490732/tmux poseflow-v47/root20261109_150341; initial hash0f3930206699cbb62b9471ec89571adf7b22a09cd26ade6b2e1af78417f2c2d0 matches preflight. Same TRAIN/VAL/fixed32,strict manifests,self-contained restore,best/last/finalVAL wired. TensorBoard67roots/16pins preserves history; existing jobs intact. Refinement mixed, generalization pending; TEST unopened. Plan retained.
+[2026-11-09] V47 delivery proof complete: source/input/init hashes and old trainers verified; exact fullrun TensorBoard AP/loss cards and completed diagnostic curves visually verified/screenshotted. Full80 active; outcomes pending.
+
+[2026-11-09] User cancelled V45 ordered JEPA. Sent SIGINT only to verified trainer PID3255736; process exited and status=cancelled at14100 optimizer updates. Native callback saved interrupted.ckpt (501278039bytes); epoch008.ckpt,last.ckpt,source/config/logs/TensorBoard retained. No other jobs stopped. Full80/final8000 intentionally cancelled; retain plan for outcome review.
+
+[2026-11-09 23:32 CET] Off-the-shelf missing-joint completion diagnostic
+- Added isolated frozenRTMPose GTbox evaluator, masked coordinate/PCK/CrowdPoseOKS helpers and6focused tests;10focused/related checks pass,officialOKSparity42peoplemax2.22e-16. Existing models/trainers/data untouched.
+- Full2000VAL/7074posedpeople: labeledPCK.05/.10=90.2813/96.1884%;22112missingproposals with unknownaccuracy,28.1928%tightflipagreement,8.2534%coverage at score>=.6+flip<=.02. Review artifacts show cropedge/identityfailures; no blanketannotationquality claim.
+- Native/pilot/fullVAL manifests/source snapshots/cache/reviewCSV under results/joint_completion/20261109_rtmpose; measured report docs/reports/joint_completion.md. Sourceannotations verifiedunchanged,TESTnotaccessed,noexport/integration/jobchanges. README/project/architecture/.plan updated; nextreview/strongerteacher+adjudication beforefullsupplement.
+[2026-11-10] V48 clean-prefix rows/birth-only losses and fixed-birth sampler implemented;13 test-first checks pass. V47 codec/attention/frontend reused; no noise/time/refinement. Pipeline/evaluator/native verification and launch pending; historical jobs untouched.
+[2026-11-10] V48 isolated pipeline/config/evaluator and strict checkpoint contract added;17 focused tests pass. Deterministic image-only early-EOS inference and teacher-forced birth diagnostics separated. Native CUDA preflight/launch next.
+
+[2026-11-10] V48 IMPLEMENTED / NATIVE VERIFIED / FRESH FULL80 ACTIVE
+- User approved V47 jointly learned coordinate codec, clean fixed prefixes, no noise/time/refinement, birth-only10/.5/EOS1.74 test-first focused/historical checks pass; no historical source changes.
+- Native FP32/50people+EOS/batch4accum2/256x416 passed: peak1,877,937,664B; exact resumed loss627.9840698242188/max state delta2.24e-8; scheduler agrees. All10 codec tensor gradients finite/nonzero. Forced50-birth inference5.04img/s sharedGPU/two resident verifier models. First-update28.43s includes cold startup and is not steady throughput. Two-VAL native evaluator smoke finite.
+- Fresh seed42 full80 trainerPID4145233,tmux poseflow-v48,root20261110_095254. Verified epoch0/step200 loss6.90969/LR2e-4/11.41img/s/peak1,995,543,552B. Initial hash0935436bdbaea1b5a03f424028147e219e10803f8f4281d6d2f191b004c349e9 equals verified fresh initializer; native updated weights discarded.560 frozen source/config/script hashes verified.330 retained frontend tensors exact100% ED-Pose transfer. TRAIN10k/VAL2k disjoint, same fixed32VAL as V47, initial AP0/0 (wiring only), TEST unopened. Best/last and selected full2000VAL evaluation after80 wired.
+- TensorBoard33332 live API verifies birth losses/EOS and initial AP scalars. V48-ordered-birth-only/. pose/bbox cards visible+pinned; all67 previous roots/16 pins preserved plus2new server pins, browser4prior pins retained. Screenshot tmp/v48/dashboard.png. Existing V47PID3490732 preserved.
+- README/project/architecture/experiments/report/.log updated. Implementation/native verification/archive/launch complete. Full80 outcomes/selected allVAL remain asynchronous; retain .plan pending outcome review. No AP improvement or faster-learning claim from wiring tests.
+
+2026-11-10 final dashboard check: historical-root indexing completed; live V48 train/total_step advanced from step19 to649 (65points), trainer continuing epoch0/step650. Initial AP cards pinned/visible; all setup checks complete.
+[2026-11-10] V48-AdaLN isolated image-query AdaLN/residual gate implemented after failing tests. Initial common weights, outputs and RNG match V48; prefix-derived step conditioning verified. Pipeline/native verification and parallel launch pending.
+[2026-11-10] V48-AdaLN pipeline/config/strict restore and shared V48 evaluation path added; conditioning/checkpoint/gradient tests pass. Fresh controlled parallel run remains gated on native preflight and common-initialization proof.
+
+[2026-11-10] V48-AdaLN VERIFIED / FRESH PARALLEL FULL80 ACTIVE
+-81 test-first focused/historical checks pass; architecture remains V48, strict AdaLN variant. Baseline modules/snapshot/checkpoints preserved; PID4145233 continues. Same clean prefixes/birth+EOS/no refinement/recipe.
+- Native FP32/50people+EOS/batch4accum2/nonsquare passed alongside baseline: peak1,924,361,728B; exact resumed loss627.4702758789062/max state delta1.49e-8; scheduler agrees. Modulation and step-embedding gradients finite/nonzero after second update. Forced50-birth inference7.19img/s/sharedGPU/two verifier models; cold-update28.66s not steady throughput.
+- Root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v48_adaln/20261110_135143,trainerPID73156,tmux poseflow-v48-adaln. Fresh seed42/full80 active, verified epoch0/step170 loss12.07970/LR2e-4/16.39img/s/peak1,982,794,752B. Common initial hash0935436bdbaea1b5a03f424028147e219e10803f8f4281d6d2f191b004c349e9 exactly baseline; full initialhasha2c668dfae6e7c65280798d7945f70a21255bb6d74f9c88fc22040e376f34470 matches verification.330 retained frontend tensors exact100%;566 immutable source hashes/four launch inputs checked. No trained/verification weights reused.
+- Same fixed32VAL/native evaluator/augmentation and optimizer recipe. Initial AP0/0 is wiring only. Best/last and selected full2000VAL after80 wired; TEST unopened. Separate V48-AdaLN TensorBoard run indexed, same AP tags for overlay;68 historical roots/18pins preserved. Browser comparison verification pending.
+- README/project/architecture/experiments/report/.log updated; retain .plan pending outcome review. No quality gain claimed before matched-exposure evaluation.
+
+2026-11-10 final V48-AdaLN delivery check: both V48 trainers active, baselinePID4145233 preserved. Comparison browser shows both checked runs and pinned AP cards; live training scalars indexed (11 points through step109). Screenshot tmp/v48_adaln/dashboard.png. Setup/verification/archive/parallel launch complete; full80 outcomes pending.
+
+[2026-11-10 21:57] Detailed project closeout research report
+- Added docs/reports/project_closeout_review_2026-11-10.md: experiment-history synthesis, ten evidence/mechanism/angle analyses, counterevidence, ranked two-week options, protocol/stopping criteria and grouped branch inventory.
+- Source JSON verification covers completed V45 pair, failed V44 combined rollout gate, V46/V47 fullVAL endpoints and interim V48/AdaLN snapshots; local source links/Markdown structure checked. No model, config, evaluator, annotation, inference or training changes.
+
+[2026-11-10 22:28] Token-age diffusion forcing: approved row-builder iteration
+- Added isolated50-row teacher-forced input builder: one random permutation/image, fixed source identities/masks, per-token Gaussian coefficients1/.1/.05/..., final clean prefix, all-active supervision masks, pure-noise birth/EOS queries and explicit49birth limit. No model/sampler integration or training launch.
+-16test-first focused checks and19V46/V47/V48 row regressions pass (35total); red/green/regression evidence in tmp/token_age_diffusion/. Future targets/padding cannot leak, empty/mixed/full-budget cases and explicit RNG behavior verified. git diff --check passes.
+- Updated README/project/architecture and row-contract report; .plan retained with decoder/loss and DDIM/native work deferred for reviewed iterations. Existing jobs/artifacts preserved by this change; no TEST access.
+
+[2026-11-10] Implemented isolated V42 box-center timestep-loss criterion/pipeline/config/runner. Native matching/classification/model/sampling retained; scale2 linear box-to-pose geometry schedule per image, all native branches and normalization preserved.31 tests plus native CUDA/strict restore pass, initial baseline model hash exact; next-update maxdelta1.19e-7. Docs/report/README updated; fresh full80 launch preparation underway.
+
+[2026-11-10] V42 timestep-loss full80 LAUNCH VERIFIED
+- Fresh run /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v42_timestep_loss/20261110_222822, PID348105, tmux poseflow-v42-timestep-loss, epoch0/optimizer step50, finite weighted loss45.70174026489258. Original baseline model initialization SHAef71a0f0543d7109117605ee9e162052d81aaff935c3ea685e7e21db27373628 exact; no trained-checkpoint warmstart or pilot cutoff.
+-844 source hashes and5 inputs verified.31 focused/historical tests plus9 final focused checks (overlapping) pass; native CUDA/strict restore next-update maxdelta1.19e-7. Actual mixed timesteps and runtime schedule factors verified; matching costs/classification remain native.
+- TensorBoard33332 V42-box-center-timestep-loss/. contains real native/scheduled loss scalars, direct tailnet HTTP checked.70 roots preserve69 existing roots;18 saved pins preserve all six original K1/K4/K8 pose/box AP tags. Browser includes new stream and existing pinned view; screenshot tmp/v42_timestep_loss/dashboard.png. Identical server reindex after initial scalar flush; no trainer restart.
+- Implementation, verification, archival and launch complete. Full80/final8000 outcomes remain asynchronous; first AP pending epoch1. Existing trainers untouched. README/project/architecture/report/.log updated; retain plan for user outcome review. Historical trainval/overlapVAL/TEST-development exposure unchanged.
+
+[2026-11-10] V49 implementation complete: per-token conditioned coordinate decoder, both-layer all-active objective, finite ratio DDIM/EOS tails, strict restore, native evaluator and full80 guarded trainer.67test-first focused/historical checks pass. Immutable native verification running; existing jobs preserved.
+
+[2026-11-10] V49 native verification PASS and fresh full80 launch: FP32/50rows/49people/batch4accum2,peak1.81GiB; resumed nextloss exact/maxstate5.96e-8; native evaluator and100%retained frontend transfer. Root /home/gasparyanartur/outputs/pose-graph-diff/poseflow_v49/20261110_232439,PID377259. Initial state hash matches verification; no trained warmstart. Live progress/dashboard confirmation pending.
+
+[2026-11-10] V49 LAUNCH VERIFIED: epoch0/step120,finite loss4.044580,full80 active at/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v49/20261110_232439,PID377259.67checks/native FP32/restore/initialization/evaluator passed. TensorBoard real training/AP data and visible pinnedcards verified;71roots/20pins retain all existing entries. Existing3trainers preserved. Docs/provenance complete; retain plan for outcome review. Learned outcomes asynchronous.
+
+[2026-11-11] V49 read-only loss/gradient audit: frozen epoch5/step7500,16augmentedTRAINimages/67people+8VALimages/43people. Exact objective decomposition gradient parity1.16e-6; all model states unchanged; no optimizer/job changes or TEST access. Shared-decoder median pose/box norms12.02/.675; birth/refine11.00/3.32. Robust-loss counterfactual birth-pose10.65->.945; near-clean tail refinement gradients21–31x age1. Temporary report/raw evidence at tmp/v49/audit_20261111/loss_gradient_report.md; .plan records normalization/box-pose recommendations, not implemented policy changes.
+
+[2026-11-11] V49-balanced objective/pipeline/entrypoints implemented in approved isolated scope.42 failing-first focused/historical checks pass; fixed calibration preserves model/RNG, strict provenance restore and checkpointed gradients pass. Original V49 model/sampler/initialization exact; native preflight/launch next. Docs/report/usage updated.
+
+[2026-11-11] V49-balanced native preflight/calibration/strict resume PASS;70 tests. Fresh full80 launched at/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v49_balanced/20261111_012830,PID445691,tmuxposeflow-v49-balanced. Original V49 initialhash exact;32TRAIN frozen gradient scales persisted; native peak1.80GiB/resume maxdelta1.19e-7. Live epoch0/step120,finite loss. TensorBoard72roots/20pins/live component+AP data preserve historical runs; original trainers remain active. Initial AP0/0 is wiring, not learned outcome.
+
+[2026-11-11] User cancelled original V49PID377259 and V49-balancedPID445691. Both gracefully exited after SIGINT; best/last checkpoint hashes and model/optimizer/scheduler metadata verified. Last safe globalsteps82500/55000; partial interruption progress not claimed saved. Per-run cancellation records/status distinguish user cancellation from generic SystemExit. V42timestepPID348105 remains active. Planned per-image proposal-attention identities/detached geometry conditioning/time-gated residual successor; retained rebalancing, no new model code or run launched.
+[2026-11-11] V50 approved implementation: local proposal attention+EOS, detached gathered identity/reference, native frontend/DN losses, fixed proposal assignment, sigma-gated coordinate residuals, retained V49-balanced objectives. Helper/model/pipeline RED/GREEN checks recorded; restore/checkpoint gradients pass. Explicit nested-backbone optimizer grouping preserves1e-4 rate. Native preflight/launch pending.
+[2026-11-11] V50 native preflight guard caught unused, unpretrained native diffusion-time MLPs in the wrapped frontend. Removed unused modules rather than lowering coverage; V50 per-token sigma conditioning unchanged. First calibration/state parity passed; failed verification retained. Fresh verification next.
+
+[2026-11-11 22:03] V50 verification and full80 LAUNCH COMPLETE: root/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v50/20261111_215450, PID1102983, tmuxposeflow-v50, live first epoch/step380, finite loss. 79 checks; native FP32/50rows/49people/batch4accum2 peak1.91GiB, next-update exact/maxstate1.64e-07;100% measured retained transfer/386 tensors. TRAIN32 frozen calibration, fresh initial hash verified,594sources/881archivefiles. Same fixed32VAL initialAP0/0; full80/selected2000VAL remain asynchronous. V49 artifacts/V42 trainer preserved. TensorBoard73roots/23pins/liveAP+loss verified. Retain .plan pending outcome review.
+
+V50 final live refresh verified: backend train/total advances49->749 after historical indexing;600scalar tags, both AP cards pinned/visible, screenshot tmp/v50/dashboard.png. Trainer step760, finite loss6.684748; full80 remains active. All approved implementation/verification/launch/dashboard delivery work complete; keep plan pending learned outcomes.

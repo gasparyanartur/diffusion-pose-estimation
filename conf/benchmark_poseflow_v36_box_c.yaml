@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v36_box
+  - _self_
+
+run_name: poseflow_v36_box_c
+out_dir: results/poseflow_v36_box_c
+
+pipeline:
+  clean_existence_input: true

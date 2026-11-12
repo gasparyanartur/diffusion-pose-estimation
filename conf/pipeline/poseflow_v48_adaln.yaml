@@ -1,0 +1,19 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v48_adaln.PoseFlowV48AdaLNPipelineConfig
+seed: 42
+rows: 51
+capacity: 50
+quick_eval_images: 32
+activation_checkpointing: true
+native:
+  num_encoder_layers: 3
+  num_decoder_layers: 3
+  num_box_decoder_layers: 1
+  num_queries: 200
+  num_proposals: 50
+  num_group: 50
+  dn_number: 50
+  num_feature_levels: 4
+  hidden_dim: 256
+  feedforward_dim: 2048
+  num_heads: 8
+  num_body_points: 14

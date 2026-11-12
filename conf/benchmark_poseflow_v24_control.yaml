@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow
+  - override pipeline: poseflow_v24
+  - _self_
+
+run_name: poseflow_v24_control
+out_dir: results/poseflow_v24_control
+pipeline:
+  h_enabled: false

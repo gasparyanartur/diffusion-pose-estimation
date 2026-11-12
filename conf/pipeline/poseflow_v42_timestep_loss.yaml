@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v42_uniform_t
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v42_timestep_loss.TimestepLossConfig
+timestep_loss_policy: box_to_pose_linear_90_10_scale2

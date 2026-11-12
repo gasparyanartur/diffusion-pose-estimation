@@ -1,0 +1,75 @@
+{
+  "source_reports": [
+    {
+      "name": "2026-10-23-discriminating-study-design.md",
+      "source_used": "docs/reports/2026-10-23-discriminating-study-design.md",
+      "sha256": "01815f265d77c93ee6c80eb9a9852c40d86ea2daa5713d5a603281dfcd9fe9a9",
+      "lines": 191
+    },
+    {
+      "name": "2026-10-23-h-control-test-suite.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-23-h-control-test-suite.md",
+      "sha256": "1978cdbf3089e785669b2cbfc9f103a7ee9acdc0fbb669e161d21d6408b77712",
+      "lines": 494
+    },
+    {
+      "name": "2026-10-23-image-information.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-23-image-information.md",
+      "sha256": "2d1628e40e66d6269d23488db083a2a8503b2d77f1926215e2a8b7c345f68f5e",
+      "lines": 134
+    },
+    {
+      "name": "2026-10-23-information-suite-pilot.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-23-information-suite-pilot.md",
+      "sha256": "b21a367539feacd861c8c8ac4c28f8323ebc1979c5650b8321ef815826260b97",
+      "lines": 152
+    },
+    {
+      "name": "2026-10-24-diffusionregpose-state-sensitivity.md",
+      "source_used": "docs/reports/2026-10-24-diffusionregpose-state-sensitivity.md",
+      "sha256": "d2bfefee9443ee76c031338a8d7b5edca324c3319cb7d1afd15f33dd20996a67",
+      "lines": 140
+    },
+    {
+      "name": "2026-10-24-information-probes-results.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-24-information-probes-results.md",
+      "sha256": "110c03ddf817f5419ab85dfb597714dbed2f7b975f11bb6582ccf929a15ea83a",
+      "lines": 144
+    },
+    {
+      "name": "2026-10-24-information-probes.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-24-information-probes.md",
+      "sha256": "e71dc4cdcb973ce20b58ff35d6a688cb7e690ca57a892c7f5d71dc3c359ebd21",
+      "lines": 66
+    },
+    {
+      "name": "2026-10-24-v24-completion-review.md",
+      "source_used": "docs/reports/archive/h-control-information-suite/2026-10-24-v24-completion-review.md",
+      "sha256": "67bffbaf9fd236c9efc05089a35a97f4b4913ca83673ca54485ce2d22cd0e9f8",
+      "lines": 104
+    }
+  ],
+  "notebook": "notebooks/investigations/diffusionregpose_diffusion_inspection.ipynb",
+  "notebook_sha256_before_merge": "ed71fa133792b20b099d4a289ee7cf2020d5a47b8a5ca28be8c252073a299b71",
+  "notebook_code_and_outputs_sha256": "3701357ea92a1f90bb5e5f0a7f4708783d9dd355ca950d861a2dea24ed18f5f6",
+  "deleted_superseded_paths": [
+    "docs/reports/2026-10-23-discriminating-study-design.md",
+    "docs/reports/2026-10-23-h-control-test-suite.md",
+    "docs/reports/2026-10-23-image-information.md",
+    "docs/reports/2026-10-23-information-suite-pilot.md",
+    "docs/reports/2026-10-24-diffusionregpose-state-sensitivity.md",
+    "docs/reports/2026-10-24-information-probes-results.md",
+    "docs/reports/2026-10-24-information-probes.md",
+    "docs/reports/2026-10-24-v24-completion-review.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-23-image-information.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-23-information-suite-pilot.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-24-information-probes.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-23-h-control-test-suite.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-24-information-probes-results.md",
+    "docs/reports/archive/h-control-information-suite/source-sha256.json",
+    "docs/reports/archive/h-control-information-suite/README.md",
+    "docs/reports/archive/h-control-information-suite/2026-10-24-v24-completion-review.md"
+  ],
+  "canonical_report": "docs/reports/2026-10-24-image-information-report.md",
+  "notebook_read": "all20 cells, saved tables, outputs and selected figures"
+}

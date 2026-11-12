@@ -1,0 +1,63 @@
+{
+  "native-step-performance.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_diffusion_inspection/figures/performance.png",
+    "sha256": "1c45a659602f70d31980741991b40383289178187140045795e21ffa3f9b9b7d",
+    "method": "unchanged copy"
+  },
+  "native-best-worst-three-steps.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_diffusion_inspection/figures/gallery_s3.png",
+    "sha256": "6b3b5570aac7715808bd949df03ea01dcc241e5273fe065bef46da327a64500c",
+    "method": "unchanged copy"
+  },
+  "native-decoder-geometry.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_diffusion_inspection/figures/geometry_111057_s3_call3.png",
+    "sha256": "d1da51b8df63e438f7b3da3ca63f818071be8789becab8886b90bdbb2e78e05d",
+    "method": "unchanged copy"
+  },
+  "native-wrist-attention.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_diffusion_inspection/figures/person_attention_111057.png",
+    "sha256": "bb6f279ce15d8063c2fdde10f1ad5b1667e60d788469ae93bd52fbd7e35437cd",
+    "method": "unchanged copy"
+  },
+  "native-query-mask.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_diffusion_inspection/figures/query_masks.png",
+    "sha256": "602a8819c9b1e51031187ba5b7bde8a8066106fab52dc7b03eaff3b6820a1b8b",
+    "method": "unchanged copy"
+  },
+  "native-state-and-route-probes.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/diffusionregpose_state_sensitivity_verified/summary.png",
+    "sha256": "9cc1103ab09b052c3fab54b59860569f83602056002b5a2274afbe8085fbaa38",
+    "method": "unchanged copy"
+  },
+  "ownership-controls.png": {
+    "source": "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_A_repair1/matching_diagnostic/control_gallery.png",
+    "sha256": "c908b4b7997294dc3da577709bfa307880bbd3d3520f824bad4c639748f5ea1c",
+    "method": "unchanged copy"
+  },
+  "preliminary-image-effects.png": {
+    "source": "/home/gasparyanartur/dev/pose-graph-diff/tmp/image_information_protocol/effects.png",
+    "sha256": "8185a49744ee1656c5bacfe397890b1f433baa9a203a4233db42ce8b7c87cd38",
+    "method": "unchanged copy"
+  },
+  "hidden-wrist-pair.png": {
+    "sources": [
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_B_repair1/family_330001/main_0.png",
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_B_repair1/family_330001/main_1.png",
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_B_repair1/family_330001/clear_0.png",
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_B_repair1/family_330001/clear_1.png",
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/pilot_B_repair1/family_330001/geometry.json"
+    ],
+    "method": "figure assembly with explicitly labelled true-wrist annotations"
+  },
+  "hidden-wrist-feature-classifiers.png": {
+    "source": "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/main_B_readouts/secondary_all_family_maps.json",
+    "method": "saved means and95% family-bootstrap intervals; post-hoc all-family sensitivity analysis"
+  },
+  "depth-order-and-shortcut.png": {
+    "sources": [
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/main_C_readouts/image_audits.json",
+      "/storage/outputs/pose-graph-diff/diagnostics/h_control_information_20261023_epoch065/main_C_readouts/results.json"
+    ],
+    "method": "registered encoder pair-order scores and held-out shortcut control"
+  }
+}

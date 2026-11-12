@@ -360,6 +360,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.ref_point_head = MLP(query_dim // 2 * d_model, d_model, d_model, 2)
         self.query_scale = self.bbox_embed = self.class_embed = self.pose_embed = self.pose_hw_embed = None
         self.expansion_pose_embed = None
+        self.coordinate_batch_layout = "legacy"
         self.num_box_decoder_layers, self.d_model = num_box_decoder_layers, d_model
         self.num_heads = decoder_layer.self_attn.num_heads
         self.deformable_decoder, self.num_group, self.num_body_points, self.num_dn = True, num_group, num_body_points, 100
@@ -491,6 +492,8 @@ class DeformableTransformerDecoder(nn.Module):
 
     def _refine_diffusion_keypoints(self, diffusion_xy: Tensor, reference_xy: Tensor) -> Tensor:
         group_count, batch_size, point_count, _ = diffusion_xy.shape
+        if self.coordinate_batch_layout == "per_image":
+            diffusion_xy = diffusion_xy.permute(1, 0, 2, 3)
         diffusion_xy = diffusion_xy.reshape(batch_size, group_count * point_count, 2)
         self_query = self.emb_SQ(diffusion_xy)
         self_key = self.emb_SK(diffusion_xy)

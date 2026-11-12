@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v42
+  - override pipeline: poseflow_v42_matched_target
+  - _self_
+
+run_name: v42-matched-target
+out_dir: results/poseflow_v42_matched_target

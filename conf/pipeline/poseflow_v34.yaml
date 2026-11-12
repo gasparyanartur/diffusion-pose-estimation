@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v33
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV34PipelineConfig
+matching_strategy: ota

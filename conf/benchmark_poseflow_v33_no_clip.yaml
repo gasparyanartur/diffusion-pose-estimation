@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v33
+  - _self_
+
+run_name: poseflow_v33_no_clip
+out_dir: results/poseflow_v33_no_clip
+
+training:
+  grad_clip: 0

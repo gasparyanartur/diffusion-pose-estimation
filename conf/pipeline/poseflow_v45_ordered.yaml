@@ -1,0 +1,7 @@
+defaults:
+  - poseflow_v45_task_pose_jepa
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v45_ordered.OrderedTaskPoseConfig
+matching_strategy: ordered_rank
+target_assignment: ordered_rank_fixed

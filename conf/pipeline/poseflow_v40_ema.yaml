@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v40
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV40EMAPipelineConfig
+ema_decay: 0.999

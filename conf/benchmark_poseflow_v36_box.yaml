@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v35_spatial_latent_only
+  - override pipeline: poseflow_v36
+  - _self_
+
+run_name: poseflow_v36_box
+out_dir: results/poseflow_v36_box

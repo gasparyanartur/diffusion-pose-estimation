@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v49
+  - override pipeline: poseflow_v50
+  - _self_
+run_name: poseflow_v50
+out_dir: results/poseflow_v50
+training:
+  checkpoint:
+    monitor: val/proposal_attention_selection_AP

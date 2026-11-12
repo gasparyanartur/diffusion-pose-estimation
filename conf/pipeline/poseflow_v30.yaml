@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v28
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV30PipelineConfig
+denoised_task_loss_weight: 0.5

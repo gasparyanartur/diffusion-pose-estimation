@@ -1,0 +1,10 @@
+defaults:
+  - benchmark_poseflow_v35_spatial
+  - override pipeline: poseflow_v37
+  - _self_
+
+run_name: poseflow_v37_latent_ota
+out_dir: results/poseflow_v37_latent_ota
+
+pipeline:
+  spatial_cost_weight: 0.0

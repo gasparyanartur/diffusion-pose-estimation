@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_diffusionregpose_development_compatible_256_keep_layers
+  - override pipeline: poseflow_v42
+  - _self_
+
+run_name: poseflow_v42
+out_dir: results/poseflow_v42

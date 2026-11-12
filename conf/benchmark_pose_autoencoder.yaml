@@ -1,0 +1,54 @@
+defaults:
+  - hardware: auto
+  - training: default
+  - _self_
+
+run_name: pose_autoencoder
+out_dir: results/pose_autoencoder
+run_robustness: true
+
+hardware:
+  devices: 1
+  precision: 32
+
+data:
+  train_ann: data/crowdpose/annotations/crowdpose_train.json
+  val_ann: data/crowdpose/annotations/crowdpose_val.json
+  test_ann: data/crowdpose/annotations/crowdpose_test.json
+  batch_size: 512
+  num_workers: 0
+  subset_frac: 1.0
+
+pipeline:
+  _target_: src.models.pipelines.pose_autoencoder.training.PoseAutoencoderConfig
+  width: 256
+  latent_dim: 32
+  phase: clean
+  lr: 0.001
+  min_lr: 0.00001
+  weight_decay: 0.0001
+  seed: ${training.seed}
+  gate_ap: 97.5
+  export_every_n_epochs: 10
+
+training:
+  max_epochs: 100
+  grad_clip: 1.0
+  seed: 42
+  test_after_fit: false
+  enable_progress_bar: false
+  log_every_n_steps: 10
+  logging:
+    logger_name: pose_autoencoder_${pipeline.phase}
+  checkpoint:
+    monitor: val/selection_score
+    mode: max
+    filename: 'epoch{epoch:03d}-score{val/selection_score:.4f}'
+    save_top_k: 1
+    save_last: true
+
+hydra:
+  run:
+    dir: ${out_dir}/${now:%Y%m%d_%H%M%S}
+  job:
+    chdir: false

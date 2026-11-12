@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v33_no_clip
+  - _self_
+
+run_name: poseflow_v33_no_clip_rescale
+out_dir: results/poseflow_v33_no_clip_rescale
+
+pipeline:
+  latent_loss_weight: 10.0

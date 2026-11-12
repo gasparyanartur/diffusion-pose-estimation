@@ -1,0 +1,12 @@
+defaults:
+  - poseflow_v37
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV38PipelineConfig
+alignment_loss_weight: 0.0
+latent_loss_weight: 100.0
+kl_loss_weight: 0.1
+posterior_seed: 1042
+posterior_logvar_init: -4.0
+posterior_logvar_min: -10.0
+posterior_logvar_max: 2.0

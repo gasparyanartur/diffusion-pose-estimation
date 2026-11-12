@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v34
+  - override pipeline: poseflow_v35
+  - _self_
+
+run_name: poseflow_v35_ota
+out_dir: results/poseflow_v35_ota

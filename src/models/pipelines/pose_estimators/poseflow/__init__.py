@@ -176,3 +176,111 @@ __all__ += ['PoseFlowV22Model', 'PoseFlowV22Pipeline', 'PoseFlowV22PipelineConfi
 from .training_v23 import PoseFlowV23Pipeline, PoseFlowV23PipelineConfig
 
 __all__ += ['PoseFlowV23Pipeline', 'PoseFlowV23PipelineConfig']
+
+from .model_v24 import PoseFlowV24Model
+from .training_v24 import PoseFlowV24Pipeline, PoseFlowV24PipelineConfig
+__all__ += ['PoseFlowV24Model', 'PoseFlowV24Pipeline', 'PoseFlowV24PipelineConfig']
+
+from .model_v25 import PoseFlowV25Model
+from .training_v25 import PoseFlowV25Pipeline, PoseFlowV25PipelineConfig
+__all__ += ['PoseFlowV25Model', 'PoseFlowV25Pipeline', 'PoseFlowV25PipelineConfig']
+
+from .model_v26 import PoseFlowV26Model
+from .training_v26 import PoseFlowV26Pipeline, PoseFlowV26PipelineConfig
+
+__all__ += ['PoseFlowV26Model', 'PoseFlowV26Pipeline', 'PoseFlowV26PipelineConfig']
+
+from .model_v27 import PoseFlowV27Model
+from .training_v27 import PoseFlowV27PipelineConfig
+
+__all__ += ['PoseFlowV27Model', 'PoseFlowV27PipelineConfig']
+
+from .model_v28 import PoseFlowV28Model
+from .training_v28 import PoseFlowV28PipelineConfig
+
+__all__ += ['PoseFlowV28Model', 'PoseFlowV28PipelineConfig']
+
+from .training_v29 import PoseFlowV29Pipeline, PoseFlowV29PipelineConfig
+
+__all__ += ['PoseFlowV29Pipeline', 'PoseFlowV29PipelineConfig']
+
+from .training_v30 import PoseFlowV30Pipeline, PoseFlowV30PipelineConfig
+
+__all__ += ['PoseFlowV30Pipeline', 'PoseFlowV30PipelineConfig']
+
+from .training_v31 import PoseFlowV31PipelineConfig
+
+__all__ += ['PoseFlowV31PipelineConfig']
+
+from .model_v32 import PoseFlowV32Model
+from .training_v32 import PoseFlowV32Pipeline, PoseFlowV32PipelineConfig
+
+__all__ += ['PoseFlowV32Model', 'PoseFlowV32Pipeline', 'PoseFlowV32PipelineConfig']
+
+from .model_v33 import PoseFlowV33Model
+from .training_v33 import PoseFlowV33PipelineConfig
+
+__all__ += ['PoseFlowV33Model', 'PoseFlowV33PipelineConfig']
+
+from .training_v34 import PoseFlowV34Pipeline, PoseFlowV34PipelineConfig
+
+__all__ += ['PoseFlowV34Pipeline', 'PoseFlowV34PipelineConfig']
+
+from .model_v35 import PoseFlowV35Model
+from .training_v35 import PoseFlowV35Pipeline, PoseFlowV35PipelineConfig
+
+__all__ += ['PoseFlowV35Model', 'PoseFlowV35Pipeline', 'PoseFlowV35PipelineConfig']
+
+from .model_v36 import PoseFlowV36Model
+from .training_v36 import PoseFlowV36Pipeline, PoseFlowV36PipelineConfig
+
+__all__ += ['PoseFlowV36Model', 'PoseFlowV36Pipeline', 'PoseFlowV36PipelineConfig']
+
+from .training_v37 import PoseFlowV37Pipeline, PoseFlowV37PipelineConfig
+
+__all__ += ['PoseFlowV37Pipeline', 'PoseFlowV37PipelineConfig']
+
+from .model_v38 import PoseFlowV38Model
+from .training_v38 import PoseFlowV38Pipeline, PoseFlowV38PipelineConfig
+
+__all__ += ['PoseFlowV38Model', 'PoseFlowV38Pipeline', 'PoseFlowV38PipelineConfig']
+
+from .training_fixed_source import PoseFlowFixedSourcePipeline, PoseFlowFixedSourcePipelineConfig
+
+__all__ += ['PoseFlowFixedSourcePipeline', 'PoseFlowFixedSourcePipelineConfig']
+
+from .training_v39 import PoseFlowV39Pipeline, PoseFlowV39PipelineConfig
+
+__all__ += ['PoseFlowV39Pipeline', 'PoseFlowV39PipelineConfig']
+
+from .model_v40 import PoseFlowV40Model
+from .training_v40 import PoseFlowV40Pipeline, PoseFlowV40PipelineConfig
+
+__all__ += ['PoseFlowV40Model', 'PoseFlowV40Pipeline', 'PoseFlowV40PipelineConfig']
+
+from .training_v40_ema import PoseFlowV40EMAPipeline, PoseFlowV40EMAPipelineConfig
+
+__all__ += ['PoseFlowV40EMAPipeline', 'PoseFlowV40EMAPipelineConfig']
+
+from .model_v40_sigreg import PoseFlowV40SigRegModel
+from .training_v40_sigreg import PoseFlowV40SigRegPipeline, PoseFlowV40SigRegPipelineConfig
+
+__all__ += ['PoseFlowV40SigRegModel', 'PoseFlowV40SigRegPipeline', 'PoseFlowV40SigRegPipelineConfig']
+
+from .model_v41 import PoseFlowV41Model
+from .training_v41 import PoseFlowV41Pipeline, PoseFlowV41PipelineConfig
+
+__all__ += ['PoseFlowV41Model', 'PoseFlowV41Pipeline', 'PoseFlowV41PipelineConfig']
+
+from .model_v42 import PoseFlowV42Model
+from .training_v42 import PoseFlowV42Pipeline, PoseFlowV42PipelineConfig
+
+__all__ += ['PoseFlowV42Model', 'PoseFlowV42Pipeline', 'PoseFlowV42PipelineConfig']
+
+from .training_v42_matched_target import PoseFlowV42MatchedTargetPipeline, PoseFlowV42MatchedTargetPipelineConfig
+
+__all__ += ['PoseFlowV42MatchedTargetPipeline', 'PoseFlowV42MatchedTargetPipelineConfig']
+
+from .training_v42_jepa import PoseFlowV42JEPAPipeline, PoseFlowV42JEPAPipelineConfig
+
+__all__ += ['PoseFlowV42JEPAPipeline', 'PoseFlowV42JEPAPipelineConfig']

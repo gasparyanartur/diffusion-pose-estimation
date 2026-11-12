@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v35_spatial
+  - _self_
+
+run_name: poseflow_v35_spatial_latent_only
+out_dir: results/poseflow_v35_spatial_latent_only
+
+pipeline:
+  denoised_task_loss_weight: 0.0

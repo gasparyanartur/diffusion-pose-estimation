@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v35_spatial_timed_cost
+  - _self_
+
+run_name: poseflow_v35_spatial_early_cost
+out_dir: results/poseflow_v35_spatial_early_cost
+
+pipeline:
+  spatial_cost_schedule: early_linear

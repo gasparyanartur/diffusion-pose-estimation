@@ -1,0 +1,14 @@
+defaults:
+  - poseflow_v35
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV37PipelineConfig
+matching_strategy: latent_ota
+spatial_queries: true
+spatial_cost_weight: 0.0
+alignment_loss_weight: 1.0
+alignment_position_scale: 0.25
+alignment_size_scale: 0.25
+alignment_position_weight: 1.0
+alignment_size_weight: 1.0
+alignment_existence_weight: 4.0

@@ -1,0 +1,8 @@
+defaults:
+  - benchmark_poseflow_v24_control
+  - _self_
+
+run_name: poseflow_v24_h
+out_dir: results/poseflow_v24_h
+pipeline:
+  h_enabled: true

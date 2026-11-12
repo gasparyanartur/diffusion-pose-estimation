@@ -1,0 +1,5 @@
+defaults:
+  - poseflow_v45_task_pose_control
+  - _self_
+
+jepa_weight: 1.0

@@ -1,0 +1,10 @@
+defaults:
+  - benchmark_poseflow_v37
+  - _self_
+
+run_name: poseflow_v37_reweight
+out_dir: results/poseflow_v37_reweight
+
+pipeline:
+  alignment_existence_weight: 1.0
+  latent_loss_weight: 100.0

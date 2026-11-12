@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v42
+  - _self_
+
+training_timestep_policy: uniform
+pose_readout_mode: box_center_residual

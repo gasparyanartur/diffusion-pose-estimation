@@ -1,0 +1,22 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV26PipelineConfig
+
+defaults:
+  - diffusionregpose
+  - _self_
+
+num_queries: 50
+num_proposals: 50
+num_group: 50
+num_encoder_layers: 0
+num_decoder_layers: 3
+num_box_decoder_layers: 0
+dn_number: 0
+matching_strategy: constructed
+flow_sampling_steps: 4
+proposal_seed: 42
+latent_loss_weight: 1.0
+fallback_noise_pixels: 5.0
+quick_eval_enabled: true
+quick_eval_images: 32
+pretrained_keep_encoder_layers: null
+pretrained_keep_decoder_layers: null

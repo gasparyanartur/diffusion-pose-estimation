@@ -1,0 +1,8 @@
+defaults:
+  - poseflow_v35
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV40PipelineConfig
+matching_strategy: hungarian
+reference_candidates: 200
+reference_encoder_source_layers: [2, 4, 6]

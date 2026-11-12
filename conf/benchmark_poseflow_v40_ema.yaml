@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v40
+  - override pipeline: poseflow_v40_ema
+  - _self_
+
+run_name: poseflow_v40_ema
+out_dir: results/poseflow_v40_ema

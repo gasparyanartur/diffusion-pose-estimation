@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v35
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV39PipelineConfig
+matching_strategy: constructed

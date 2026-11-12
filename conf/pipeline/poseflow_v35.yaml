@@ -1,0 +1,20 @@
+defaults:
+  - poseflow_v26
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.PoseFlowV35PipelineConfig
+matching_strategy: ota
+latent_loss_weight: 10.0
+spatial_queries: false
+spatial_cost_weight: 0.0
+spatial_cost_schedule: constant
+spatial_cost_ramp_cutoff: 500
+grid_rows: 5
+grid_columns: 10
+perturb_pixels: 5.0
+
+weights:
+  keypoints: 0.0
+  oks: 0.0
+  set_cost_keypoints: 0.0
+  set_cost_oks: 0.0

@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v42
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v42_matched_target.PoseFlowV42MatchedTargetPipelineConfig
+target_assignment: noisy_input_hungarian

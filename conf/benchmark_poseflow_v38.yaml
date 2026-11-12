@@ -1,0 +1,10 @@
+defaults:
+  - benchmark_poseflow_v37_reweight
+  - override pipeline: poseflow_v38
+  - _self_
+
+run_name: poseflow_v38_vae
+out_dir: results/poseflow_v38_vae
+
+pipeline:
+  alignment_loss_weight: 0.0

@@ -1,0 +1,7 @@
+defaults:
+  - poseflow_v49
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v49_balanced.PoseFlowV49BalancedPipelineConfig
+calibration_batches: 32
+calibration_seed: 42049

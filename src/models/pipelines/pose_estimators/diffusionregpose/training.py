@@ -394,21 +394,12 @@ def _keypoints_to_xyxyzz(keypoints: Tensor) -> Tensor:
     return torch.cat((coordinates.flatten(-2), visibility), dim=-1)
 
 
-def build_diffusionregpose_targets(
-    batch: dict[str, Tensor],
-    diffusion: nn.Module,
-    *,
-    num_proposals: int,
-    num_body_points: int,
-    noise: Tensor | None = None,
-    noise_seed: int | None = None,
-) -> tuple[Tensor, Tensor, list[dict[str, Tensor]]]:
-    """Build reference-format targets and timestep-zero diffusion inputs."""
+def build_diffusionregpose_clean_targets(
+    batch: dict[str, Tensor], *, num_body_points: int,
+) -> list[dict[str, Tensor]]:
     keypoints = batch["gt_keypoints"]
-    diffusion_keypoints = batch.get("gt_diffusion_keypoints", keypoints)
     labeled = batch["gt_labeled"].bool()
-    # The external CrowdPose converter maps both visible and occluded labels
-    # to the binary supervision mask used by its criterion.
+    # Native supervision treats visible and occluded labels alike.
     target_visibility = labeled.float()
     boxes = batch["gt_boxes_canon"]
     batch_size, person_count, point_count, _ = keypoints.shape
@@ -416,29 +407,7 @@ def build_diffusionregpose_targets(
         raise ValueError("batch keypoint count does not match the model")
     if boxes.shape[:2] != (batch_size, person_count):
         raise ValueError("box and keypoint target counts must agree")
-    if diffusion_keypoints.shape[:1] != (batch_size,) or diffusion_keypoints.shape[2:] != (
-        point_count,
-        2,
-    ):
-        raise ValueError("diffusion keypoints must match batch and keypoint dimensions")
-    if num_proposals < 1:
-        raise ValueError("num_proposals must be positive")
-
-    generator = None
-    if noise_seed is not None:
-        generator = torch.Generator(device=keypoints.device)
-        generator.manual_seed(noise_seed)
-
-    def random_tensor(shape: tuple[int, ...]) -> Tensor:
-        return torch.randn(
-            shape,
-            device=keypoints.device,
-            dtype=keypoints.dtype,
-            generator=generator,
-        )
-
     targets: list[dict[str, Tensor]] = []
-    diffusion_inputs = keypoints.new_empty(batch_size, num_proposals, num_body_points * 2)
     for batch_index in range(batch_size):
         valid_indices = labeled[batch_index].any(dim=-1).nonzero(as_tuple=False).flatten()
         valid_count = valid_indices.numel()
@@ -458,6 +427,64 @@ def build_diffusionregpose_targets(
             ),
             "area": (target_boxes[:, 2] * target_boxes[:, 3]).clamp_min(1e-6),
         })
+
+    return targets
+
+
+def build_diffusionregpose_targets(
+    batch: dict[str, Tensor],
+    diffusion: nn.Module,
+    *,
+    num_proposals: int,
+    num_body_points: int,
+    noise: Tensor | None = None,
+    noise_seed: int | None = None,
+    timesteps: Tensor | None = None,
+) -> tuple[Tensor, Tensor, list[dict[str, Tensor]]]:
+    """Build targets and coordinate diffusion inputs; omitted timesteps retain legacy t0."""
+    keypoints = batch["gt_keypoints"]
+    diffusion_keypoints = batch.get("gt_diffusion_keypoints", keypoints)
+    boxes = batch["gt_boxes_canon"]
+    batch_size, person_count, point_count, _ = keypoints.shape
+    if point_count != num_body_points:
+        raise ValueError("batch keypoint count does not match the model")
+    if boxes.shape[:2] != (batch_size, person_count):
+        raise ValueError("box and keypoint target counts must agree")
+    if diffusion_keypoints.shape[:1] != (batch_size,) or diffusion_keypoints.shape[2:] != (
+        point_count,
+        2,
+    ):
+        raise ValueError("diffusion keypoints must match batch and keypoint dimensions")
+    if num_proposals < 1:
+        raise ValueError("num_proposals must be positive")
+    if timesteps is not None:
+        if timesteps.dtype != torch.long:
+            raise TypeError("Timesteps must have dtype torch.long")
+        if timesteps.shape != (batch_size,) or timesteps.device != keypoints.device:
+            raise ValueError("Timesteps must have shape [B] on the keypoint device")
+        if ((timesteps < 0) | (timesteps >= diffusion.num_timesteps)).any():
+            raise ValueError("Timesteps must lie in the diffusion schedule")
+
+    generator = None
+    if noise_seed is not None:
+        generator = torch.Generator(device=keypoints.device)
+        generator.manual_seed(noise_seed)
+
+    def random_tensor(shape: tuple[int, ...]) -> Tensor:
+        return torch.randn(
+            shape,
+            device=keypoints.device,
+            dtype=keypoints.dtype,
+            generator=generator,
+        )
+
+    targets = build_diffusionregpose_clean_targets(batch, num_body_points=num_body_points)
+    diffusion_inputs = keypoints.new_empty(batch_size, num_proposals, num_body_points * 2)
+    for batch_index in range(batch_size):
+        valid_count = targets[batch_index]["labels"].numel()
+        target_keypoints = targets[batch_index]["keypoints"][:, :2 * num_body_points].reshape(
+            valid_count, num_body_points, 2,
+        )
 
         if "gt_diffusion_keypoints" in batch:
             person_mask = batch.get("diffusion_person_mask", batch.get("person_mask"))
@@ -488,7 +515,8 @@ def build_diffusionregpose_targets(
                 num_proposals - count, num_body_points * 2,
             )) * diffusion.scale
 
-    timesteps = torch.zeros(batch_size, dtype=torch.long, device=keypoints.device)
+    if timesteps is None:
+        timesteps = torch.zeros(batch_size, dtype=torch.long, device=keypoints.device)
     if noise is None:
         noise = random_tensor(tuple(diffusion_inputs.shape))
     diffusion_inputs = diffusion.q_sample(diffusion_inputs, timesteps, noise=noise).to(keypoints.dtype)
@@ -525,6 +553,31 @@ def _pairwise_box_iou(boxes1: Tensor, boxes2: Tensor) -> Tensor:
     )
     union = area1[:, None] + area2 - intersection
     return intersection / union.clamp_min(torch.finfo(intersection.dtype).eps)
+
+
+def pairwise_pose_matching_costs(
+    keypoints: Tensor,
+    target: dict[str, Tensor],
+    *,
+    num_body_points: int,
+    sigmas: Tensor,
+) -> tuple[Tensor, Tensor]:
+    coordinate_count = num_body_points * 2
+    predicted_xy = keypoints[:, :coordinate_count].reshape(-1, num_body_points, 2)
+    target_xy = target["keypoints"][:, :coordinate_count].reshape(-1, num_body_points, 2)
+    target_visible = target["keypoints"][:, coordinate_count:]
+    squared_distance = (predicted_xy[:, None] - target_xy[None]).pow(2).sum(-1)
+    variances = (sigmas.to(predicted_xy) * 2).pow(2)
+    oks = torch.exp(
+        -squared_distance
+        / (target["area"][None, :, None] * variances[None, None] * 2)
+    )
+    oks = (oks * target_visible[None]).sum(-1) / (target_visible.sum(-1)[None] + 1e-6)
+    keypoint_cost = (
+        (keypoints[:, None, :coordinate_count] - target["keypoints"][None, :, :coordinate_count]).abs()
+        * target_visible[None].repeat_interleave(2, dim=-1)
+    ).sum(-1)
+    return keypoint_cost, oks
 
 
 def _diffusionregpose_pairwise_matching_cost(
@@ -567,32 +620,9 @@ def _diffusionregpose_pairwise_matching_cost(
     else:
         box_cost = torch.zeros_like(torch.cdist(boxes, target["boxes"], p=1))
         giou_cost = torch.zeros_like(box_cost)
-        predicted_xy = keypoints[:, :coordinate_count].reshape(
-            -1, num_body_points, 2,
+        keypoint_cost, oks = pairwise_pose_matching_costs(
+            keypoints, target, num_body_points=num_body_points, sigmas=sigmas,
         )
-        target_xy = target["keypoints"][:, :coordinate_count].reshape(
-            -1, num_body_points, 2,
-        )
-        target_visible = target["keypoints"][:, coordinate_count:]
-        squared_distance = (
-            predicted_xy[:, None] - target_xy[None]
-        ).pow(2).sum(-1)
-        variances = (sigmas.to(predicted_xy) * 2).pow(2)
-        oks = torch.exp(
-            -squared_distance
-            / (target["area"][None, :, None] * variances[None, None] * 2)
-        )
-        oks = (
-            (oks * target_visible[None]).sum(-1)
-            / (target_visible.sum(-1)[None] + 1e-6)
-        )
-        keypoint_cost = (
-            (
-                keypoints[:, None, :coordinate_count]
-                - target["keypoints"][None, :, :coordinate_count]
-            ).abs()
-            * target_visible[None].repeat_interleave(2, dim=-1)
-        ).sum(-1)
 
     return (
         weights.set_cost_class * class_cost
@@ -873,9 +903,11 @@ class DiffusionRegPoseCriterion(nn.Module):
         *,
         include_keypoints: bool = True,
         include_classification_diagnostics: bool = False,
+        matches: list[tuple[Tensor, Tensor]] | None = None,
     ) -> dict[str, Tensor]:
-        matches = (self.matcher(outputs, targets) if "pred_keypoints" in outputs
-                   else self.matcher(outputs, targets, include_keypoints=False))
+        if matches is None:
+            matches = (self.matcher(outputs, targets) if "pred_keypoints" in outputs
+                       else self.matcher(outputs, targets, include_keypoints=False))
         logits = outputs["pred_logits"]
         target_classes = torch.zeros_like(logits)
         matched_queries = torch.zeros(
@@ -1008,9 +1040,16 @@ class DiffusionRegPoseCriterion(nn.Module):
             "dn_loss_giou": loss_giou,
         }
 
-    def forward(self, outputs: dict, targets: list[dict[str, Tensor]]) -> dict[str, Tensor]:
+    def forward(
+        self, outputs: dict, targets: list[dict[str, Tensor]], *,
+        final_matches: list[tuple[Tensor, Tensor]] | None = None,
+        auxiliary_matches: Sequence[list[tuple[Tensor, Tensor]] | None] | None = None,
+    ) -> dict[str, Tensor]:
+        if auxiliary_matches is not None and len(auxiliary_matches) != len(outputs.get("aux_outputs", [])):
+            raise ValueError("Explicit auxiliary matches must align with auxiliary outputs")
         losses = self._loss_for_outputs(
             outputs, targets, include_classification_diagnostics=True,
+            matches=final_matches,
         )
         if "dn_class_pred" in outputs:
             dn_losses = self._denoising_losses(outputs)
@@ -1044,6 +1083,7 @@ class DiffusionRegPoseCriterion(nn.Module):
                 include_keypoints=bool(
                     auxiliary.get("poseflow_full_pose_loss", index >= self.num_box_decoder_layers)
                 ),
+                matches=auxiliary_matches[index] if auxiliary_matches is not None else None,
             )
             for name, value in auxiliary_losses.items():
                 if name != "total":
@@ -1140,6 +1180,16 @@ class DiffusionRegPosePipeline(pl.LightningModule):
             num_body_points=self.model.transformer.decoder.num_body_points,
             noise_seed=self.diffusion_noise_seed,
         )
+        outputs = self._forward_diffusion_batch(batch, diffusion_keypoints, timesteps, targets)
+        return self.criterion(outputs, targets)
+
+    def _forward_diffusion_batch(
+        self,
+        batch: dict[str, Tensor],
+        diffusion_keypoints: Tensor,
+        timesteps: Tensor,
+        targets: list[dict[str, Tensor]],
+    ) -> dict:
         if self.deterministic_seed is None:
             rng_context = nullcontext()
         else:
@@ -1149,11 +1199,10 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         with rng_context:
             if self.deterministic_seed is not None:
                 torch.manual_seed(self.deterministic_seed)
-            outputs = self(
+            return self(
                 batch["image"], diffusion_keypoints, timesteps, targets,
                 batch.get("padding_mask"),
             )
-        return self.criterion(outputs, targets)
 
     def _log_losses(self, prefix: str, losses: dict[str, Tensor], batch_size: int) -> None:
         classification_diagnostics = {
@@ -1196,6 +1245,9 @@ class DiffusionRegPosePipeline(pl.LightningModule):
         self._log_losses("train", losses, batch["image"].shape[0])
         return losses["total"]
 
+    def _sample_validation_outputs(self, image: Tensor, **sampling_kwargs):
+        return self.model.sample_keypoints(image, **sampling_kwargs)
+
     def validation_step(self, batch: dict[str, Tensor], batch_idx: int) -> None:
         del batch_idx
         image = batch["image"]
@@ -1211,7 +1263,7 @@ class DiffusionRegPosePipeline(pl.LightningModule):
                 sampling_kwargs = {"padding_mask": batch.get("padding_mask")}
                 if sampling_generator is not None:
                     sampling_kwargs["generator"] = sampling_generator
-                sampled_outputs = self.model.sample_keypoints(image, **sampling_kwargs)
+                sampled_outputs = self._sample_validation_outputs(image, **sampling_kwargs)
                 ap_results = _postprocess_diffusionregpose_ap(
                     sampled_outputs,
                     batch,

@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v32
+  - override pipeline: poseflow_v33
+  - _self_
+
+run_name: poseflow_v33_token_readout
+out_dir: results/poseflow_v33_token_readout

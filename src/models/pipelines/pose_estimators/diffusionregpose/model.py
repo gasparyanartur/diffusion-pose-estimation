@@ -630,6 +630,7 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
         # The final decoder prediction is returned separately. Auxiliary
         # losses are applied only to the preceding decoder outputs.
         result = {**decoder_outputs[-1], "aux_outputs": decoder_outputs[:-1]}
+        result.update(self.decoder_context_outputs(inputs.decoder_context))
         if self.training:
             result["interm_outputs"] = {
                 "pred_logits": intermediate_logits,
@@ -649,6 +650,9 @@ class DiffusionRegPoseModel(DiffusionRegPoseDiffusion):
             result["dn_bbox_pred"] = denoising_outputs[-1]["pred_boxes"]
             result["dn_aux_outputs"] = denoising_outputs[:-1]
         return result
+
+    def decoder_context_outputs(self, context: object | None) -> dict[str, Tensor]:
+        return {}
 
     @torch.no_grad()
     def sample_keypoints(

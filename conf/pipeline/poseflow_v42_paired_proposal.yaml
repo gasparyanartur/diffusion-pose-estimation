@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v42_uniform_t
+  - _self_
+
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v42_paired_proposal.PoseFlowV42PairedProposalPipelineConfig
+target_assignment: proposal_hungarian_fixed

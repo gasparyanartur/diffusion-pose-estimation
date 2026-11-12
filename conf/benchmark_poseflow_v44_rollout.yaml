@@ -1,0 +1,19 @@
+defaults:
+  - benchmark_poseflow_v44
+  - _self_
+
+run_name: poseflow_v44_rollout
+out_dir: results/poseflow_v44_rollout
+arm: rollout
+source_checkpoint: null
+source_sha256: null
+expected_initial_model_sha256: null
+final_evaluation: true
+
+training:
+  max_epochs: 2
+  accumulate_grad_batches: 2
+  precision: 32
+  grad_clip: 0.1
+  test_after_fit: false
+  enable_progress_bar: false

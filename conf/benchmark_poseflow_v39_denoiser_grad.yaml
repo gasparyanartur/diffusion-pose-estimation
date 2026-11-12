@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v39
+  - _self_
+
+run_name: poseflow_v39_denoiser_grad
+out_dir: results/poseflow_v39_denoiser_grad
+
+pipeline:
+  detach_corruption_source: false

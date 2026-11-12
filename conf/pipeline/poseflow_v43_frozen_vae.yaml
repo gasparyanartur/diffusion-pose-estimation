@@ -1,0 +1,14 @@
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v43.PoseFlowV43PipelineConfig
+
+latent_statistics_file: /storage/outputs/pose-graph-diff/results/poseflow_v43_frozen_vae/20261105_093111_codec_audit/latent_statistics.pt
+backbone_pretrained: false
+num_proposals: 50
+reference_candidates: 200
+reference_encoder_source_layers: [2, 4, 6]
+latent_dim: 32
+hidden_dim: 256
+latent_loss_weight: 10.0
+geometry_loss_weight: 0.5
+flow_sampling_steps: 4
+quick_eval_steps: [1, 4, 8]
+seed: 42

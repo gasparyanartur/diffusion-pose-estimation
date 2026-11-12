@@ -1,0 +1,4 @@
+# Compatibility alias for saved references.
+defaults:
+  - poseflow_v39
+  - _self_
