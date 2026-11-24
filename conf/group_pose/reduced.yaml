@@ -1,0 +1,8 @@
+backbone: resnet50
+enc_layers: 3
+dec_layers: 3
+num_queries: 50
+num_select: 50
+num_body_points: 14
+shortest_side: 256
+max_size: 427

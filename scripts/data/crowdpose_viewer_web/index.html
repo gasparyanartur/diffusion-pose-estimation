@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrowdPose Explorer</title>
+  <link rel="stylesheet" href="/viewer.css">
+  <script src="/viewer.js" defer></script>
+  <script src="/autolabel.js" defer></script>
+  <script src="/copy_annotations.js" defer></script>
+  <script src="/editor.js" defer></script>
+  <script src="/audit.js" defer></script>
+  <script src="/layers.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">◎</span><h1>CrowdPose Explorer</h1></div>
+    <div class="set-tools">
+      <label>Annotation set <select id="set-select"><option value="">Original CrowdPose</option></select></label>
+      <button id="new-set">New set</button>
+    </div>
+    <a class="wiki-link" href="/wiki" target="_blank" rel="noopener">Wiki</a>
+    <label class="split-label">Split
+      <select id="split" aria-label="Dataset split" disabled>
+        <option value="train">Train</option>
+        <option value="val" selected>Validation</option>
+        <option value="test">Test</option>
+      </select>
+    </label>
+  </header>
+
+  <main>
+    <section class="browser" aria-label="Image browser">
+      <div id="queue-tools" class="toolbar" hidden>
+        <label><input type="checkbox" id="browse-pool"> Browse source images</label>
+        <button id="queue-picker">Browse &amp; add images</button>
+        <button id="add-current" hidden>Add current image</button>
+        <button id="autolabel-open">Autolabel…</button>
+        <span id="queue-progress"></span>
+      </div>
+      <div class="toolbar">
+        <div class="navigation">
+          <button id="previous" type="button" aria-label="Previous image" title="Previous image (←)" disabled>←</button>
+          <form id="jump">
+            <input id="position" type="number" min="1" step="1" aria-label="Image position" title="Type a position and press Enter" disabled>
+            <span id="total">/ —</span>
+          </form>
+          <button id="next" type="button" aria-label="Next image" title="Next image (→)" disabled>→</button>
+        </div>
+        <button id="audit-open" disabled>Image table</button>
+        <div class="layers" aria-label="Annotation overlays">
+          <label><input type="checkbox" id="boxes" checked> Boxes</label>
+          <label><input type="checkbox" id="poses" checked> Poses</label>
+          <label id="selection-overlay" hidden><input type="checkbox" id="selected-person-only"> Selected person only</label>
+        </div>
+      </div>
+      <div class="annotation-workbench">
+        <figure id="lens-dock" hidden>
+          <figcaption>Magnifier · 3×<span id="lens-coordinates"></span></figcaption>
+          <canvas id="lens" width="150" height="150" aria-hidden="true"></canvas>
+        </figure>
+        <div id="stage" class="stage">
+          <span id="image-status" role="status">Loading dataset…</span>
+          <div id="image-frame" class="image-frame" hidden>
+            <img id="photo" alt="">
+            <canvas id="overlay" aria-hidden="true"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="viewer-footer">
+        <span>Scroll over image or use ← / →</span>
+        <span class="legend" title="Based on the source visibility flags">
+          <span><i class="dot visible"></i>Visible (2)</span><span><i class="dot"></i>Occluded (1)</span>
+        </span>
+      </div>
+    </section>
+
+    <aside class="inspector" aria-label="Image details and notes">
+      <section id="editor-pane" class="panel" hidden>
+        <h2>Manual annotation</h2>
+        <details id="queue-import"><summary>Add images by ID</summary>
+          <label>Image IDs <textarea id="queue-ids" rows="2" placeholder="val/114203, test/106848"></textarea></label>
+          <button id="add-ids">Add to set</button>
+        </details>
+        <div id="image-editor" hidden>
+          <label><input type="checkbox" id="reference"> Show original labels</label>
+          <button id="copy-open" type="button">Copy annotations from…</button>
+          <div class="edit-row person-controls">
+            <button id="previous-person" type="button" aria-label="Previous person">‹</button>
+            <select id="person" aria-label="Person"></select>
+            <button id="next-person" type="button" aria-label="Next person">›</button>
+          </div>
+          <div class="edit-row person-controls">
+            <button id="add-person" type="button">Add person</button>
+            <button id="delete-person" type="button">Delete person</button>
+          </div>
+          <div class="active-annotation">
+            <p id="active-target" role="status"></p>
+            <button id="delete-geometry" type="button" aria-keyshortcuts="Delete"
+              title="Delete the selected annotation (Del)">Delete <kbd aria-hidden="true">Del</kbd></button>
+          </div>
+          <fieldset id="geometry"><legend>Geometry</legend>
+            <div class="edit-row editor-tools" aria-label="Annotation tool" role="group">
+              <button id="select-tool" type="button">Select</button>
+              <button id="set-joints" type="button">Set joints</button>
+              <button id="set-box" type="button">Set box</button>
+              <button id="edit-annotations" type="button">Edit annotations</button>
+              <button id="focus-mode" type="button">Focus mode</button>
+            </div>
+            <div id="joint-row">
+              <div class="edit-row target-navigation">
+                <button id="previous-joint" type="button" aria-label="Previous joint">‹</button>
+                <span>Joint</span>
+                <button id="next-joint" type="button" aria-label="Next joint">›</button>
+                <button id="select-box" type="button">Bounding box</button>
+              </div>
+              <div id="joint-buttons" class="joint-buttons" role="group" aria-label="Joint type"></div>
+            </div>
+            <div id="geometry-actions" class="edit-row">
+              <button id="edit-geometry" type="button">Edit</button>
+            </div>
+            <div id="placement-controls" hidden>
+              <div id="box-edit-actions" class="edit-row" role="group" aria-label="Box click action" hidden>
+                <button id="box-position" type="button">Position</button><button id="box-size" type="button">Size</button>
+              </div>
+              <div id="visibility-row" class="edit-row" role="group" aria-label="Joint visibility">
+                <button type="button" data-visibility="2">Visible</button>
+                <button type="button" data-visibility="1">Occluded</button>
+                <button type="button" data-visibility="0">Unlabeled</button>
+              </div>
+              <div class="edit-row"><label><span id="label-a">X</span><input id="coord-a" type="number" step="any"></label>
+                <label><span id="label-b">Y</span><input id="coord-b" type="number" step="any"></label></div>
+              <div class="edit-row" id="box-dimensions" hidden>
+                <label>Width<input id="coord-width" type="number" step="any"></label>
+                <label>Height<input id="coord-height" type="number" step="any"></label>
+              </div>
+              <div class="edit-row"><button id="confirm-edit">Confirm</button><button id="cancel-edit">Cancel</button></div>
+            </div>
+            <label><input type="checkbox" id="placement-zoom"> Zoom on placement</label>
+            <p id="proposal-score" class="muted" hidden></p>
+            <p id="edit-hint"></p>
+            <p id="joint-connection-hint" class="muted" hidden></p>
+            <div id="move-row" class="edit-row"><label>Move to <select id="owner"></select></label><button id="move-geometry">Move</button></div>
+          </fieldset>
+          <button id="undo-edit" type="button">Undo</button>
+          <button id="review-image">Mark reviewed</button>
+        </div>
+        <output id="edit-status" aria-live="polite"></output>
+      </section>
+      <section id="layers-pane" class="panel" aria-labelledby="layers-heading" hidden>
+        <div class="panel-heading"><h2 id="layers-heading">Layers</h2>
+          <button id="layers-clear" hidden>Clear pinned highlight</button></div>
+        <p id="layers-empty" class="muted" hidden>No people on this layer.</p>
+        <ul id="layers-rows" aria-label="People and crowd annotations"></ul>
+      </section>
+      <section class="panel" aria-labelledby="image-heading">
+        <div class="panel-heading">
+          <h2 id="image-heading">Image details</h2>
+          <span id="filename" class="mono muted"></span>
+        </div>
+        <dl class="stats">
+          <div><dt title="The crowding score supplied with the CrowdPose annotation">Crowd index</dt><dd id="crowd-index">—</dd></div>
+          <div><dt>Annotated people</dt><dd id="people-count">—</dd></div>
+        </dl>
+        <dl class="metadata">
+          <div><dt>Image ID</dt><dd id="image-id">—</dd></div>
+          <div><dt>Dimensions</dt><dd id="dimensions">—</dd></div>
+          <div><dt>Visible joints (2)</dt><dd id="visible-count">—</dd></div>
+          <div><dt>Occluded joints (1)</dt><dd id="occluded-count">—</dd></div>
+          <div><dt>Unlabeled joints (0)</dt><dd id="unlabeled-count">—</dd></div>
+          <div><dt>Crowd records</dt><dd id="crowd-count">—</dd></div>
+        </dl>
+        <details>
+          <summary>Per-annotation details</summary>
+          <ul id="annotations" class="annotations"></ul>
+        </details>
+      </section>
+      <section class="panel" aria-labelledby="audit-heading">
+        <h2 id="audit-heading">Source-label audit</h2>
+        <p id="audit-focus" hidden></p>
+        <fieldset id="audit-edit" disabled>
+          <div class="edit-row"><label>Cohort <select id="audit-cohort"></select></label>
+            <label><input type="checkbox" id="audit-reviewed"> Audit reviewed</label></div>
+          <div class="edit-row"><label>Tag <select id="audit-kind"></select></label>
+            <label>Applies to <select id="audit-person"></select></label></div>
+          <div class="edit-row"><label>Joint <select id="audit-tag-joint"></select></label>
+            <button id="audit-add">Add tag</button></div>
+          <ul id="audit-tags"></ul>
+        </fieldset>
+        <output id="audit-edit-status" role="status"></output>
+      </section>
+      <section class="panel" aria-labelledby="notes-heading">
+        <div class="panel-heading">
+          <h2 id="notes-heading">Notes</h2>
+          <span id="note-count" class="mono muted"></span>
+        </div>
+        <form id="note-form">
+          <textarea id="note-text" aria-label="Note for this image" placeholder="Add a note about this image…" rows="3" maxlength="4000" required disabled></textarea>
+          <div class="note-actions">
+            <button id="save-note" type="submit" disabled>Save note</button>
+            <span id="note-status" role="status"></span>
+          </div>
+        </form>
+        <ol id="notes" class="notes"></ol>
+      </section>
+    </aside>
+  </main>
+  <dialog id="copy-window" aria-labelledby="copy-title">
+    <div class="panel-heading"><h2 id="copy-title">Copy annotations from…</h2>
+      <button id="copy-close" type="button" autofocus>Close</button></div>
+    <p>Choose source people for this image. Copies are added to the current set.</p>
+    <div class="edit-row">
+      <label>Source <select id="copy-source"></select></label>
+      <label><input type="checkbox" id="copy-boxes" checked> Boxes</label>
+      <label><input type="checkbox" id="copy-joints" checked> Joints</label>
+    </div>
+    <button id="copy-all" type="button">Select all eligible</button>
+    <div id="copy-people"></div>
+    <div class="edit-row">
+      <button id="copy-save" type="button">Copy selected</button>
+      <output id="copy-status" role="status"></output>
+    </div>
+  </dialog>
+  <dialog id="autolabel-window" aria-labelledby="autolabel-title">
+    <div class="panel-heading"><h2 id="autolabel-title">Autolabel</h2>
+      <button id="autolabel-close" autofocus>Close</button></div>
+    <div class="edit-row autolabel-settings">
+      <label>Model <select id="autolabel-model"></select></label>
+      <label>Person confidence<input id="autolabel-confidence" type="number" required min="0" max="1" step="any"></label>
+      <label id="autolabel-joint-setting" hidden>Joint confidence<input id="autolabel-joint-confidence" type="number" required min="0" max="1" step="any"></label>
+    </div>
+    <p id="autolabel-description"></p>
+    <div class="edit-row"><button id="autolabel-all">Select all eligible</button><button id="autolabel-none">Clear selection</button></div>
+    <div id="autolabel-images"></div>
+    <div class="edit-row"><button id="autolabel-run">Run autolabel</button><output id="autolabel-summary" role="status"></output></div>
+  </dialog>
+  <dialog id="audit-window" aria-labelledby="audit-title">
+    <div class="panel-heading"><h2 id="audit-title"><span id="audit-dialog-label">Image table</span> <span id="audit-scope"></span></h2>
+      <button id="audit-close" autofocus>Close</button></div>
+    <section id="audit-picker" aria-label="Source image picker" hidden>
+      <nav aria-label="Source split tree">
+        <strong>CrowdPose</strong>
+        <ul id="audit-splits"></ul>
+      </nav>
+      <div class="audit-picker-actions">
+        <form id="audit-range-form">
+          <label>Positions or command <input id="audit-range" placeholder="64 random or 1–64" autocomplete="off"></label>
+          <button id="audit-range-select">Select</button>
+          <a id="audit-selection-info" class="wiki-link" href="/wiki#image-picker"
+            target="_blank" rel="noopener">Info</a>
+        </form>
+        <div class="edit-row">
+          <button id="audit-select-page">Select page</button>
+          <button id="audit-clear-selection">Clear selection</button>
+          <button id="audit-add-selection">Add selected</button>
+          <output id="audit-picker-status" role="status"></output>
+        </div>
+      </div>
+    </section>
+    <div class="audit-filters" id="audit-filters">
+      <label>People <select id="audit-people"><option value="">Any</option><option value="0–1 people">0–1</option><option value="2–4 people">2–4</option><option value="5+ people">5+</option></select></label>
+      <label>Crowd index <select id="audit-crowd-filter"><option value="">Any</option><option value="low">&lt; 0.2</option><option value="medium">0.2 to &lt; 0.8</option><option value="high">≥ 0.8</option><option value="unknown">Unavailable</option></select></label>
+      <label>Box overlap <select id="audit-overlap"><option value="">Any</option><option value="high">Has overlapping pair</option><option value="low">No overlapping pair</option></select></label>
+      <label>Box geometry <select id="audit-box"><option value="">Any</option><option value="small">Small person</option><option value="edge">Touches image edge</option><option value="box_only">Box-only person</option></select></label>
+      <label>Joint visibility <select id="audit-visibility"><option value="">Any</option><option value="missing">Has unlabeled joint</option><option value="occluded">Has occluded joint</option></select></label>
+      <label>Joint type <select id="audit-joint"></select></label>
+      <label>Flag <select id="audit-flag"><option value="">Any</option><option value="duplicate">Shared joint location</option><option value="outside">Visible joint outside box</option></select></label>
+      <label>Cohort <select id="audit-cohort-filter"></select></label>
+      <label>Review <select id="audit-review-filter"><option value="">Any</option><option value="reviewed">Reviewed</option><option value="unreviewed">Unreviewed</option></select></label>
+      <label>Tag <select id="audit-tag-filter"></select></label>
+      <label>Group by <select id="audit-group"><option value="">None</option><option value="overlap_size">Overlap × size</option><option value="people">People</option><option value="cohort">Cohort</option></select></label>
+      <label>Sort by <select id="audit-sort"><option value="">Image order</option><option value="people">Most people</option><option value="iou">Highest box IoU</option><option value="height">Smallest person</option><option value="visibility">Most matching joints</option><option value="crowd">Highest crowd index</option></select></label>
+      <button id="audit-clear">Clear filters</button>
+    </div>
+    <div id="audit-groups" class="audit-groups"></div>
+    <div id="audit-table-scroll"><table id="audit-table">
+      <thead><tr><th>Image</th><th>Crowd index</th><th>People</th><th>Max IoU / people overlapping</th><th>Min height (px) / small people</th><th>Edge / box-only</th><th>Unlabeled / occluded</th><th>Flags</th><th>Review</th></tr></thead>
+      <tbody id="audit-rows"></tbody></table></div>
+    <div class="edit-row audit-pagination">
+      <button id="audit-prev">Previous page</button><button id="audit-next">Next page</button>
+      <output id="audit-status" role="status"></output>
+    </div>
+  </dialog>
+</body>
+</html>

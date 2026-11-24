@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Explorer Wiki</title>
+  <link rel="stylesheet" href="/viewer.css">
+</head>
+<body>
+  <header class="masthead">
+    <h1>Explorer Wiki</h1>
+    <a class="wiki-link" href="/">Back to Explorer</a>
+  </header>
+
+  <main class="wiki-main">
+    <nav class="panel wiki-nav" aria-label="On this page">
+      <h2>On this page</h2>
+      <ul>
+        <li><a href="#image-picker">Image picker</a></li>
+        <li><a href="#annotation">Annotation and Layers</a></li>
+        <li><a href="#autolabel">Autolabeling</a></li>
+        <li><a href="#audit">Source-label audit</a></li>
+        <li><a href="#standards">Standards</a></li>
+      </ul>
+    </nav>
+    <article class="panel wiki-content">
+      <section id="image-picker">
+        <h2>Image picker</h2>
+        <p>Create or open a custom annotation set, then choose <strong>Browse &amp; add images</strong>.
+          Check individual rows or choose <strong>Select page</strong> to check the visible filtered rows.
+          Your selections carry across pages and splits. Choose <strong>Add selected</strong> to save the
+          checked images to the set.</p>
+        <table>
+          <thead><tr><th scope="col">Input</th><th scope="col">What it selects</th></tr></thead>
+          <tbody>
+            <tr><td><code>64 random</code> or <code>random 64</code></td><td>Up to 64 distinct images at random across all matching pages.</td></tr>
+            <tr><td><code>first 64</code> or <code>last 64</code></td><td>Up to 64 images from the start or end of the current sort order.</td></tr>
+            <tr><td><code>all matching</code></td><td>Every eligible image in the current filtered result.</td></tr>
+            <tr><td><code>1–64, 100–120</code></td><td>Inclusive, one-based positions in the open split’s original order. Sort and filters leave these positions unchanged.</td></tr>
+          </tbody>
+        </table>
+        <p>Random, first, last, and all matching use the open split, active filters, and selected group.
+          Selection skips images already queued or checked. If a command asks for more images than are available,
+          it checks the available images and reports the count. Use <strong>Add images by ID</strong> for dataset
+          IDs such as <code>val/114203</code>.</p>
+      </section>
+
+      <section id="annotation">
+        <h2>Annotation and Layers</h2>
+        <p>The editor opens in <strong>Select</strong>. Choose a person’s joint or box on the image or in
+          the sidebar. The active target shows the person, joint, and visibility. <strong>Edit</strong> starts
+          placement for that item and returns to Select when saved. Press <kbd>Delete</kbd>
+          or click <strong>Delete</strong> beside the active target to clear it. Use <strong>Move to</strong>
+          to transfer it to another person. <strong>Delete person</strong> beside <strong>Add person</strong>
+          removes the selected person and all their annotations. Undo restores the person.</p>
+        <p><strong>Set joints</strong> saves one joint per click and advances to the next unfinished
+          joint. Click <strong>Unlabeled</strong> to skip a joint explicitly.
+          <strong>Set box</strong> saves a new bounding box after you click opposite corners.</p>
+        <p>In <strong>Edit annotations</strong>, click a joint or box to open its exact fields. Joints
+          save each placement click and visibility change. Typed X and Y save on Enter or when
+          you leave the coordinate fields. Click <strong>Done</strong> to pick another annotation.
+          Boxes show Center X/Y, Width, and Height. Select <strong>Position</strong> or
+          <strong>Size</strong> to choose what the next canvas click changes. Click <strong>Apply</strong>
+          or press Enter to save the box. Escape discards a draft and returns to Select.</p>
+        <p>Use the work area around the photo to place, select, or edit boxes and joints beyond the
+          image edge. Coordinates are measured from the photo’s top-left, so values can be negative
+          or beyond its dimensions. Type coordinates for geometry farther out than the visible area.</p>
+        <p>Choose <strong>Focus mode</strong> and click a placed joint or box to zoom in 3×.
+          Use WASD or the arrow keys to move it one image pixel per press. <strong>Undo</strong>
+          reverses one saved change at a time, with up to 20 changes available. Press Esc to exit Focus mode.
+          <strong>Zoom on placement</strong> is also available for one-shot edits.
+          The 3× magnifier sits beside the photo or above it on narrow screens. It follows the
+          pointer and coordinate adjustments, and keeps its last view while you use the sidebar.
+          The outlined crosshair adapts to local brightness and leaves its center open.
+          A joint draft previews edges to placed joints on the same person. For an isolated joint,
+          the editor lists neighboring joints that can connect it.</p>
+        <p><strong>Copy annotations from…</strong>, beside <strong>Show original labels</strong>,
+          opens <strong>CrowdPose Ground Truth</strong> or another custom set for the same image.
+          Check the people and choose boxes, joints, or both. Copies are added to the active set and
+          the whole copy can be undone together.</p>
+        <p>Start the viewer with <code>--reload</code> to refresh automatically when web files change.
+          The viewer waits for open dialogs and edits, then reopens the same set and image.</p>
+        <p>In Select, hover over a box or joint to highlight the person. The <strong>Layers</strong> sidebar
+          shows the selected person and provides independent <strong>Box</strong> and <strong>Pose</strong>
+          controls. Click a row to pin its highlight. <strong>Show original labels</strong> displays the
+          CrowdPose reference alongside your edits. Turn on <strong>Selected person only</strong>
+          beside <strong>Boxes</strong> and <strong>Poses</strong> to focus on the active person.
+          Select another person from the person controls or the Layers sidebar.</p>
+      </section>
+
+      <section id="autolabel">
+        <h2>Autolabeling</h2>
+        <p>Open <strong>Autolabel…</strong> and choose a model and queue images. Set the person confidence
+          threshold and, for YOLO26 Pose, the joint confidence threshold.</p>
+        <ul>
+          <li><strong>YOLO26 Boxes</strong> proposes boxes and leaves joints unfinished.</li>
+          <li><strong>YOLO26 Pose</strong> proposes boxes and 12 CrowdPose limb joints. Place the head and neck manually.</li>
+          <li><strong>Sapiens2</strong> proposes boxes, the 12 limb joints, and the neck. Place the head manually.</li>
+        </ul>
+        <p>Images with saved people or a review flag are skipped. Check visibility during review.
+          Each result retains its initial coordinates, scores and model settings for comparison with your edits.</p>
+      </section>
+
+      <section id="audit">
+        <h2>Source-label audit</h2>
+        <p>Open <strong>Image table</strong> to filter by crowd index, people, box overlap, joint visibility,
+          or audit tags. Click a shared-joint or outside-box flag to highlight the corresponding source
+          annotation. Use the audit panel to record issues at image, person, or joint scope and mark
+          completed reviews. Group counts use reviewed images as the denominator. Notes and audit tags
+          are stored locally alongside the annotation sets.</p>
+      </section>
+
+      <section id="standards">
+        <h2>Standards</h2>
+        <h3>COCO annotation format</h3>
+        <p>We use one COCO JSON document per dataset split, with a manifest pointing to the existing
+          image directory. The viewer currently edits CrowdPose poses and boxes. The standardized data
+          also carries existing COCO masks for future segmentation work.</p>
+        <p>This example uses a two-joint person category to show the structure. CrowdPose uses its
+          native 14 joints and COCO val2017 uses 17.</p>
+        <pre id="coco-example"><code>{
+  "info": {
+    "description": "Example pose dataset",
+    "pose_graph_diff": {
+      "version": 1,
+      "dataset": "example",
+      "split": "val",
+      "source_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  },
+  "licenses": [
+    {"id": 1, "name": "CC BY 4.0", "url": "https://creativecommons.org/licenses/by/4.0/"}
+  ],
+  "images": [
+    {"id": 8, "file_name": "000008.jpg", "width": 320, "height": 240, "license": 1}
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "person",
+      "supercategory": "person",
+      "keypoints": ["left_shoulder", "left_elbow"],
+      "skeleton": [[1, 2]]
+    }
+  ],
+  "annotations": [
+    {
+      "id": 27,
+      "image_id": 8,
+      "category_id": 1,
+      "bbox": [48, 35, 120, 160],
+      "area": 19200,
+      "iscrowd": 0,
+      "keypoints": [85, 65, 2, 94, 102, 1],
+      "num_keypoints": 2,
+      "segmentation": [[48, 35, 168, 35, 168, 195, 48, 195]]
+    }
+  ]
+}</code></pre>
+
+        <h3>Fields and coordinate conventions</h3>
+        <table>
+          <thead><tr><th scope="col">Field</th><th scope="col">Convention</th></tr></thead>
+          <tbody>
+            <tr><td><code>info</code>, <code>licenses</code></td><td>Dataset description and declared licenses. License records have an ID, name, and URL when supplied.</td></tr>
+            <tr><td><code>images</code></td><td>Each record has an integer <code>id</code>, relative <code>file_name</code>, and pixel <code>width</code> and <code>height</code>. Keep license references, source URLs, capture dates, and CrowdPose’s <code>crowdIndex</code> where available.</td></tr>
+            <tr><td><code>categories</code></td><td>The category ID identifies the class. The ordered <code>keypoints</code> names define the array order. <code>skeleton</code> edges use one-based indices into that list.</td></tr>
+            <tr><td><code>annotations</code></td><td>Each object has its own ID and links to its image and category. <code>iscrowd</code> is 0 for an individual annotation or 1 for a crowd record.</td></tr>
+            <tr><td><code>bbox</code>, <code>area</code></td><td>Box as <code>[x, y, width, height]</code> from the top-left, in source pixels. Area is in square pixels. Keep source area when supplied. A fallback computed from the box has <code>pose_graph_diff.area_origin</code> set to <code>"bbox"</code>.</td></tr>
+            <tr><td><code>keypoints</code></td><td>Flat <code>[x, y, v, …]</code> triples in category order using zero-based source pixel coordinates. Use <code>[0, 0, 0]</code> for an unlabeled joint. Visibility 1 is labeled but occluded, and 2 is labeled and visible. <code>num_keypoints</code> counts both 1 and 2.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Provenance and masks</h3>
+        <p><code>info.pose_graph_diff</code> identifies the version of the metadata extension, dataset,
+          split, and SHA-256 of the input JSON. Standardized records keep their native IDs, scoped by
+          dataset and split. When a CrowdPose keypoint count changes during conversion, the original
+          value is recorded in <code>annotation.pose_graph_diff.source_num_keypoints</code>. Published
+          CrowdPose metrics use the original labels and the native evaluator.</p>
+        <p><code>segmentation</code> can be a list of polygons, each a flat sequence of pixel
+          <code>x, y</code> pairs, or an RLE object with <code>size: [height, width]</code> and
+          <code>counts</code>. Uncompressed RLE is a list of alternating background and foreground
+          run lengths in column-major order. Compressed RLE stores those runs as a string. Existing
+          masks are carried through conversion. A missing segmentation field indicates unavailable
+          mask data.</p>
+        <p><a href="https://github.com/cocodataset/cocodataset.github.io/blob/master/dataset/format-data.htm">Official COCO data format</a></p>
+      </section>
+    </article>
+  </main>
+</body>
+</html>

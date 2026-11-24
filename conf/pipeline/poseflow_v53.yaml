@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v49
+  - _self_
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v53.PoseFlowV53PipelineConfig
+calibration_seed: 42053
+calibration_batches: 32

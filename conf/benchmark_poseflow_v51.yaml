@@ -1,0 +1,9 @@
+defaults:
+  - benchmark_poseflow_v50
+  - override pipeline: poseflow_v51
+  - _self_
+run_name: poseflow_v51
+out_dir: results/poseflow_v51
+training:
+  checkpoint:
+    monitor: val/gradient_balanced_selection_AP

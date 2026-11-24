@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v53
+  - _self_
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v54.PoseFlowV54PipelineConfig
+residual_bank_capacity: 2048
+prefix_clean_probability: 0.25

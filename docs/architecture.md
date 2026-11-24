@@ -136,6 +136,72 @@ The global node index for person `n`, keypoint `k` in image `b` is
 
 ### Datasets and data modules
 
+The [CrowdPose viewer](../scripts/data/crowdpose_viewer.py) indexes raw split
+annotations by image ID and serves individual records and images over localhost.
+The browser draws overlays in source pixel coordinates. Review notes are
+stored separately in a local JSONL file keyed by split and image ID.
+The manual editor stores named cohorts and their labels through
+`scripts/data/manual_annotations.py`. Each write checks the set revision under
+a file lock and atomically replaces one custom JSON file. Source annotations
+supply the optional reference overlay. The client maps pointer and nudge
+input to source pixels.
+In custom-set editing, the overlay covers the padded work area. Its canvas
+origin and pointer mapping both use the displayed photo’s top-left, including
+under zoom. This supports drawing and picking outside-image geometry.
+The docked magnifier uses the same pointer mapping and accepts source coordinates
+directly from drafts. It crops the decoded image once per animation frame. The
+magnifier and placement reticles use local luminance to choose their stroke colors.
+Select uses the layer hit test to identify one editable joint or box. Explicit
+creation tools save joints with one click and boxes with opposite corners.
+The Edit annotations inspector uses hit testing to load the joint or box,
+then saves joint placements and visibility changes individually. Joint
+coordinate fields commit on Enter or when focus leaves the fields. Box drafts
+commit on Apply or Enter. Focus mode zooms around the hit location for the
+selected geometry and serializes source-pixel nudges through the same
+revision-checked save path.
+The Delete button and keyboard shortcut share a save action. Annotation
+copy resolves Ground Truth or a custom source on the server for the same
+image and appends new person IDs in one revision-checked edit.
+The store records up to 20 prior editable snapshots per set. Undo restores
+one affected image under the same lock and advances its edit counter.
+Autolabel import invalidates history for its seeded image.
+The optional live reload endpoint watches the served viewer assets. The
+browser waits until writes, drafts, and dialogs clear, then reloads with
+the set and image identity saved in session storage.
+The bulk picker reuses the source audit index. It stages ordered split/ID
+selections in the browser and submits the existing revision-checked queue
+add action. Position ranges expand against original split order. Random and
+ordered commands select from filtered rows before pagination, skipping queued
+and staged IDs. The random command samples without replacement.
+
+The Layers sidebar and the canvas share browser-side box and pose records
+keyed by layer origin and person ID. Per-person visibility, hover, and pin
+state are local to the current image. The selected-person filter applies the
+same visibility rules to drawing and hit testing. The editor draws placement drafts
+over the shared layers. For joint drafts, the pose preview substitutes the
+draft coordinates for the selected person's slot while rendering the rest of
+that person's skeleton from saved fields.
+The autolabel window submits selected set members to `/api/autolabel` and polls
+the batch by set ID. A configured profile selects a Sapiens2 or YOLO worker.
+The background runner loads the selected model once and streams per-image
+proposals with their inference provenance. Each
+result is committed separately under the annotation lock after checking that
+image's edit counter, people and review state. Restarting the server clears job
+progress. Imported people, source predictions and human edits persist on disk.
+
+The source audit indexes per-image geometry and visibility statistics on the
+first request for each split. The browser filters and groups those rows and
+can use the active custom queue as the image list. Per-image audit JSON stores
+cohort, completion, and typed tags keyed to the source image, optional source
+annotation ID, and optional joint index. Atomic writes take a split lock
+and apply a single action to the most recent record.
+
+The standalone `scripts/data/standardize_pose_data.py` command validates and
+writes COCO interchange JSON and per-dataset manifests with source hashes and
+relative paths to the existing images. The viewer serves the app wiki at
+`/wiki`. Its Standards section documents the interchange format independently
+of the native CrowdPose editing and evaluation paths.
+
 [`PoseDataset`](../src/data/datasets.py) reads a COCO-style annotation JSON and
 groups annotations by image ID. One dataset item = one image, with N people and
 K keypoints. It uses [`SceneGraphSampler`](../src/data/sampler.py) to produce
@@ -2654,3 +2720,202 @@ V49-balanced verification: frozen four-scale buffers/provenance restore with mod
 Existing coordinates bypass learned reconstruction through a sigma-gated residual; sizes use a positive reference and bounded exponential correction, with exact identity at sigma0. Newborns retain absolute codec decoding. Coordinate DDIM, fixed local identities, EOS latch and50rows/49capacity govern sampling. V50 checkpoints record selector, detach, confidence, residual initialization/parameterization, fixed calibration and frontend contracts; old variants are rejected. See [V50 report](reports/poseflow_v50.md).
 
 2026-11-11 22:03: V50 native verification passed: cached frontend legacy outputs exact, all retained critical components100% pretrained transfer, strict optimizer/scheduler/RNG resumed update maxstate1.64e-07, checkpoint gradient parity, empty/mixed/masked/seeded sampling and full capacity. Unused native time MLPs removed; sigma conditioning uses V50 decoder embeddings. Fresh full80 run active; see V50 report.
+
+V50 gradient-audit clarification (2026-11-12): selector/EOS pooling precedes dense row decoding and shares coordinate/reference projections, so classification updates that geometry representation while leaving row layers/time conditioning untouched. Global clipping couples private residual-head updates to large native frontend gradients. Existing calibration monitors only initial dense decoder parameters; no protected selector boundary or separate clipping budgets are currently implemented. See [audit](reports/poseflow_v50_gradient_audit.md).
+
+## V51 protected gradient ownership
+
+Logging uses experiment-independent metric tags. The comparison event bridge
+preserves original summary values/metadata, optimizer steps and wall times while
+moving legacy quick-test sampling policies into run labels. It tails appended
+events using persisted cursors; source event files and training processes are
+unchanged. V50/V51 geometry diagnostics share `diagnostics/` measurement names.
+
+V51 evaluation opts into second-layer birth snapshots from the existing sampler
+trace. Native postprocessing/evaluation runs separately on birth and final
+geometry; generation, scores and counts are shared. Optional evaluator support
+is disabled by default for V50. A checkpoint observer can publish paired
+quick-test birth/final AP for immutable runs after verifying final-output parity.
+
+`model_v51.py` specializes three V50 hooks: detached selector prefix, RMS-bounded
+time embedding and clean-anchor geometry interpolation. Both anchor/birth
+latents decode through the learned coordinate reader. `balance_v51.py` owns
+bounded EMA task statistics and disjoint parameter-family clipping;
+`training_v51.py` probes encoder/projection/both row layers periodically and
+checkpoints weights/counters. Native confidence, selected-slot assignment,
+image-memory sharing and image-only DDIM interfaces remain V50-compatible.
+[Detailed contracts and acceptance gates](reports/poseflow_v51.md).
+
+2026-11-12 19:54 CET: V51 verification passed and one fresh full80 run is active at`/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v51/20261112_194212`,PID1815487.42 tests; native full capacity/resume and fresh-noise denoising acceptance passed; original jobs preserved. See [V51 report](reports/poseflow_v51.md) for exact provenance and evidence limits.
+
+
+## V52 joint geometry and time-conditioned deformable reads
+
+`model_v52.py` retains the native proposal frontend and image-local selector, uses direct32-to256 coordinate features and two preLN self/deformable/FFN layers, and predicts clean box plus center-relative joints from256D readouts. Cached image values are shared across rows; per-token sigma drives image-query Ada-LN. Layer1 samples around current noisy boxes (proposal boxes for births), layer2 around detached predicted clean boxes. There is no32D codec or clean-anchor bypass. `training_v52.py` uses frozen TRAIN-only task gradient scales, equal fixed box/pose and birth/refinement priorities and disjoint clipping; V52 restore is strict and asset-independent. Same-trajectory birth/first-EOS/final native AP uses shared tags and distinct run labels. See [V52 report](reports/poseflow_v52.md).
+
+V52 verification:24 checks; cached-attention/native-frontend exact parity; all direct geometry/time-query gradient paths active; native CUDA checkpoint gradients agree, resumed next update maxstate6.05e-8. Fresh full80 run active; source/config/initial-model provenance archived in its namespace. No architecture benefit inferred from verification.
+
+
+## V53 restored native expansion without refinement
+
+`expanded_pose_v53.py` adapts native person+14joint expansion, postLN decoder layers4/6, reference positional embeddings and box/pose/extent heads with exact empty-prefix native parity. Each joint gets its own deformable image read. Image values are projected once per image/layer; self-attention batches independent teacher rows, preserving native group locality. `model_v53.py` conditions newborns on clean fixed completed-person tokens and image-local proposals. `training_v53.py` supervises only births at both pose layers, one EOS row per image, once-per-batch frontend losses and frozen two-task TRAIN gradient calibration. No codec, sigma/noise, DDIM or inter-generation geometry update is present. Strict restore and isolated configs/entrypoint/evaluator preserve previous families. See [V53 report](reports/poseflow_v53.md).
+
+V53 verified/active: freshseed42/full80 at `/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v53/20261113_231953`,PID2842214.22checks; native full49person/50row FP32batch4accum2 preflight, exact retained frontend/pose initialization, gradient/restore parity. Fixed32VAL manifest unchanged; source/config/native inputs archived. Shared TensorBoard stream added; learned outcome pending.
+
+V53 dashboard delivery verified: shared AP cards visibly overlay historical runs;12 comparison AP series/614existing points retained. Live training confirmed; initial AP only, learned outcome pending. See V53 report.
+
+V53 live TensorBoard refresh caught up after initial history indexing;71+train-loss points verified against actual trainer progress.
+
+## V54 training-only empirical prefix geometry
+
+`training_v54.py` subclasses V53's pipeline without changing its model or losses.
+`prefix_augmentation_v54.py` decomposes paired errors into box-relative translation,
+log-size and local joint displacements, samples full frozen TRAIN residual vectors,
+then reconstructs imperfect prefix coordinates before the shared coordinate MLP.
+The same coordinates also supply prefix attention references. A person's sampled
+error persists across all independent teacher rows in that forward. Targets,
+visibility and proposal ownership remain fixed; eval/inference bypass augmentation.
+Strict checkpoints embed bank arrays, masks/count/checksum and source provenance.
+Training/preflight orchestration has injectable pipeline classes with unchanged
+V53 defaults; evaluator measurement tags are shared across both families.
+
+V54 causal safety bound consults only earlier people at the token's introduction;
+changing future GT centers cannot change earlier corruptions.26checks/native
+FP32 full-capacity verification pass; current fresh80run3262573 uses identical
+initial model weights to V53. Earlier failed10-update namespace retained; corrected
+run/source/bank contract is authoritative. See V54 report for provenance and limits.
+
+V54 delivery checks confirm636 source/native hashes match its immutable workspace,
+strict frozen-bank resume/native gradient parity, and existing shared TensorBoard
+AP/loss semantics. All774historical comparison APpoints retained. Current generation
+remains V53's deterministic birth-only native keypoint expansion; augmentation is
+training-only and never modifies generated previous detections at inference.
+
+
+## V55 proposal-to-prefix cross-attention
+
+`proposal_context_v55.py` batches one preLN, eight-head256D attention block across independent teacher rows: candidate/EOS queries read individual PERSON prefix keys/values. Empty prefixes use one learned null token. A zero-initialized output projection preserves same-proposal native expansion initially. `model_v55.py` selects corrected features through a narrow V53 selection hook, keeps original detached boxes, and passes corrected features without detaching into existing joint expansion. Private MLPs score candidates/EOS. `training_v55.py` retains V54 bank/augmentation and adds strict V55 contracts. Shared context receives geometry/classification gradients in the geometry clipping family; prefix/raw candidate inputs are detached. Same-forward gradient audit, full-capacity CUDA verification and fresh80 launch precede outcome claims. See V55 report.
+
+V55 EOS query uses unit-scale initialization to match proposal residuals before scoring LayerNorm; initial0.02scale amplified shared EOS correction gradients in a measured frozen-weight audit. Strict contract records this choice.39tests/native full-capacity CUDA verification pass; exact native transfer and267tensor checkpoint-gradient parity verified. Fresh80run3519742 has finite optimizer progress; model39.60Mparameters and2.09GiB native capacity peak. Existing geometry/selector/native clipping policy retained, with shared-context pre/post norms exposed under measurement-only tags.
+
+V55 delivery verified: shared AP cards visibly include V55; all16existing comparison series/870points retained with79previous roots/5pins. Live native API/CSV parity confirmed through step1019 for training, corruption and shared-context gradients; finite trainer progress beyond1160updates. V54 remains active. Full80outcome pending; retain .plan.
+
+2026-11-15 trained-stage audit: classification gradients in proposal_context share
+geometry clipping with the private native pose decoder, although they cannot train
+the private decoder directly. This couples private pose updates to classification
+gradient magnitude. A separate context/private-geometry budget passed exact
+gradient-scaling independence and saved-state AdamW replay checks. The approved
+V55 version2 implementation keeps native/selector bounds0.1/sqrt3 and separates
+shared_context/private_geometry at0.1/sqrt6 each. The combined bound remains0.1;
+clipping runs after accumulation and before AdamW. Aggregate geometry pre/post
+norm tags remain comparable; private_geometry has separate norm/factor tags, and
+there is no single aggregate geometry clip factor. Legacy checkpoints are rejected
+under version2. Existing archived trainers retain their original policy.
+Preserve V54 prefix augmentation and
+existing objectives. See [audit](reports/poseflow_v55_trained_gradient_audit.md).
+
+Fresh V55 version2 launched on user instruction at
+`/home/gasparyanartur/outputs/pose-graph-diff/poseflow_v55_split_clipping/20261115_112330`.
+It uses the same initialization/architecture/objectives/augmentation as original
+V55, with separate shared-context/private-geometry clipping and unchanged native/
+selector budgets. The original archived-source trainer continues independently.
+Both runs overlay the same TensorBoard measurement tags; only run labels differ.
+
+2026-11-16 frozen transfer audit: retaining pretrained tensors is not functional
+pretraining parity. With full six-encoder/two-box frontend fixed, consecutive
+pose stages3/4 yield53.93 fixed32VAL pose AP, but skipping to4/6 yields16.08.
+With four pose stages fixed, replacing that frontend with encoder2/4/6+box2
+drops54.15 to0.73. Later blocks/reference updates depend on the skipped
+computation. Native simultaneous versus independent pretrained person groups
+retain54.20/54.15poseAP, bounding an intrinsic penalty from independent decoding.
+No architecture change implemented. The generic reduced-depth remapper reserves
+source pose head0 for expansion; any future retention of source pose stage3
+must also initialize its own head0 explicitly (temporary audit mapping did so).
+For trained V55, bypassing corrected proposal features with identities/prefixes
+fixed changes34.70 to34.17poseAP; masking only the decoder prefix preserves
+34.70AP. Joint queries cannot directly attend prefix tokens in the existing
+group mask. See [audit](reports/poseflow_v55_pose_bottleneck_audit.md) for controls,
+pretraining exposure limits, provenance and geometry/selection decomposition.
+
+Full-depth preservation adapter (2026-11-16): `full_depth_birth.py` takes ownership
+of the complete native6encoder/2box/4pose model, reuses existing frontend/expanded
+decoder operators, and decodes supplied IDs in independent rows. Native expansion
+and first pose head remain tied. Optional encoded-prefix correction has zero
+output initialization and retains the direct raw-feature gradient route; no
+extra prefix tokens enter native pose self-attention. Image memory/value
+projections are cached once. Explicit masks support padded/mixed/empty rows,
+and outputs preserve proposal slots and original image query IDs. All four
+layer hidden states/references/coordinates match the frozen independent
+reference exactly;54.1509pose/39.1008boxAP. This does not preserve grouped
+native boxAP45.20, nor establish learned selection/EOS or post-training AP.
+25tests and native full50 synthetic gradient/resource checks pass without
+changing legacy models or launching training. See [adapter report](reports/full_depth_birth_decoder.md).
+
+V56 integrates the full-depth path with V55 prefix-conditioned selection/EOS.
+`model_v56.py` removes direct decoder-prefix tokens, preserves the raw selected
+image-feature gradient and tied expansion/first-pose head, and enables prefix
+encoder gradients through attention (`detach_prefix=False`, legacy defaultTrue).
+Teacher augmentation, one assignment/random order, balanced objectives/split
+clipping and immediate EOS remain; newborn supervision averages all4pose layers.
+`training_v56.py`/own config/entrypoint add a strict V56 contract and asset-free
+restore.22tests and native full-capacity checkpointed-gradient/AdamW/RNG/scheduler
+restore checks pass. Full conditional initial parity is exact; fresh80seed42 run
+20261116_135212 has actual sequential initial51.38pose/38.06boxAP and finite
+optimizer progress. No diffusion, refinement or trained-weight warm start.
+Shared TensorBoard tags retained. See [V56 report](reports/poseflow_v56.md).
+
+
+2026-11-16 current birth-family evaluation: run_v53_evaluation(..., split='test') reads data.test_ann_path; split='val' reproduces historical diagnostics. TEST aliasing VAL is rejected before dataset loading, and existing subset manifests reject split/path changes. V53-V56 presets use official crowdpose_test.json. The shared trainer checks8000 TEST IDs disjoint from TRAIN/VAL, hashes all three annotations, keeps validation loss computation on VAL, selects checkpoints with fixed32 TEST AP, and writes final full_test results. Resumed evaluation transitions use separate checkpoint/event directories; model/optimizer/scheduler/RNG contracts remain unchanged. Comparable metrics retain their tags; split differences are in run labels and report provenance.
+
+2026-11-17 frozen historical evaluation (completed): temporary orchestration lives
+under repository-local tmp/all_run_audit, with immutable evaluator revisions,
+model source snapshots, job configs, annotation/subset hashes, prediction ledgers
+and additive protocol reviews under results/all_run_audit/20261116_203800.
+Each completed endpoint covers official TEST exactly once and derives the common
+fixed32 measurement from the same predictions. Native model postprocessing is
+retained; box-only/pose-only applicability and upstream-proposal box AP are
+explicit. Historical reuse requires archived model-definition identity plus
+checkpoint, annotation, coverage, image-only inference and evaluator evidence;
+script/importer hashes alone are insufficient. Strict trained-weight restoration
+from a compatible source replay is qualified separately from exact original-source
+identity. No production evaluation or model interface changes are introduced by
+this audit. See [results and provenance](reports/all_run_results.md).
+All 200 feasible endpoints completed; the 201 declarations retain one documented
+zero-prediction source blocker. Three additional older refiner implementations
+were already unavailable before queue admission. Temporary compatibility adapters
+preserve native V43 image-size arguments, bijectively migrate the sole configured
+C16 block's parameter registration, and fill absent training-only V10 defaults
+without changing inference arguments or constructing an optimizer. Strict restore,
+source limits and original failed attempts remain pinned in additive reviews.
+
+2026-11-17: the [frozen ED-Pose relation audit](reports/person_interference_test_audit.md)
+traces 900 box queries through 100 expanded person groups and four pose stages. Blocking
+inter-person box-token attention on 32 TEST images leaves mean matched-pose OKS near 0.8774
+and shifts joints 0.33 pixels, while materially changing scores, boxes and duplicate competition.
+Score/geometry recombination localizes the pose-AP loss predominantly to score-dependent ranking
+and suppression. Joint self-attention, deformable image reads, and carried token features have
+separate intervention results. “Previous poses” in this simultaneous decoder refers to prior
+stage hypotheses. Sequential person-birth and diffusion-call histories are distinct mechanisms.
+
+2026-11-18: the ED-Pose stage follow-up isolated the joint deformable
+cross-attention value contribution while preserving the projection bias and box
+rows. Removing it from pose stages 1–3 together damaged pose AP much more
+than removing it from stage 4 alone (11.82 versus 64.39, baseline 65.00 on
+the same 32 TEST images at 800/1333). This is a joint effect for stages 1–3.
+
+2026-11-18. The [GroupPose runner](reports/grouppose_baseline.md) builds from
+pinned upstream PyTorch source and reuses the native grouped transformer,
+matcher, and keypoint postprocessor with a compatible CUDA operator. It uses
+the shared aspect-preserving resize and CrowdPose evaluator. Keypoints remain
+in native order and original-image coordinates. The per-image ledger includes
+every evaluated image even if its detection list is empty. Pose-only mode
+excludes bounding-box metrics and supports AP50/AP75. The reduced preset has
+three pose decoder layers and preserves the coarse-keypoint proposal path.
+
+2026-11-18. `scripts/training/train_grouppose.py` uses the pinned GroupPose
+dataset transforms at reduced resolution, native Hungarian supervision,
+ImageNet ResNet-50 initialization, and batch-4 FP32 accumulation of two
+microbatches. It verifies disjoint TRAIN+VAL/TEST and evaluates fixed32 TEST
+at initialization and every epoch. The latest and best checkpoints include
+model, optimizer, scheduler, and RNG state. See the
+[GroupPose baseline report](reports/grouppose_baseline.md).

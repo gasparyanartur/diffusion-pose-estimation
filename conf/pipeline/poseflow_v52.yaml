@@ -1,0 +1,7 @@
+defaults:
+  - poseflow_v50
+  - _self_
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v52.PoseFlowV52PipelineConfig
+latent_dim: 256
+calibration_seed: 42052
+sampling_points: 4

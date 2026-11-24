@@ -71,6 +71,15 @@ class PoseFlowV50Model(PoseFlowV49Model):
             residuals.append(self.residual_heads[index](readout))
         return torch.stack(coordinates), torch.stack(latents), torch.stack(residuals)
 
+    def _selector_prefix(self, prefix):
+        return prefix
+
+    def _time_features(self, sigmas):
+        return self.time_embedding(sigmas.reshape(-1)*999).reshape(*sigmas.shape, self.hidden_dim)
+
+    def _refine_coordinates(self, coordinates, sigmas, residuals):
+        return residual_coordinates(coordinates, sigmas, residuals, scale=self.scale)
+
     def forward_rows(self, context, noisy_coordinates, noise_sigmas, token_types, padding_mask, proposal_indices):
         shape = noisy_coordinates.shape[:-1]
         if (noisy_coordinates.ndim != 4 or noisy_coordinates.shape[-1] != 32
@@ -95,14 +104,14 @@ class PoseFlowV50Model(PoseFlowV49Model):
         prefix = (prefix_state*person[..., None]).sum(-2)/person.sum(-1, keepdim=True).clamp_min(1)
         candidates = torch.arange(context['features'].shape[1], device=state.device)
         used = ((proposal_indices[..., None] == candidates) & person[..., None]).any(-2)
-        selection_logits, eos = self.selector(prefix, context['features'], used)
+        selection_logits, eos = self.selector(self._selector_prefix(prefix), context['features'], used)
         chosen = selection_logits.argmax(-1)
         indices = torch.where((token_types == PREDICT) & (proposal_indices < 0), chosen[..., None], proposal_indices)
         identity, reference = gather_identity(context['features'], context['boxes'], indices)
         state = state+identity+self.reference_input(reference)
         state = state+(token_types == PREDICT)[..., None]*self.predict_embedding
         state = state+self.rank_embedding.weight[:shape[2]][None, None]
-        state = state+self.time_embedding(noise_sigmas.reshape(-1)*999).reshape_as(state)
+        state = state+self._time_features(noise_sigmas)
         state = state.masked_fill(padding_mask[..., None], 0.)
         projected = tuple(value for pair in zip(context['image_keys'], context['image_values']) for value in pair)
         args = (state, padding_mask, context['padding_mask'], *projected)
@@ -112,7 +121,7 @@ class PoseFlowV50Model(PoseFlowV49Model):
             absolute, latents, residuals = self._decode_geometry(*args)
         residual_input = noisy_coordinates.masked_fill(~person[..., None], 0.)
         residual_sigmas = noise_sigmas.masked_fill(~person, 0.)
-        refined = residual_coordinates(residual_input[None], residual_sigmas[None], residuals, scale=self.scale)
+        refined = self._refine_coordinates(residual_input[None], residual_sigmas[None], residuals)
         coordinates = torch.where(person[None, ..., None], refined, absolute).masked_fill(padding_mask[None, ..., None], 0.)
         return dict(pred_coordinates=coordinates, pred_latents=latents,
             eos_logits=eos[None, ..., None].expand(len(self.layers), *shape),

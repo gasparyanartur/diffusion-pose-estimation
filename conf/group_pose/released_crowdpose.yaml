@@ -1,0 +1,8 @@
+backbone: swin_L_384_22k
+enc_layers: 6
+dec_layers: 6
+num_queries: 100
+num_select: 50
+num_body_points: 14
+shortest_side: 800
+max_size: 1333

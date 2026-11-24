@@ -543,6 +543,8 @@ def evaluate_crowdpose_results(
     ground_truth_path: Path | str,
     *,
     image_ids: list[int] | None = None,
+    include_pose_thresholds: bool = False,
+    pose_only: bool = False,
 ) -> dict[str, float]:
     """Evaluate a CrowdPose result JSON using crowdposetools."""
     try:
@@ -572,7 +574,16 @@ def evaluate_crowdpose_results(
     if not had_numpy_float:
         np.float = float  # type: ignore[attr-defined]
     try:
-        detected = COCO.loadRes(ground_truth, detections)
+        if detections:
+            detected = COCO.loadRes(ground_truth, detections)
+        else:
+            detected = COCO()
+            detected.dataset = {
+                "images": ground_truth.dataset["images"],
+                "categories": ground_truth.dataset["categories"],
+                "annotations": [],
+            }
+            detected.createIndex()
         evaluator = COCOeval(ground_truth, detected, "keypoints")
         evaluator.evaluate()
         evaluator.accumulate()
@@ -584,7 +595,10 @@ def evaluate_crowdpose_results(
             "AP_M": float(difficulty[1]),
             "AP_H": float(difficulty[2]),
         }
-        if detections and all("bbox" in detection for detection in detections):
+        if include_pose_thresholds:
+            metrics["AP50"] = float(evaluator.stats[1])
+            metrics["AP75"] = float(evaluator.stats[2])
+        if not pose_only and detections and all("bbox" in detection for detection in detections):
             bbox_detected = COCO.loadRes(ground_truth, detections)
             bbox_evaluator = COCOeval(ground_truth, bbox_detected, "bbox")
             bbox_evaluator.evaluate()

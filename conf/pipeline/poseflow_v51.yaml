@@ -1,0 +1,6 @@
+defaults:
+  - poseflow_v50
+  - _self_
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v51.PoseFlowV51PipelineConfig
+calibration_seed: 42051
+gradient_probe_interval: 100

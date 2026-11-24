@@ -17,7 +17,7 @@ def test_image_only_evaluation_and_distinct_diagnostics(tmp_path):
     assert report['count_mae'] == 2 and report['mean_generation_steps'] == 7
     assert report['refinement']['teacher_forced/rank_01/birth_coordinate_mse'] >= 0
     assert report['refinement']['teacher_forced/rank_01/final_clean_input_coordinate_mse'] < 1e-12
-    assert 'quick-test/proposal_attention_residual/rows_7/pose_AP' in tensorboard_metrics(report)
+    assert 'quick-test/pose_AP' in tensorboard_metrics(report)
     network.selector.eos_bias.data.fill_(-1e6)
     evaluator = lambda *args: dict(pose_AP=0., bbox_AP=0.)
     first = evaluate_v50_batches(network, [sample], tmp_path/'first', 'unused', [0], metric_evaluator=evaluator)

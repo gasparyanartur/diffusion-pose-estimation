@@ -6,6 +6,16 @@ Core Message:
 - Maintainance is more important than new features, so prioritize code quality, readability, and testability over cleverness or speed.
 - You must follow the operating protocol and planning rules strictly.
 
+## Metric logging and TensorBoard comparison rules
+
+- **If experiments measure the same thing, use the exact same metric name/tag. Only the run label should differ.** This applies to every metric: losses, AP/accuracy, gradients, throughput, memory, and diagnostics—not just quick-test or detection AP.
+- A metric tag describes the measurement, never the experiment that produced it. Do not add experiment-specific prefixes, model/architecture names, or version numbers to metric tags.
+- Put experimental configuration distinctions in run labels so equivalent measurements overlay on the same charts. Reuse established tags; do not invent a new namespace when adding an experiment.
+- For example, native detection AP can use `quick-test/pose_AP` and `quick-test/bbox_AP` across runs. A tag such as `quick-test/gradient_balanced_residual/.../pose_AP` incorrectly embeds the experiment in the measurement name.
+- Keep genuinely different measurements distinguishable, including training versus validation, teacher-forced versus free-running evaluation, and different loss definitions. Different experiments alone never justify different metric tags.
+- Preserve recorded values, event files, checkpoints, and history when correcting older logging; do not require retraining just to compare existing runs.
+- Verify in TensorBoard that equivalent measurements from old and new experiments appear together on the same charts. Merely confirming that new tags exist is insufficient.
+
 ALWAYS READ AGENTS.md BEFORE TAKING ANY ACTION.
 IMPORTANT: Read and follow this file before taking any action.
 

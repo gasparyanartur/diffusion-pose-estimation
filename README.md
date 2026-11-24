@@ -152,6 +152,239 @@ set `pipeline.pretrained_checkpoint` to use another location. Obtain pretrained
 weights from their original authors and follow the applicable terms. Training
 initialization weights and trained model-family checkpoints serve different roles.
 
+### Browse CrowdPose ground truth
+
+From the repository root, start the local viewer with the project environment.
+
+```bash
+venv/bin/python -m scripts.data.crowdpose_viewer
+```
+
+Open [CrowdPose Explorer](http://127.0.0.1:8765/) in a browser on the same
+machine. Choose Train, Validation, or Test, then scroll over the photo, use the
+arrow keys or buttons, or type an image position and press Enter. Toggle
+boxes and poses independently. The details panel shows the source crowd index
+and counts from the raw joint visibility flags. Filled joints are marked
+visible (2), hollow joints are marked occluded (1), and unlabeled joints (0)
+are omitted from the overlay.
+
+Start with `venv/bin/python -m scripts.data.crowdpose_viewer --reload` to
+automatically refresh the browser after changes to the viewer's HTML, CSS, or
+JavaScript. The viewer waits for saves, drafts, and open dialogs, then
+reopens the same set and image. Restart the server after Python changes.
+
+Click **Save note** to append a review note to
+`data/crowdpose_viewer/notes.jsonl`. Each line contains `split`, `image_id`,
+`created_at` (UTC), and `text`. Saved notes reappear on that image. Use
+`--notes PATH` to choose another file, `--port PORT` to change the local port,
+or `--config PATH` to point to another CrowdPose data config.
+
+### Manually annotate a CrowdPose subset
+
+In the local viewer, choose **New set**, give it a name, and add images by ID
+(e.g. `val/114203 test/106848`). Alternatively, check **Browse source images**,
+navigate to a photo, and click **Add current image**. Uncheck it to return to
+the set queue. The annotation set selector switches between your sets and the
+original labels. **Show original labels** adds a gray reference overlay.
+Turn on **Selected person only** beside **Boxes** and **Poses** to show the
+active person's geometry. Use the person controls or the **Layers** sidebar
+to switch people while the filter is on.
+
+The editor opens in **Select**. Click a placed joint or bounding box on the
+image or select it in the sidebar. The active target shows the person, joint,
+and visibility. Use the previous and next person buttons or choose a named
+joint directly. **Edit** starts placement for the selected item and returns to
+Select after saving. Press **Delete** or click **Delete** beside the active
+target to clear that item. **Move to** transfers it to another person. **Delete
+person**, beside **Add person**, removes the selected person and all their
+annotations. Undo restores the person.
+
+Choose **Set joints** for single-click placement, advancing through unfinished
+slots in skeleton order. Click **Unlabeled** to skip a joint explicitly.
+Choose **Set box** and click opposite corners to save a new box.
+
+Use **Edit annotations** for repeated corrections. Click a person’s existing
+joint or box to load its exact fields. Each placement click or visibility
+change saves the joint immediately. Typed X and Y values save on Enter or when
+you leave the coordinate fields. Choose **Done** to select another annotation.
+Boxes show Center X/Y, Width, and Height. **Position** makes the next click
+set the center. **Size** makes it set a corner relative to the center.
+Choose **Apply** or press Enter to save a box edit. Press Escape to discard
+a draft and return to Select. The padding around the photo accepts
+placement, selection and editing beyond all four edges. Coordinates still
+start at the photo’s top-left, so values can be negative or exceed the photo
+dimensions. Use the numeric fields for points farther out than the visible
+work area.
+
+Choose **Focus mode** and click a placed joint or box to zoom in 3×. Use WASD
+or the arrow keys to move the annotation one source pixel per press. Each move
+saves immediately, and **Undo** reverses one move at a time. Escape exits
+Focus mode. **Zoom on placement** can also be enabled for one-shot edits.
+The 3× magnifier beside the photo follows the
+pointer and any coordinate adjustments. It keeps its last view when the
+pointer leaves the image area. The outlined crosshair adapts to the local
+brightness and leaves the target pixel visible. Joint drafts preview edges
+to placed joints on the same person. The editor lists the neighboring joints
+that can connect an isolated point.
+
+**Copy annotations from…**, beside **Show original labels**, opens
+**CrowdPose Ground Truth** or another custom set for the same image.
+Check the people to copy and choose boxes, joints, or both. Copies
+append to the active set with new IDs and provenance. Undo reverses the
+whole submission in one step.
+
+**Undo** reverses the most recent saved manual edit in the set and opens the
+affected image. Each set stores up to 20 edits. **Mark reviewed** records
+completion, including reviewed images with no people. Set JSON files live
+under `data/crowdpose_viewer/annotation_sets/` (override with `--sets-dir`).
+People have stable IDs, source-pixel xywh boxes and 14 ordered joint slots.
+A null slot means unfinished. `[0, 0, 0]` means explicitly unlabeled.
+
+### Add images in bulk
+
+With a custom set selected, open **Browse & add images**. Choose Train,
+Validation, or Test in the split tree, then check rows or use **Select page**.
+Selections carry across branches, pages, sorting, and filters. **Add selected**
+appends the checked images to the queue. Rows marked **In set** have already
+been added.
+
+Use **Positions or command** for selections across pages. **Info** opens the
+image-picker guide in the app wiki.
+
+- `64 random` (or `random 64`) draws a sample without replacement.
+- `first 64` and `last 64` use the current table sort.
+- `all matching` selects every eligible image.
+- `1–64, 100–120` selects inclusive, one-based positions in the split's
+  original order regardless of sorting or filtering. For exact dataset IDs,
+  use **Add images by ID**.
+
+Commands use the open split and the current filters and group. Already queued
+or checked images are skipped. If a command requests more than are eligible,
+it selects the available images and reports the count.
+
+### Inspect people in Layers
+
+In Select, hover over a box or joint to highlight its person in the image and
+the **Layers** sidebar. If boxes overlap, the nearest joint takes precedence,
+then the smallest enclosing box. Each row shows the source annotation ID or
+the custom editor's person number. Hover over a custom row's number for its
+full ID. Click a row to pin the highlight and use **Box** and **Pose** to
+toggle its overlays.
+
+### Audit source labels
+
+Open **Image table** from any split or custom queue. Filter by person count,
+crowd index, overlap, box size or edge contact, joint visibility, flags, cohort, and review
+tag. Choose a joint type to show its unlabeled and occluded counts. Group by
+**Overlap × size**, **People**, or **Cohort**. Click any group to view its images.
+Group counts show tagged images out of reviewed images in each group. Selecting
+a tag narrows the table while keeping the group's reviewed denominator.
+
+Statistics use source boxes and people. Overlapping people participate in at
+least one pair with IoU ≥ 0.20. Small people have a box under 64 source pixels
+tall. The table links to the first example of each flag in an image. A **Shared
+joint** is the same type of labeled joint on two people within 3 source
+pixels. **Outside box** flags a visible joint more than 3 pixels and 10% of
+the square root of its box area beyond the box. Inspect each flag in the
+image before tagging it.
+
+In **Source-label audit**, apply tags to the whole image, a source person,
+or one of their joints. Use image scope to record a missing person. Assign
+a cohort and check **Audit reviewed** when done. **Reviewed clean** marks an
+issue-free image as reviewed. Editing issue tags reopens the audit. Audit
+records are stored in `data/crowdpose_viewer/audit/<split>/<image-id>.json`
+in the same directory as the notes file and follow the image across custom sets.
+
+### Batch autolabel
+
+Open a custom set and choose **Autolabel…**. Select a model, adjust confidence
+thresholds, and check the queue images to process. Each result saves as it
+finishes. Images with people or a review flag are skipped. Images with zero
+detections stay open for manual labeling.
+
+- **YOLO26 Boxes** uses `yolo26n.pt` to propose boxes and leaves the joints unfinished.
+- **YOLO26 Pose** uses `yolo26n-pose.pt` for boxes and the 12 shared COCO limb
+  joints. Place the CrowdPose head and neck manually.
+- **Sapiens2** uses DETR-R101-DC5 boxes and Sapiens2-0.8B poses for the 12 limb
+  joints and neck. Place the head manually.
+
+Check occlusion during review. Imported coordinates start at visibility 2.
+Each image’s `autolabel` field keeps its model, settings and original
+proposals alongside editable geometry. YOLO records the checkpoint hash,
+Ultralytics version, device, image size and postprocessing.
+
+#### YOLO runtime and local profiles
+
+The built-in YOLO profiles use the viewer’s Python and the weights directory
+`data/crowdpose_viewer/yolo-weights/`. They were tested with Ultralytics
+`8.4.53` and official `v8.4.0` release assets. To install the weights on
+another machine:
+
+```bash
+uv pip install --python venv/bin/python ultralytics==8.4.53
+mkdir -p data/crowdpose_viewer/yolo-weights
+for model in yolo26n yolo26n-pose; do
+  curl -fL "https://github.com/ultralytics/assets/releases/download/v8.4.0/$model.pt"     -o "data/crowdpose_viewer/yolo-weights/$model.pt"
+done
+```
+
+Use `--yolo-python` or `--yolo-weights` to override those locations. Add
+`--autolabel-profiles PATH` to load named local checkpoints from JSON:
+
+```json
+{
+  "yolo26s-local": {
+    "label": "YOLO26s Pose",
+    "task": "pose",
+    "checkpoint": "yolo26s-pose.pt",
+    "imgsz": 640,
+    "confidence": 0.25,
+    "joint_confidence": 0.25
+  }
+}
+```
+
+The checkpoint path is relative to the JSON file or absolute. The `task`
+is `detect` or `pose`. Pose checkpoints use the COCO-17 layout.
+
+#### Sapiens2 runtime
+
+The optional GPU worker has its own Python environment. To set it up on a
+new machine with a CUDA 12.8-compatible driver, run these from the repo root:
+
+```bash
+uv venv --python 3.12 data/crowdpose_viewer/sapiens-env
+worker=data/crowdpose_viewer/sapiens-env/bin/python
+uv pip install --python "$worker" torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+uv pip install --python "$worker" transformers==5.23.0 scipy pillow timm opencv-python-headless
+"$worker" scripts/data/sapiens2_worker.py --download
+```
+
+Inference uses the locally cached checkpoints. For a different worker
+environment, start the viewer with `--autolabel-python PATH/TO/python`.
+See the [Sapiens2 pose model card](https://huggingface.co/facebook/sapiens2-pose-0.8b)
+and [source landmark definitions](https://github.com/facebookresearch/sapiens2/blob/7e5bae88456ac418ff0e58e74106c9fe192055d4/sapiens/pose/configs/_base_/keypoints308.py).
+
+### Standardize datasets and see the app wiki
+
+Open the **Wiki** from the explorer header or use the picker’s **Info** link.
+The [Standards section](http://127.0.0.1:8765/wiki#standards) includes an example
+COCO document and describes coordinate conventions, provenance, and masks.
+
+To prepare COCO JSON from the existing local data:
+
+```bash
+venv/bin/python -m scripts.data.standardize_pose_data crowdpose --root data/crowdpose
+venv/bin/python -m scripts.data.standardize_pose_data coco --root /path/to/coco
+```
+
+The COCO root contains `val2017/` and
+`annotations/person_keypoints_val2017.json`. Each command writes a
+`data/standardized/<dataset>/manifest.json` and one JSON per split under
+`annotations/`. The manifest links to the existing image and input annotation
+paths and records the source SHA-256 hashes. Use the conversion for interchange
+and the original CrowdPose files for native training and evaluation.
+
 ## Training
 
 Experiment-specific configurations and auxiliary objectives, including V19
@@ -1024,4 +1257,150 @@ python -m scripts.training.verify_poseflow_v50 --output tmp/v50/verification
 python -m scripts.training.train_poseflow_v50 verification_file=tmp/v50/verification/verification.json
 ```
 
-Full training requires matching native verification, runs80 epochs on TRAIN/VAL only, and logs AP under `quick-test/proposal_attention_residual/rows_50/`. Historical V49 checkpoints/runs are preserved separately.
+Full training requires matching native verification, runs80 epochs on TRAIN/VAL only, and logs AP as `quick-test/pose_AP` and `quick-test/bbox_AP`. Historical V49 checkpoints/runs are preserved separately.
+
+V51 combines protected geometry gradients, bounded timestep conditioning,
+clean-anchor refinement and adaptive gradient weighting. It has isolated
+verification/training entrypoints and strict checkpoints; see the
+[V51 report](docs/reports/poseflow_v51.md) for the native preflight, denoising
+acceptance gate, full80 recipe and TensorBoard tags.
+
+V51 quick-test also compares geometry at birth against final refinement on the
+same generated trajectory, using native pose/bbox AP. Tags are
+`quick-test/pose_AP` and `quick-test/bbox_AP` in separate birth/final run labels.
+Every experiment measuring the same metric uses exactly the same tag. For an existing immutable
+training run, evaluate saved checkpoints without restarting its trainer:
+
+```bash
+python -m scripts.training.evaluate_poseflow_v51_birth \
+  --run-root /absolute/path/to/v51/run \
+  --output /absolute/path/to/v51/run/diagnostics/birth_ap --watch
+```
+
+The evaluator uses the run's fixed32 VAL subset and seed, verifies final AP
+against the trainer, and writes a separate TensorBoard event stream under
+`diagnostics/birth_ap/tb_logs/{birth,final}`. Checkpoint retention limits historical backfill.
+
+For immutable historical runs, `scripts/monitoring/tensorboard_comparison.py`
+provides a live derived view of existing event files. It preserves scalar values,
+steps, wall times and original artifacts, moves legacy sampler/stage prefixes
+into run labels, and uses shared metric tags. The existing TensorBoard dashboard
+reads these views; it does not need a separate chart for each experiment.
+
+
+V52 uses shared256D person features, joint clean box/relative-pose prediction and timestep-conditioned deformable image attention. It retains sequential50row generation, FP32 batch4/accumulation2 and fresh80epoch training. Run native verification first, then supply its report to the guarded training entrypoint:
+
+```bash
+venv/bin/python -m scripts.training.verify_poseflow_v52 --output tmp/v52/verification
+venv/bin/python -m scripts.training.train_poseflow_v52 verification_file=tmp/v52/verification/verification.json
+```
+
+The native preflight must pass alongside existing workloads. Birth, first-EOS and final AP share `quick-test/pose_AP` and `quick-test/bbox_AP`, distinguished by run labels. See [V52 architecture and experiment report](docs/reports/poseflow_v52.md).
+
+
+### V53: native keypoint expansion, birth-only generation
+
+V53 restores pretrained person-to-joint expansion and native pose decoder layers. Each completed person stays fixed; generation exits at EOS, with no coordinate diffusion or refinement tail. The existing data/FP32/full80 recipe and shared TensorBoard AP tags are retained. Verify before launching:
+
+```bash
+venv/bin/python -m scripts.training.verify_poseflow_v53 --output tmp/v53/verification
+venv/bin/python -m scripts.training.train_poseflow_v53 verification_file=tmp/v53/verification/verification.json
+```
+
+Use a fresh verification output directory. Asset-independent resume uses `training.resume=/absolute/path/to/last.ckpt`. See [V53 contracts and evidence](docs/reports/poseflow_v53.md).
+
+### V54: fixed-prefix generation with empirical geometry augmentation
+
+V54 trains V53's birth-only decoder on imperfect previous people. It samples
+correlated geometric errors measured from TRAIN predictions, before coordinate
+encoding; inference adds neither noise nor refinement. The frozen bank is included
+in checkpoints, so resume needs no augmentation or initialization assets.
+
+```bash
+venv/bin/python -m scripts.training.collect_poseflow_v54_residuals \
+  --checkpoint /absolute/path/to/copied_v53.ckpt --output tmp/v54/train_residual_bank.pt
+venv/bin/python -m scripts.training.verify_poseflow_v54 \
+  --output tmp/v54/verification --residual-bank tmp/v54/train_residual_bank.pt
+venv/bin/python -m scripts.training.train_poseflow_v54 \
+  verification_file=tmp/v54/verification/verification.json \
+  residual_bank_file=tmp/v54/train_residual_bank.pt
+```
+
+Use fresh output directories. Restore with `training.resume=/absolute/path/to/last.ckpt`.
+Existing shared AP/loss tags are retained; only the TensorBoard run label differs.
+See [V54 corruption policy, provenance and verification](docs/reports/poseflow_v54.md).
+
+
+### V55 proposal-to-prefix attention
+
+V55 retains V54 prefix augmentation and birth-only native joint expansion, adding
+proposal-query cross-attention over previous people for selection and birth
+initialization. See [the architecture and verification report](docs/reports/poseflow_v55.md).
+
+```bash
+venv/bin/python -m scripts.training.verify_poseflow_v55 \
+  --output tmp/v55/verification_native \
+  --residual-bank tmp/v54/train_residual_bank.pt
+venv/bin/python -m scripts.training.train_poseflow_v55 \
+  verification_file=tmp/v55/verification_native/verification.json \
+  residual_bank_file=tmp/v54/train_residual_bank.pt
+```
+
+The trainer requires successful source-pinned native verification and launches
+the existing FP32/batch4/accum2/full80 recipe. Shared TensorBoard tags remain
+`quick-test/pose_AP` and `quick-test/bbox_AP`; only the run label changes.
+
+V55 checkpoint contract version2 separates shared-attention and private-geometry
+clipping budgets while retaining prefix augmentation and losses. Earlier V55
+checkpoints require their archived source; the version2 trainer rejects their
+clipping contract. Regenerate verification for the current source before a new
+run. See the [trained gradient audit and correction](docs/reports/poseflow_v55_trained_gradient_audit.md).
+
+### Full-depth birth decoder preservation
+
+`FullDepthBirthDecoder` retains the full pretrained six-encoder/two-box/four-pose
+path, caches image context and decodes supplied proposal IDs independently.
+Optional prefix correction starts at zero. This is a verified adapter, not a
+training entrypoint or a learned EOS sampler.
+
+```bash
+venv/bin/python -m scripts.training.verify_full_depth_birth \
+  --reference-run /absolute/path/to/poseflow_v55/20261114_184631 \
+  --output tmp/full_depth_birth/verification
+```
+
+Use a fresh output directory. Verification requires the original SHA-pinned
+ED-Pose asset, native CUDA and the reference run's fixed32 manifest/archived pose
+audit. It reproduces54.15pose/39.10boxAP on that VAL transfer diagnostic, checks
+per-layer tensor parity, and measures synthetic FP32/batch4/accumulation2 cost.
+No trainer is launched. See [interface, limits and evidence](docs/reports/full_depth_birth_decoder.md).
+
+### V56: full-depth sequential births
+
+V56 integrates the preserved full-depth decoder with prefix-conditioned proposal
+selection/EOS, empirical prefix augmentation and the balanced birth objectives.
+All four pose stages supervise each newborn. It uses a separate strict checkpoint
+contract and a fresh seed42/full80 namespace.
+
+```bash
+venv/bin/python -m scripts.training.verify_poseflow_v56 \
+  --output tmp/v56/verification \
+  --residual-bank /absolute/path/to/train_residual_bank.pt \
+  --fixed-subset /absolute/path/to/previous_run/seed42/quick_test/subset.json
+venv/bin/python -m scripts.training.train_poseflow_v56 \
+  verification_file=tmp/v56/verification/verification.json \
+  residual_bank_file=/absolute/path/to/train_residual_bank.pt
+```
+
+Use fresh verification/run directories. Native FP32/full-capacity and next-update
+restore checks must pass before training. Resume with `training.resume=/absolute/path/to/last.ckpt`;
+initialization/bank assets are not needed for resume. Common AP/loss/gradient
+tags are reused. See [V56 recipe and verification](docs/reports/poseflow_v56.md).
+
+
+Current V53–V56 quick-test evaluates a fixed seed-42 subset of **32 official CrowdPose TEST images**; final evaluation uses all **8,000 TEST images**. Earlier VAL-based results remain historical diagnostics and must not be compared as held-out results under TRAIN+VAL-pretrained ED-Pose. TEST is used for development/model selection. Comparable TensorBoard tags remain `quick-test/pose_AP` and `quick-test/bbox_AP`; TEST continuations have a distinct run label. The [run-results audit prompt](docs/prompts/all_run_test_results.md) specifies the historical inventory and frozen reevaluation protocol.
+
+### GroupPose CrowdPose baseline
+
+The [GroupPose baseline report](docs/reports/grouppose_baseline.md) documents
+the reduced ResNet-50 preset, evaluator commands, and released-weight parity.

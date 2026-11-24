@@ -1,0 +1,7 @@
+defaults:
+  - benchmark_poseflow_v53
+  - override pipeline: poseflow_v54
+  - _self_
+run_name: poseflow_v54
+out_dir: results/poseflow_v54
+residual_bank_file: null

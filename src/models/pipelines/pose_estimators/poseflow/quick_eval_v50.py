@@ -18,13 +18,64 @@ from .quick_eval_v21 import v21_test_batches
 
 
 def tensorboard_metrics(report):
-    prefix = f'quick-test/proposal_attention_residual/rows_{report["rows"]}'
+    prefix = 'quick-test'
     result = {f'{prefix}/{name}': value for name, value in report['metrics'].items()}
     result.update({f'{prefix}/{name}': report[name] for name in
         ('count_mae', 'mean_eos_row', 'capacity_stop_fraction', 'inference_images_per_second', 'peak_cuda_allocated_bytes')})
-    result.update({f'proposal_attention_residual/{name}': value for name, value in report['refinement'].items()})
-    result.update({f'proposal_attention_residual/diagnostics/{name}': value for name, value in report.get('diagnostics', {}).items()})
+    result.update({f'diagnostics/{name}': value for name, value in report['refinement'].items()})
+    result.update({f'diagnostics/diagnostics/{name}': value for name, value in report.get('diagnostics', {}).items()})
     return result
+
+
+def birth_geometry_output(model, output, image_wh):
+    coordinates = torch.zeros_like(output['pred_coordinates'])  # B, capacity, 32
+    seen = torch.zeros_like(output['valid_mask'])
+    for step in output['trace']:
+        if step['layer'] != 2:
+            continue
+        images = step['birth'].nonzero().flatten()
+        ranks = step['prefix_counts'][images]
+        if ((ranks < 0) | (ranks >= coordinates.shape[1])).any():
+            raise ValueError('Invalid birth rank in generation trace')
+        if seen[images, ranks].any():
+            raise ValueError('Duplicate birth in generation trace')
+        coordinates[images, ranks] = step['pred_coordinates'][images, ranks]
+        seen[images, ranks] = True
+    if not torch.equal(seen, output['valid_mask']):
+        raise ValueError('Generation trace is missing a birth snapshot')
+    result = model._geometry_output(coordinates, output['person_counts'], output['scores'], image_wh)
+    for name in ('proposal_indices', 'original_query_indices'):
+        if name in output:
+            result[name] = output[name]
+    return result
+
+
+def first_eos_geometry_output(model, output, image_wh):
+    coordinates = output['pred_coordinates'].clone()
+    found = torch.zeros_like(output['eos_row'], dtype=torch.bool)
+    for step in output['trace']:
+        if step['layer'] != 2:
+            continue
+        selected = output['eos_row'] == step['row']
+        coordinates[selected] = step['pred_coordinates'][selected, :model.capacity]
+        found |= selected
+    if not torch.equal(found, output['eos_row'] > 0):
+        raise ValueError('Generation trace is missing the first EOS snapshot')
+    result = model._geometry_output(coordinates, output['person_counts'], output['scores'], image_wh)
+    for name in ('proposal_indices', 'original_query_indices'):
+        if name in output:
+            result[name] = output[name]
+    return result
+
+
+def _output_records(model, output, batch, sizes, image_id):
+    valid = output['valid_mask'][0]
+    if not valid.any():
+        return []
+    selected = {name: output[name][:, valid] for name in ('pred_logits', 'pred_boxes', 'pred_keypoints')}
+    processed = postprocess_crowdpose(selected, batch.get('original_img_hw', batch['img_hw']).to(sizes),
+        num_body_points=model.num_body_points, nms_target_sizes=batch['img_hw'].to(sizes))
+    return crowdpose_result_records(image_id, processed)
 
 
 def _rank_errors(collection, namespace, coordinates, ranks, sources, geometry, image_wh):
@@ -120,12 +171,14 @@ def _diagnostics(model, context, output, batch, collection, *, seed):
 
 
 def evaluate_v50_batches(model, batches, directory, annotations, image_ids, *, seed=42,
-                         metric_evaluator=evaluate_records, split='val'):
+                         metric_evaluator=evaluate_records, split='val', collect_birth=False, collect_first_eos=False):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     records, seen, collection, counts, eos_rows, capacity_stops, per_image = [], [], {}, [], [], [], []
     inference_seconds, peak_memory = 0., 0
     diagnostic_values = {}
+    birth_records = []
+    first_eos_records = []
     started = time.perf_counter()
     with evaluation_context(model):
         for batch in batches:
@@ -147,12 +200,13 @@ def evaluate_v50_batches(model, batches, directory, annotations, image_ids, *, s
             inference_seconds += time.perf_counter()-inference_start
             if not all(torch.isfinite(output[name]).all() for name in ('pred_coordinates', 'pred_boxes', 'pred_keypoints', 'pred_logits')):
                 raise FloatingPointError('Nonfinite V50 evaluation output')
-            valid = output['valid_mask'][0]
-            if valid.any():
-                selected = {name: output[name][:, valid] for name in ('pred_logits', 'pred_boxes', 'pred_keypoints')}
-                processed = postprocess_crowdpose(selected, batch.get('original_img_hw', batch['img_hw']).to(sizes),
-                    num_body_points=model.num_body_points, nms_target_sizes=batch['img_hw'].to(sizes))
-                records.extend(crowdpose_result_records(image_id, processed))
+            records.extend(_output_records(model, output, batch, sizes, image_id))
+            if collect_birth:
+                birth = birth_geometry_output(model, output, sizes)
+                birth_records.extend(_output_records(model, birth, batch, sizes, image_id))
+            if collect_first_eos:
+                first_eos = first_eos_geometry_output(model, output, sizes)
+                first_eos_records.extend(_output_records(model, first_eos, batch, sizes, image_id))
             # Image-only generation precedes all GT-conditioned diagnostics.
             people, diagnostics = _diagnostics(model, context, output, batch, collection, seed=seed+image_id)
             for name, value in diagnostics.items():
@@ -182,11 +236,20 @@ def evaluate_v50_batches(model, batches, directory, annotations, image_ids, *, s
         split=split, annotations=str(annotations), seed=seed, sampler='token-age coordinate DDIM eta0; pure-noise newborns; fixed50-row EOS tail',
         postprocessing='native CrowdPose pose NMS; native objectness times birth nonEOS confidence; invalid slots excluded',
         diagnostic_scope='Random-source teacher errors; generated birth/age/final use fixed final-output Hungarian assignment for diagnostics only; training selected-proposal matching is separate and fixed across rows')
+    if collect_birth:
+        (directory/'birth_predictions.json').write_text(json.dumps(birth_records, allow_nan=False))
+        report.update(birth_metrics=metric_evaluator(birth_records, annotations, image_ids),
+            birth_detections=len(birth_records),
+            birth_scope='Layer2 birth snapshots from the same refining trajectory; same identities and birth scores; native postprocessing applied independently')
+    if collect_first_eos:
+        (directory/'first_eos_predictions.json').write_text(json.dumps(first_eos_records, allow_nan=False))
+        report.update(first_eos_metrics=metric_evaluator(first_eos_records, annotations, image_ids),
+            first_eos_scope='Layer2 at first EOS, including that row refinement; capacity stops use final output; same trajectory, counts and birth scores')
     (directory/'metrics.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     return report
 
 
-def run_v50_evaluation(model, data, root, *, epoch, count=32, seed=42):
+def run_v50_evaluation(model, data, root, *, epoch, count=32, seed=42, collect_birth=False, collect_first_eos=False):
     from src.data.datasets import PoseDataset
     root = Path(root)
     dataset = PoseDataset.from_path(data.val_ann_path, img_root=data.img_dir, num_keypoints=14)
@@ -196,7 +259,7 @@ def run_v50_evaluation(model, data, root, *, epoch, count=32, seed=42):
     evaluation_data = copy(data)
     evaluation_data.trainer = SimpleNamespace(training=False)
     report = evaluate_v50_batches(model, v21_test_batches(evaluation_data, dataset, ids, next(model.parameters()).device),
-        root/f'epoch{epoch:03d}', data.val_ann_path, ids, seed=seed)
+        root/f'epoch{epoch:03d}', data.val_ann_path, ids, seed=seed, collect_birth=collect_birth, collect_first_eos=collect_first_eos)
     report.update(epoch=epoch, full_validation=count is None, resize=[data.eval_resize_scale, data.eval_max_size])
     (root/f'epoch{epoch:03d}'/'metrics.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     return report

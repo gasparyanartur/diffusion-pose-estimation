@@ -1,0 +1,8 @@
+defaults:
+  - poseflow_v55
+  - _self_
+_target_: src.models.pipelines.pose_estimators.poseflow.training_v56.PoseFlowV56PipelineConfig
+native:
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  num_box_decoder_layers: 2

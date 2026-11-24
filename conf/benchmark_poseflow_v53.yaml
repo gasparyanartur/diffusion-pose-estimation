@@ -1,0 +1,11 @@
+defaults:
+  - benchmark_poseflow_v50
+  - override pipeline: poseflow_v53
+  - _self_
+run_name: poseflow_v53
+out_dir: results/poseflow_v53
+data:
+  test_ann: crowdpose/annotations/crowdpose_test.json
+training:
+  checkpoint:
+    monitor: val/selection_AP
